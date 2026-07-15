@@ -1119,6 +1119,70 @@ function preview_audience_segment(mixed $rules): array
     return ['count' => count($matched), 'users' => array_slice($matched, 0, 50), 'rules' => $parts, 'evaluatedAt' => now_iso()];
 }
 
+function admin_analytics_summary(): array
+{
+    $pdo = Database::pdo();
+    $stories = document_value('stories', []);
+    $storyTitles = [];
+    foreach ($stories as $story) {
+        if (!empty($story['slug'])) $storyTitles[(string) $story['slug']] = (string) ($story['title'] ?? $story['slug']);
+    }
+
+    $eventCounts = $pdo->query("
+        SELECT event_type, COUNT(*) AS count, COALESCE(AVG(value), 0) AS average_value
+        FROM engagement_events
+        GROUP BY event_type
+        ORDER BY count DESC
+    ")->fetchAll();
+
+    $storyCounts = $pdo->query("
+        SELECT story_slug, event_type, COUNT(*) AS count, COALESCE(AVG(value), 0) AS average_value
+        FROM engagement_events
+        WHERE story_slug IS NOT NULL AND story_slug != ''
+        GROUP BY story_slug, event_type
+        ORDER BY count DESC
+        LIMIT 500
+    ")->fetchAll();
+    foreach ($storyCounts as &$row) $row['title'] = $storyTitles[$row['story_slug']] ?? $row['story_slug'];
+    unset($row);
+
+    $dailyEvents = $pdo->query("
+        SELECT substr(created_at, 1, 10) AS day, event_type, COUNT(*) AS count
+        FROM engagement_events
+        GROUP BY day, event_type
+        ORDER BY day DESC, count DESC
+        LIMIT 180
+    ")->fetchAll();
+
+    $revenueByStory = $pdo->query("
+        SELECT wt.story_slug, COALESCE(SUM(wt.gross_amount), 0) AS amount, COUNT(*) AS tips
+        FROM writer_tips wt
+        WHERE wt.status = 'paid'
+        GROUP BY wt.story_slug
+        ORDER BY amount DESC
+        LIMIT 100
+    ")->fetchAll();
+    foreach ($revenueByStory as &$row) $row['title'] = $storyTitles[$row['story_slug']] ?? $row['story_slug'];
+    unset($row);
+
+    $revenue = (int) $pdo->query("SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'paid'")->fetch()['total'];
+    $activeSubscriptions = (int) $pdo->query("SELECT COUNT(*) AS count FROM subscriptions WHERE status = 'active'")->fetch()['count'];
+    $tickets = $pdo->query("
+        SELECT status, priority, category, COUNT(*) AS count
+        FROM support_tickets
+        GROUP BY status, priority, category
+        ORDER BY count DESC
+    ")->fetchAll();
+    $moderation = $pdo->query("
+        SELECT status, kind, risk, COUNT(*) AS count
+        FROM moderation_cases
+        GROUP BY status, kind, risk
+        ORDER BY count DESC
+    ")->fetchAll();
+
+    return compact('eventCounts', 'storyCounts', 'dailyEvents', 'revenueByStory', 'revenue', 'activeSubscriptions', 'tickets', 'moderation');
+}
+
 function payu_response_hash_valid(array $payload): bool
 {
     $salt = (string) provider_config_value('PAYU_SALT', 'payu', 'salt', '');
@@ -2010,6 +2074,18 @@ function handle_api(string $path, string $method): void
         json_response(['revoked' => true]);
     }
 
+    if ($method === 'DELETE' && preg_match('#^/api/me/sessions/([^/]+)$#', $path, $m)) {
+        $session = require_auth();
+        $sessionId = urldecode($m[1]);
+        if ($sessionId === $session['sessionId']) {
+            json_response(['error' => 'CURRENT_SESSION', 'message' => 'Use sign out to end the current session.'], 400);
+        }
+        $stmt = $pdo->prepare('DELETE FROM sessions WHERE id = ? AND user_id = ?');
+        $stmt->execute([$sessionId, $session['user']['id']]);
+        audit_log($session['user']['id'], 'security.session_revoked', 'session', $sessionId);
+        json_response(['revoked' => $stmt->rowCount() > 0]);
+    }
+
     if ($method === 'GET' && $path === '/api/me/security') {
         $session = require_auth();
         $stmt = $pdo->prepare('SELECT * FROM user_security_settings WHERE user_id = ?');
@@ -2203,9 +2279,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'GET' && $path === '/api/admin/analytics') {
         require_auth(['admin']);
-        $revenue = (int) $pdo->query("SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE status = 'paid'")->fetch()['total'];
-        $activeSubscriptions = (int) $pdo->query("SELECT COUNT(*) AS count FROM subscriptions WHERE status = 'active'")->fetch()['count'];
-        json_response(['eventCounts' => [], 'storyCounts' => [], 'dailyEvents' => [], 'revenueByStory' => [], 'revenue' => $revenue, 'activeSubscriptions' => $activeSubscriptions, 'tickets' => [], 'moderation' => []]);
+        json_response(admin_analytics_summary());
     }
 
     if ($method === 'POST' && $path === '/api/admin/subscriptions/sync') {
@@ -2282,6 +2356,34 @@ function handle_api(string $path, string $method): void
                 ->execute([$id, $session['user']['id'], $body['targetType'] ?? 'post', $body['targetId'] ?? '', $body['kind'] ?? 'Report', $body['subject'] ?? 'Moderation case', $body['risk'] ?? 'Medium', $now, $now]);
             json_response(['case' => ['id' => $id]], 201);
         }
+    }
+
+    if ($method === 'PATCH' && preg_match('#^/api/admin/moderation/([^/]+)$#', $path, $m)) {
+        $session = require_auth(['admin', 'moderator']);
+        $caseId = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM moderation_cases WHERE id = ?');
+        $stmt->execute([$caseId]);
+        $case = $stmt->fetch();
+        if (!$case) json_response(['error' => 'NOT_FOUND', 'message' => 'Moderation case not found.'], 404);
+        $body = read_json();
+        $allowedStatuses = ['Open', 'In review', 'Escalated', 'Resolved', 'Dismissed'];
+        $status = in_array($body['status'] ?? $case['status'], $allowedStatuses, true) ? $body['status'] ?? $case['status'] : $case['status'];
+        $evidence = parse_json_field($case['evidence_json'] ?? '[]', []);
+        if (is_array($body['evidence'] ?? null)) {
+            $evidence[] = [
+                'type' => substr((string) ($body['evidence']['type'] ?? 'note'), 0, 80),
+                'value' => substr((string) ($body['evidence']['value'] ?? ''), 0, 2000),
+                'addedBy' => $session['user']['id'],
+                'addedAt' => now_iso(),
+            ];
+        }
+        $assignee = !empty($body['assignToSelf']) ? $session['user']['id'] : ($body['assigneeUserId'] ?? $case['assignee_user_id']);
+        $pdo->prepare('UPDATE moderation_cases SET status = ?, evidence_json = ?, assignee_user_id = ?, updated_at = ? WHERE id = ?')
+            ->execute([$status, json_encode($evidence, JSON_UNESCAPED_SLASHES), $assignee ?: null, now_iso(), $caseId]);
+        audit_log($session['user']['id'], 'moderation.case_update', 'moderation_case', $caseId, ['status' => $status]);
+        $stmt = $pdo->prepare('SELECT moderation_cases.*, users.name AS assignee_name FROM moderation_cases LEFT JOIN users ON users.id = moderation_cases.assignee_user_id WHERE moderation_cases.id = ?');
+        $stmt->execute([$caseId]);
+        json_response(['case' => $stmt->fetch()]);
     }
 
     if ($path === '/api/admin/moderation/rules') {

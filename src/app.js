@@ -1765,7 +1765,7 @@ function followedStoryBoost(story) {
   if (isFollowing("publications", story.publication)) score += 34;
   if (isFollowing("topics", story.topic)) score += 30;
   score += (story.tags || []).filter((tag) => isFollowing("tags", tag)).length * 20;
-  score += defaultCuratedLists.filter((list) => isFollowing("lists", list.id) && list.slugs.includes(story.slug)).length * 25;
+  score += publicCuratedLists().filter((list) => isFollowing("lists", list.id) && list.slugs.includes(story.slug)).length * 25;
   return score;
 }
 
@@ -1855,7 +1855,7 @@ function searchSuggestions() {
     .filter((story) => fullTextForStory(story).includes(query))
     .slice(0, 5)
     .map((story) => ({ type: "Story", label: story.title, meta: `${story.author} · ${story.topic}`, route: `/stories/${story.slug}` }));
-  const writerSuggestions = Object.entries(defaultProfiles)
+  const writerSuggestions = Object.entries(publicProfiles())
     .filter(([, profile]) => `${profile.name} ${profile.expertise.join(" ")}`.toLowerCase().includes(query))
     .slice(0, 3)
     .map(([slug, profile]) => ({ type: "Writer", label: profile.name, meta: profile.expertise[0], route: `/@${slug}` }));
@@ -1899,8 +1899,52 @@ async function runServerSearch(includeSuggestions = false) {
   render();
 }
 
+function publicProfiles() {
+  const profiles = { ...defaultProfiles };
+  publishedStories().forEach((story) => {
+    const slug = slugifyName(story.author);
+    const existing = profiles[slug] || {};
+    const expertise = [...new Set([...(existing.expertise || []), story.topic, ...(story.tags || [])].filter(Boolean))].slice(0, 5);
+    profiles[slug] = {
+      slug,
+      name: story.author,
+      bio: existing.bio || `Writer covering ${String(story.topic || "publishing").toLowerCase()} and related ideas.`,
+      expertise,
+      followers: Math.max(Number(existing.followers || 0), Number(story.reads || 0) + Number(story.claps || 0), 100),
+      badge: existing.badge || (story.authorUserId ? "Verified writer" : "Writer"),
+      website: existing.website || "",
+      social: existing.social || "",
+      publication: story.publication || existing.publication || "InkRiver",
+    };
+  });
+  return profiles;
+}
+
+function publicCuratedLists() {
+  const byTopic = publishedStories().reduce((groups, story) => {
+    const topic = story.topic || "Featured";
+    (groups[topic] ||= []).push(story);
+    return groups;
+  }, {});
+  const dynamic = Object.entries(byTopic).map(([topic, stories]) => ({
+    id: `topic-${slugifyName(topic)}`,
+    name: `${topic} essentials`,
+    owner: stories[0]?.publication || "InkRiver",
+    description: `A live reading list generated from published ${topic.toLowerCase()} stories.`,
+    slugs: stories.slice(0, 8).map((story) => story.slug),
+    followers: Math.max(100, stories.reduce((sum, story) => sum + Number(story.reads || 0), 0)),
+  }));
+  const seen = new Set();
+  return [...dynamic, ...defaultCuratedLists].filter((list) => {
+    if (seen.has(list.id)) return false;
+    seen.add(list.id);
+    return list.slugs.some((slug) => state.stories.some((story) => story.slug === slug && story.status === "published"));
+  });
+}
+
 function profileForSlug(slug) {
-  if (defaultProfiles[slug]) return { slug, ...defaultProfiles[slug] };
+  const profiles = publicProfiles();
+  if (profiles[slug]) return { slug, ...profiles[slug] };
   const story = publishedStories().find((item) => slugifyName(item.author) === slug);
   return story ? { slug, name: story.author, bio: `Writer covering ${story.topic.toLowerCase()} and related ideas.`, expertise: [story.topic, ...(story.tags || []).slice(0, 2)], followers: 1200, badge: "Writer", website: "", social: "", publication: story.publication } : null;
 }
@@ -2606,7 +2650,7 @@ function appTemplate() {
   const selectedStory = state.stories.find((story) => story.status === "published" && state.path.includes(`/stories/${story.slug}`));
   const selectedCategory = state.categories.find((category) => state.path === `/category/${category.slug}`);
   const selectedProfile = state.path.startsWith("/@") ? profileForSlug(state.path.slice(2)) : null;
-  const selectedList = state.path.startsWith("/lists/") ? defaultCuratedLists.find((list) => list.id === state.path.split("/").pop()) : null;
+  const selectedList = state.path.startsWith("/lists/") ? publicCuratedLists().find((list) => list.id === state.path.split("/").pop()) : null;
   return `
     <div class="app-shell">
       ${headerTemplate()}
@@ -2769,7 +2813,7 @@ function searchPageTemplate() {
         <aside class="search-discovery-rail">
           <section class="rail-panel">
             <div class="panel-title">${icon("users")}<h2>Writers to follow</h2></div>
-            ${Object.entries(defaultProfiles).slice(0, 4).map(([slug, profile]) => `
+            ${Object.entries(publicProfiles()).slice(0, 4).map(([slug, profile]) => `
               <div class="discovery-follow-row">
                 <button data-route="/@${slug}"><span class="avatar">${profile.name[0]}</span><span><strong>${profile.name}</strong><small>${profile.expertise[0]}</small></span></button>
                 <button class="compact-follow ${isFollowing("writers", profile.name) ? "active" : ""}" data-follow-type="writers" data-follow-value="${escapeHtml(profile.name)}">${followLabel("writers", profile.name)}</button>
@@ -2778,7 +2822,7 @@ function searchPageTemplate() {
           </section>
           <section class="rail-panel">
             <div class="panel-title">${icon("bookmark")}<h2>Curated lists</h2></div>
-            ${defaultCuratedLists.map((list) => `<button class="discovery-list-row" data-route="/lists/${list.id}"><strong>${escapeHtml(list.name)}</strong><span>${list.slugs.length} stories · ${list.followers.toLocaleString("en-IN")} followers</span></button>`).join("")}
+            ${publicCuratedLists().map((list) => `<button class="discovery-list-row" data-route="/lists/${list.id}"><strong>${escapeHtml(list.name)}</strong><span>${list.slugs.length} stories · ${list.followers.toLocaleString("en-IN")} followers</span></button>`).join("")}
           </section>
         </aside>
       </section>
@@ -2789,7 +2833,7 @@ function searchPageTemplate() {
 function profileTemplate(profile) {
   const stories = publishedStories().filter((story) => story.author === profile.name);
   const featured = stories.sort((a, b) => b.reads - a.reads)[0];
-  const publicLists = defaultCuratedLists.filter((list) => list.owner === profile.name);
+  const publicLists = publicCuratedLists().filter((list) => list.owner === profile.name || list.owner === profile.publication);
   const followerCount = profile.followers + (isFollowing("writers", profile.name) ? 1 : 0);
   return `
     <main class="profile-page">
@@ -3541,7 +3585,7 @@ function dashboardProfileTemplate() {
 }
 
 function followingManagerTemplate() {
-  const writers = Object.values(defaultProfiles).slice(0, 6);
+  const writers = Object.values(publicProfiles()).slice(0, 6);
   const publications = [...new Set(publishedStories().map((story) => story.publication))].slice(0, 6);
   const tags = [...new Set(publishedStories().flatMap((story) => story.tags || []))].slice(0, 10);
   return `
@@ -3552,7 +3596,7 @@ function followingManagerTemplate() {
         <div><h3>Publications</h3>${publications.map((publication) => followManagerRow("publications", publication, "Publication", "")).join("")}</div>
         <div><h3>Topics</h3>${state.categories.map((category) => followManagerRow("topics", category.name, category.description, `/category/${category.slug}`)).join("")}</div>
         <div><h3>Tags</h3><div class="follow-tag-cloud">${tags.map((tag) => `<button class="${isFollowing("tags", tag) ? "active" : ""}" data-follow-type="tags" data-follow-value="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`).join("")}</div></div>
-        <div class="following-lists"><h3>Curated lists</h3>${defaultCuratedLists.map((list) => followManagerRow("lists", list.id, `${list.name} · ${list.slugs.length} stories`, `/lists/${list.id}`, list.name)).join("")}</div>
+        <div class="following-lists"><h3>Curated lists</h3>${publicCuratedLists().map((list) => followManagerRow("lists", list.id, `${list.name} · ${list.slugs.length} stories`, `/lists/${list.id}`, list.name)).join("")}</div>
       </div>
     </section>
   `;
