@@ -409,6 +409,142 @@
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS provider_credentials (
+    provider TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value_encrypted TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'production',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (provider, key)
+  );
+
+  CREATE TABLE IF NOT EXISTS subscription_events (
+    id TEXT PRIMARY KEY,
+    subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    provider TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    status_before TEXT,
+    status_after TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS subscription_dunning (
+    id TEXT PRIMARY KEY,
+    subscription_id TEXT REFERENCES subscriptions(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'open'
+      CHECK (status IN ('open', 'notified', 'recovered', 'cancelled', 'closed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS payout_transfers (
+    id TEXT PRIMARY KEY,
+    payout_id TEXT NOT NULL REFERENCES writer_payouts(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_transfer_id TEXT,
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK (status IN ('queued', 'processing', 'paid', 'failed', 'cancelled')),
+    request_json TEXT NOT NULL DEFAULT '{}',
+    response_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS background_jobs (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    available_at TEXT NOT NULL,
+    locked_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS media_variants (
+    id TEXT PRIMARY KEY,
+    media_asset_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+    variant TEXT NOT NULL,
+    url TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    size_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(media_asset_id, variant)
+  );
+
+  CREATE TABLE IF NOT EXISTS security_policies (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS role_permissions (
+    role TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    allowed INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (role, permission)
+  );
+
+  CREATE TABLE IF NOT EXISTS passkey_credentials (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential_id TEXT NOT NULL UNIQUE,
+    public_key TEXT NOT NULL,
+    sign_count INTEGER NOT NULL DEFAULT 0,
+    transports TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS moderation_rules (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('blocked_word', 'link_filter', 'bot_score', 'duplicate_check', 'plagiarism')),
+    pattern TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'queue'
+      CHECK (action IN ('allow', 'queue', 'hide', 'block')),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS pwa_sync_queue (
+    id TEXT PRIMARY KEY,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    client_id TEXT,
+    type TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK (status IN ('queued', 'processed', 'failed')),
+    created_at TEXT NOT NULL,
+    processed_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS system_health_checks (
+    key TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    checked_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
   CREATE INDEX IF NOT EXISTS idx_users_role_status ON users(role, status);
@@ -432,3 +568,11 @@
   CREATE INDEX IF NOT EXISTS idx_ad_events_campaign_type ON ad_events(campaign_id, event_type);
   CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_payment_webhooks_provider ON payment_webhooks(provider, processed_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_provider_credentials_provider ON provider_credentials(provider, enabled);
+  CREATE INDEX IF NOT EXISTS idx_subscription_events_subscription ON subscription_events(subscription_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_dunning_status_next ON subscription_dunning(status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_payout_transfers_payout ON payout_transfers(payout_id, status);
+  CREATE INDEX IF NOT EXISTS idx_background_jobs_status_available ON background_jobs(status, available_at);
+  CREATE INDEX IF NOT EXISTS idx_media_variants_asset ON media_variants(media_asset_id);
+  CREATE INDEX IF NOT EXISTS idx_moderation_rules_kind ON moderation_rules(kind, enabled);
+  CREATE INDEX IF NOT EXISTS idx_pwa_sync_user_status ON pwa_sync_queue(user_id, status);

@@ -439,6 +439,29 @@ function persistGatewaySettings() {
   });
 }
 
+function clientLocationHints() {
+  return {
+    locale: navigator.language || "",
+    languages: Array.isArray(navigator.languages) ? navigator.languages : [],
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+    currency: state.currency || "INR",
+  };
+}
+
+function paypalRestrictedForCurrentUser() {
+  if (state.user?.role === "admin") return false;
+  if (state.paymentPolicy?.paypalIndiaRestriction?.restricted) return true;
+  const hints = clientLocationHints();
+  const localeIndia = String(hints.locale || "").toLowerCase().endsWith("-in");
+  const languagesIndia = hints.languages.some((language) => String(language || "").toLowerCase().endsWith("-in") || String(language || "").toLowerCase() === "hi");
+  const timezoneIndia = ["Asia/Kolkata", "Asia/Calcutta"].includes(hints.timezone);
+  return localeIndia || languagesIndia || timezoneIndia;
+}
+
+function visiblePaymentGateways() {
+  return paymentGateways.filter((gateway) => gateway.id !== "paypal" || !paypalRestrictedForCurrentUser());
+}
+
 function loadSubscriptionPlans() {
   return defaultPlans;
 }
@@ -1079,6 +1102,7 @@ async function hydratePlatformState() {
     }
   }
   state.providerStatus = payload.providers || state.providerStatus;
+  state.paymentPolicy = payload.paymentPolicy || state.paymentPolicy;
   state.pushPublicKey = payload.pushPublicKey || "";
   state.socialAccounts = payload.socialAccounts || [];
   state.adCampaigns = payload.ads || state.adCampaigns;
@@ -1100,15 +1124,18 @@ async function hydratePlatformState() {
 async function loadAdminCommerceData() {
   if (state.user?.role !== "admin") return;
   try {
-    const [ads, discounts, payouts] = await Promise.all([
+    const [ads, discounts, payouts, credentials] = await Promise.all([
       apiRequest("/api/admin/ads"),
       apiRequest("/api/admin/discounts"),
       apiRequest("/api/admin/payouts"),
+      apiRequest("/api/admin/provider-credentials"),
     ]);
     state.adCampaigns = ads.campaigns || state.adCampaigns;
     state.discounts = discounts.discounts || [];
     state.adminPayouts = payouts.payouts || [];
     state.payoutAccounts = payouts.accounts || [];
+    state.providerCredentials = credentials.credentials || [];
+    state.providerStatus = credentials.providers || state.providerStatus;
   } catch (error) {
     state.userMessage = error.message;
   }
@@ -1408,6 +1435,7 @@ const state = {
     email: false,
     push: false,
   },
+  paymentPolicy: { paypalIndiaRestriction: { restricted: false, adminExempt: false, signals: [] } },
   pushPublicKey: "",
   socialAccounts: [],
   adCampaigns: [],
@@ -1417,6 +1445,8 @@ const state = {
   payoutAccounts: [],
   payoutAccount: null,
   payoutSummary: { availableAmount: 0, availableTips: [], payouts: [] },
+  providerCredentials: [],
+  providerTestMessage: "",
   checkoutDiscountCode: "",
   checkoutDiscount: null,
   gateway: "razorpay",
@@ -1794,7 +1824,7 @@ function advancedSearchResults() {
   const query = state.query.trim().toLowerCase();
   const filters = state.searchFilters;
   const key = searchRequestKey();
-  if (state.serverSearchKey === key && state.serverSearchResults.length) {
+  if (state.serverSearchKey === key) {
     const localBySlug = new Map(publishedStories().map((story) => [story.slug, story]));
     return state.serverSearchResults.map((result) => ({ ...(localBySlug.get(result.slug) || {}), ...result })).filter((story) => story.slug);
   }
@@ -1861,6 +1891,7 @@ async function runServerSearch(includeSuggestions = false) {
       state.serverSearchSuggestions = suggestions.suggestions || [];
     }
   } catch (error) {
+    if (state.serverSearchKey === key) state.serverSearchKey = "";
     state.searchStatus = `Local fallback: ${error.message}`;
   }
   render();
@@ -2142,7 +2173,8 @@ async function enablePushNotifications() {
 }
 
 async function startGatewayPayment(plan, purchase = {}) {
-  const gateway = paymentGateways.find((item) => item.id === state.gateway) || paymentGateways[0];
+  const gateways = visiblePaymentGateways();
+  const gateway = gateways.find((item) => item.id === state.gateway) || gateways[0];
   if (!state.user) {
     state.checkoutPlan = null;
     state.loginOpen = true;
@@ -2164,6 +2196,7 @@ async function startGatewayPayment(plan, purchase = {}) {
         provider: gateway.id,
         amount: Math.round(convertedAmount(plan.price) * 100),
         currency: state.currency,
+        clientHints: clientLocationHints(),
         discountCode: state.checkoutDiscountCode,
         purpose: purchase.purpose || `${plan.name} membership`,
         metadata: { planId: plan.id, planName: plan.name, period: plan.period, ...(purchase.metadata || {}) },
@@ -2235,7 +2268,8 @@ async function startGatewayPayment(plan, purchase = {}) {
 }
 
 async function startTipPayment(story) {
-  const gateway = paymentGateways.find((item) => item.id === state.gateway) || paymentGateways[0];
+  const gateways = visiblePaymentGateways();
+  const gateway = gateways.find((item) => item.id === state.gateway) || gateways[0];
   if (!state.user) {
     state.loginOpen = true;
     state.loginMessage = "Sign in before sending a tip.";
@@ -2254,6 +2288,7 @@ async function startTipPayment(story) {
         provider: gateway.id,
         amount: Math.round(convertedAmount(state.tipAmount) * 100),
         currency: state.currency,
+        clientHints: clientLocationHints(),
         purpose: `Tip for ${story.title}`,
         metadata: {
           kind: "tip",
@@ -3077,7 +3112,7 @@ function recommendationTransparencyTemplate(story) {
 }
 
 function writerTipTemplate(story) {
-  return `<section class="writer-tip"><div><span>${icon("money", 19)}</span><div><h2>Support ${escapeHtml(story.author)}</h2><p>Send a one-time tip. ${state.creatorTools.tipCommission}% supports platform operations; the rest is included in the writer's next payout.</p></div></div><div class="tip-amounts">${[100,200,500,1000].map((amount) => `<button class="${state.tipAmount === amount ? "active" : ""}" data-tip-amount="${amount}">${formatINR(amount)}</button>`).join("")}</div><button class="primary-button" data-tip-story="${story.slug}">Tip with ${paymentGateways.find((gateway) => gateway.id === state.gateway)?.name || "Razorpay"}</button>${state.tipMessage && state.tipStory === story.slug ? `<span>${escapeHtml(state.tipMessage)}</span>` : ""}</section>`;
+  return `<section class="writer-tip"><div><span>${icon("money", 19)}</span><div><h2>Support ${escapeHtml(story.author)}</h2><p>Send a one-time tip. ${state.creatorTools.tipCommission}% supports platform operations; the rest is included in the writer's next payout.</p></div></div><div class="tip-amounts">${[100,200,500,1000].map((amount) => `<button class="${state.tipAmount === amount ? "active" : ""}" data-tip-amount="${amount}">${formatINR(amount)}</button>`).join("")}</div><button class="primary-button" data-tip-story="${story.slug}">Tip with ${visiblePaymentGateways().find((gateway) => gateway.id === state.gateway)?.name || visiblePaymentGateways()[0]?.name || "Razorpay"}</button>${state.tipMessage && state.tipStory === story.slug ? `<span>${escapeHtml(state.tipMessage)}</span>` : ""}</section>`;
 }
 
 function interactiveBlocksTemplate(story) {
@@ -3232,7 +3267,7 @@ function pricingTemplate() {
         `).join("")}
       </section>
       <section class="gateway-strip">
-        ${paymentGateways.map((item) => `<div>${icon("card")}<strong>${item.name}</strong><span>${item.type}</span></div>`).join("")}
+        ${visiblePaymentGateways().map((item) => `<div>${icon("card")}<strong>${item.name}</strong><span>${item.type}</span></div>`).join("")}
       </section>
     </main>
   `;
@@ -3733,7 +3768,7 @@ function creatorCommerceTemplate() {
     <section class="creator-workspace commerce-workspace">
       <div class="commerce-columns">
         <section><header><div><h2>Gifts and promotions</h2><p>Trials, coupons, student, corporate, and regional offers.</p></div><button class="primary-button" data-action="create-promotion">New offer</button></header><div class="promotion-list">${state.creatorTools.promotions.map((promo) => `<article><span><strong>${promo.id}</strong><small>${promo.kind} · ${promo.audience}</small></span><b>${promo.value}</b><span>${promo.uses.toLocaleString("en-IN")} uses</span><button class="toggle ${promo.active ? "active" : ""}" data-toggle-promo="${promo.id}" aria-label="Toggle ${promo.id}"><span></span></button></article>`).join("")}</div><div class="gift-membership"><span>${icon("card", 20)}</span><div><strong>Gift memberships</strong><p>Send 1, 3, 6, or 12 months with a personalized message and scheduled delivery.</p></div><button class="secondary-button" data-action="gift-preview">Preview flow</button></div></section>
-        <section class="tip-settings"><h2>Writer tipping</h2><p>Accept one-time reader support through enabled payment gateways.</p><label class="checkbox-field"><input type="checkbox" id="tipsEnabled" ${state.creatorTools.tipsEnabled ? "checked" : ""}><span>Enable tips on articles</span></label><label><span>Platform commission</span><div class="number-affix"><input id="tipCommission" type="number" min="0" max="30" value="${state.creatorTools.tipCommission}"><b>%</b></div></label><div class="tip-example"><span>INR 500 reader tip</span><strong>Writer receives ${formatINR(500 * (1 - state.creatorTools.tipCommission / 100))}</strong><small>Platform commission ${formatINR(500 * state.creatorTools.tipCommission / 100)} before gateway fees.</small></div><div class="gateway-mini-list">${paymentGateways.map((gateway) => `<span>${icon("card", 14)}${gateway.name}</span>`).join("")}</div><button class="primary-button" data-action="save-tip-settings">Save payout rules</button></section>
+        <section class="tip-settings"><h2>Writer tipping</h2><p>Accept one-time reader support through enabled payment gateways.</p><label class="checkbox-field"><input type="checkbox" id="tipsEnabled" ${state.creatorTools.tipsEnabled ? "checked" : ""}><span>Enable tips on articles</span></label><label><span>Platform commission</span><div class="number-affix"><input id="tipCommission" type="number" min="0" max="30" value="${state.creatorTools.tipCommission}"><b>%</b></div></label><div class="tip-example"><span>INR 500 reader tip</span><strong>Writer receives ${formatINR(500 * (1 - state.creatorTools.tipCommission / 100))}</strong><small>Platform commission ${formatINR(500 * state.creatorTools.tipCommission / 100)} before gateway fees.</small></div><div class="gateway-mini-list">${visiblePaymentGateways().map((gateway) => `<span>${icon("card", 14)}${gateway.name}</span>`).join("")}</div><button class="primary-button" data-action="save-tip-settings">Save payout rules</button></section>
       </div>
     </section>
   `;
@@ -4501,10 +4536,12 @@ function subscriptionManagerTemplate() {
 }
 
 function gatewaySettingsTemplate() {
+  const credentialRows = state.providerCredentials || [];
+  const providerTests = ["razorpay", "paypal", "payu", "cashfree", "openai", "email", "push", "google", "facebook"];
   return `
     <div class="work-panel gateway-settings-panel">
       <div class="panel-title">${icon("card")}<h2>Provider configuration</h2></div>
-      <p class="settings-note">Production credentials are read from server environment variables. Secrets are never exposed to this page or browser storage.</p>
+      <p class="settings-note">Production credentials can be read from server environment variables or stored in the encrypted provider vault. Secret values are never exposed back to the browser.</p>
       <div class="gateway-settings-grid">
         <fieldset class="gateway-fieldset social-auth-fieldset">
           <legend>Social login</legend>
@@ -4539,6 +4576,15 @@ function gatewaySettingsTemplate() {
           </label>
         </fieldset>
       </div>
+      <section class="credential-vault">
+        <div class="panel-title">${icon("lock", 16)}<h3>Encrypted API key vault</h3></div>
+        <div class="settings-actions">
+          <button class="primary-button" data-action="add-provider-credential">Add credential</button>
+          ${providerTests.map((provider) => `<button class="secondary-button" data-test-provider="${provider}">Test ${provider}</button>`).join("")}
+        </div>
+        ${state.providerTestMessage ? `<div class="payment-message">${escapeHtml(state.providerTestMessage)}</div>` : ""}
+        <div class="promotion-list">${credentialRows.length ? credentialRows.map((item) => `<article><span><strong>${escapeHtml(item.provider)} · ${escapeHtml(item.key)}</strong><small>${escapeHtml(item.environment || "production")} · ${item.enabled ? "enabled" : "disabled"} · ${escapeHtml(item.updatedAt || "")}</small></span><b>${item.configured ? "Stored" : "Missing"}</b></article>`).join("") : `<div class="empty-state">No encrypted provider credentials have been saved yet.</div>`}</div>
+      </section>
       <div class="settings-actions">
         <button class="primary-button" data-action="save-gateway-settings">Save public provider preferences</button>
         <button class="secondary-button" data-action="refresh-rates">Test currency API</button>
@@ -4562,7 +4608,7 @@ function discountManagerTemplate() {
 }
 
 function payoutManagerTemplate() {
-  return `<div class="work-panel"><div class="panel-title">${icon("money")}<h2>Writer payouts</h2></div><p class="settings-note">Verified payout accounts can be batched from paid tips and tracked through processing states.</p><div class="settings-actions"><button class="primary-button" data-action="create-payout">Create payout batch</button></div><div class="member-two-column"><div><h3>Payout accounts</h3><div class="promotion-list">${state.payoutAccounts.length ? state.payoutAccounts.map((account) => `<article><span><strong>${escapeHtml(account.name || account.account_holder)}</strong><small>${escapeHtml(account.email || "")} · ${escapeHtml(account.bank_name || "Provider")} · ${escapeHtml(String(account.status || "").replaceAll("_", " "))}</small></span><button class="secondary-button" data-verify-payout-account="${account.user_id}" ${account.status === "verified" ? "disabled" : ""}>${account.status === "verified" ? "Verified" : "Verify"}</button></article>`).join("") : `<div class="empty-state">Writers will appear here after they add payout details.</div>`}</div></div><div><h3>Payout batches</h3><div class="promotion-list">${state.adminPayouts.length ? state.adminPayouts.map((payout) => `<article><span><strong>${escapeHtml(payout.writer_name || payout.writer_user_id)}</strong><small>${escapeHtml(payout.id)} · ${new Date(payout.created_at).toLocaleDateString()}</small></span><b>${formatINR(Number(payout.amount || 0) / 100)}</b><select data-payout-status="${payout.id}">${["pending", "processing", "paid", "failed", "cancelled"].map((status) => `<option value="${status}" ${payout.status === status ? "selected" : ""}>${status}</option>`).join("")}</select></article>`).join("") : `<div class="empty-state">No payout batches have been created yet.</div>`}</div></div></div></div>`;
+  return `<div class="work-panel"><div class="panel-title">${icon("money")}<h2>Writer payouts</h2></div><p class="settings-note">Verified payout accounts can be batched from paid tips and sent through a configured payout provider.</p><div class="settings-actions"><button class="primary-button" data-action="create-payout">Create payout batch</button></div><div class="member-two-column"><div><h3>Payout accounts</h3><div class="promotion-list">${state.payoutAccounts.length ? state.payoutAccounts.map((account) => `<article><span><strong>${escapeHtml(account.name || account.account_holder)}</strong><small>${escapeHtml(account.email || "")} · ${escapeHtml(account.bank_name || "Provider")} · ${escapeHtml(String(account.status || "").replaceAll("_", " "))}</small></span><button class="secondary-button" data-verify-payout-account="${account.user_id}" ${account.status === "verified" ? "disabled" : ""}>${account.status === "verified" ? "Verified" : "Verify"}</button></article>`).join("") : `<div class="empty-state">Writers will appear here after they add payout details.</div>`}</div></div><div><h3>Payout batches</h3><div class="promotion-list">${state.adminPayouts.length ? state.adminPayouts.map((payout) => `<article><span><strong>${escapeHtml(payout.writer_name || payout.writer_user_id)}</strong><small>${escapeHtml(payout.id)} · ${new Date(payout.created_at).toLocaleDateString()}</small></span><b>${formatINR(Number(payout.amount || 0) / 100)}</b><select data-payout-status="${payout.id}">${["pending", "processing", "paid", "failed", "cancelled"].map((status) => `<option value="${status}" ${payout.status === status ? "selected" : ""}>${status}</option>`).join("")}</select><button class="secondary-button" data-execute-payout="${payout.id}" ${["paid", "processing"].includes(payout.status) ? "disabled" : ""}>Execute</button></article>`).join("") : `<div class="empty-state">No payout batches have been created yet.</div>`}</div></div></div></div>`;
 }
 
 function translationManagerTemplate() {
@@ -4606,7 +4652,8 @@ function recordAdEvent(campaignId, eventType, placement, storySlug = "") {
 }
 
 function checkoutTemplate(plan) {
-  const gateway = paymentGateways.find((item) => item.id === state.gateway) || paymentGateways[0];
+  const gateways = visiblePaymentGateways();
+  const gateway = gateways.find((item) => item.id === state.gateway) || gateways[0];
   const configured = Boolean(state.providerStatus.payments[gateway.id]);
   return `
     <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
@@ -4616,7 +4663,7 @@ function checkoutTemplate(plan) {
         <p>${plan.name} plan - ${formatMoneyFromINR(plan.price)}/${plan.period}. Converted from INR in real time.</p>
         ${currencyControlTemplate("checkout")}
         <div class="gateway-list">
-          ${paymentGateways.map((item) => `
+          ${gateways.map((item) => `
             <button class="gateway-card ${state.gateway === item.id ? "active" : ""}" data-gateway="${item.id}">
               ${icon("card")}<span><strong>${item.name}</strong><small>${item.type}</small></span>
             </button>
@@ -4636,6 +4683,7 @@ function checkoutTemplate(plan) {
           <span>Gateway</span><strong>${gateway.name}</strong>
           <span>Tax mode</span><strong>Calculated by provider</strong>
         </div>
+        ${paypalRestrictedForCurrentUser() ? `<div class="payment-message">PayPal is not available for India. Please use Razorpay, PayU, or Cashfree.</div>` : ""}
         <button class="primary-button wide-button" data-payment-submit="${plan.id}" ${configured ? "" : "disabled"}>${configured ? "Continue to gateway" : "Gateway not configured"}</button>
       </section>
     </div>
@@ -5293,6 +5341,7 @@ document.addEventListener("click", async (event) => {
   const toggleAd = target.dataset.toggleAd;
   const toggleDiscount = target.dataset.toggleDiscount;
   const verifyPayoutAccount = target.dataset.verifyPayoutAccount;
+  const executePayout = target.dataset.executePayout;
   const removeTranslationLanguage = target.dataset.removeTranslationLanguage;
   const addRule = target.dataset.addRule;
   const previewSegment = target.dataset.previewSegment;
@@ -5303,6 +5352,7 @@ document.addEventListener("click", async (event) => {
   const sessionRevoke = target.dataset.sessionRevoke;
   const adClick = target.dataset.adClick;
   const adUrl = target.dataset.adUrl;
+  const testProvider = target.dataset.testProvider;
 
   if (dashboardSection) {
     const allowed = new Set(dashboardNavItems(state.user?.role || "reader").map((item) => item[2]));
@@ -5313,6 +5363,38 @@ document.addEventListener("click", async (event) => {
   if (adClick) {
     recordAdEvent(adClick, "click", "", state.path.startsWith("/stories/") ? state.path.split("/").pop() : "");
     if (adUrl && adUrl !== "#") window.open(adUrl, "_blank", "noopener,noreferrer");
+  }
+
+  if (executePayout) {
+    try {
+      const payload = await apiRequest(`/api/admin/payouts/${encodeURIComponent(executePayout)}/execute`, {
+        method: "POST",
+        body: "{}",
+      });
+      state.userMessage = `Payout transfer ${payload.transferId || executePayout} marked ${payload.status || "processing"}.`;
+      await loadAdminCommerceData();
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (testProvider) {
+    try {
+      state.providerTestMessage = `Testing ${testProvider}...`;
+      render();
+      const payload = await apiRequest("/api/admin/providers/test", {
+        method: "POST",
+        body: JSON.stringify({ provider: testProvider }),
+      });
+      state.providerTestMessage = payload.ready
+        ? `${testProvider} connection passed (${payload.mode || "configured"}).`
+        : `${testProvider} connection failed: ${payload.error || "not configured"}`;
+      await loadAdminCommerceData();
+    } catch (error) {
+      state.providerTestMessage = error.message;
+    }
+    render();
   }
 
   if (authMode) {
@@ -5665,6 +5747,7 @@ document.addEventListener("click", async (event) => {
   }
   if (checkout) {
     state.checkoutPlan = state.plans.find((plan) => plan.id === checkout);
+    if (!visiblePaymentGateways().some((item) => item.id === state.gateway)) state.gateway = visiblePaymentGateways()[0]?.id || "razorpay";
     state.paymentMessage = "";
     render();
   }
@@ -5722,6 +5805,11 @@ document.addEventListener("click", async (event) => {
     deleteUser(deleteUserId);
   }
   if (gateway) {
+    if (!visiblePaymentGateways().some((item) => item.id === gateway)) {
+      state.paymentMessage = "That payment gateway is not available for your location.";
+      render();
+      return;
+    }
     state.gateway = gateway;
     state.paymentMessage = "";
     render();
@@ -5990,11 +6078,31 @@ document.addEventListener("click", async (event) => {
   if (action === "run-translation-backfill") {
     try {
       const payload = await apiRequest("/api/admin/translations/run", { method: "POST", body: "{}" });
-      state.userMessage = `${payload.queued || 0} published articles queued for translation. Refresh after processing completes.`;
+      state.userMessage = `Translation job queued: ${payload.jobId || "pending"}. Run background jobs or wait for cron processing.`;
     } catch (error) {
       state.userMessage = error.message;
     }
     render();
+  }
+  if (action === "add-provider-credential") {
+    const provider = window.prompt("Provider id, for example razorpay, paypal, cashfree, payu, openai, email, push, google, facebook, payouts:");
+    const key = provider?.trim() ? window.prompt("Credential key, for example key_id, key_secret, client_id, api_key, webhook_secret:") : "";
+    const value = key?.trim() ? window.prompt("Secret value. It will be encrypted on the server and never shown again:") : "";
+    const environment = value?.trim() ? window.prompt("Environment label:", "production") || "production" : "production";
+    if (provider?.trim() && key?.trim() && value?.trim()) {
+      try {
+        const payload = await apiRequest("/api/admin/provider-credentials", {
+          method: "PUT",
+          body: JSON.stringify({ provider: provider.trim(), key: key.trim(), value, environment, enabled: true }),
+        });
+        state.providerCredentials = payload.credentials || state.providerCredentials;
+        state.providerStatus = payload.providers || state.providerStatus;
+        state.providerTestMessage = `${provider.trim()} · ${key.trim()} saved in the encrypted vault.`;
+      } catch (error) {
+        state.providerTestMessage = error.message;
+      }
+      render();
+    }
   }
   if (action === "add-translation-language") {
     const language = window.prompt("Language name, for example French:");

@@ -11,18 +11,18 @@ function provider_status(): array
 {
     return [
         'payments' => [
-            'razorpay' => (bool) (getenv('RAZORPAY_KEY_ID') && getenv('RAZORPAY_KEY_SECRET')),
-            'paypal' => (bool) (getenv('PAYPAL_CLIENT_ID') && getenv('PAYPAL_CLIENT_SECRET')),
-            'payu' => (bool) (getenv('PAYU_MERCHANT_KEY') && getenv('PAYU_SALT')),
-            'cashfree' => (bool) (getenv('CASHFREE_CLIENT_ID') && getenv('CASHFREE_CLIENT_SECRET')),
+            'razorpay' => (bool) (provider_config_value('RAZORPAY_KEY_ID', 'razorpay', 'key_id') && provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret')),
+            'paypal' => (bool) (provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') && provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')),
+            'payu' => (bool) (provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key') && provider_config_value('PAYU_SALT', 'payu', 'salt')),
+            'cashfree' => (bool) (provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id') && provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret')),
         ],
         'social' => [
-            'google' => (bool) (getenv('GOOGLE_CLIENT_ID') && getenv('GOOGLE_CLIENT_SECRET')),
-            'facebook' => (bool) (getenv('FACEBOOK_APP_ID') && getenv('FACEBOOK_APP_SECRET')),
+            'google' => (bool) (provider_config_value('GOOGLE_CLIENT_ID', 'google', 'client_id') && provider_config_value('GOOGLE_CLIENT_SECRET', 'google', 'client_secret')),
+            'facebook' => (bool) (provider_config_value('FACEBOOK_APP_ID', 'facebook', 'app_id') && provider_config_value('FACEBOOK_APP_SECRET', 'facebook', 'app_secret')),
         ],
-        'ai' => (bool) (getenv('OPENAI_API_KEY') || (getenv('AI_API_URL') && getenv('AI_API_KEY'))),
-        'email' => (bool) (getenv('EMAIL_API_URL') && getenv('EMAIL_API_KEY')),
-        'push' => (bool) (getenv('VAPID_PUBLIC_KEY') && getenv('VAPID_PRIVATE_KEY')),
+        'ai' => (bool) (provider_config_value('OPENAI_API_KEY', 'openai', 'api_key') || (provider_config_value('AI_API_URL', 'ai', 'api_url') && provider_config_value('AI_API_KEY', 'ai', 'api_key'))),
+        'email' => (bool) (provider_config_value('EMAIL_API_URL', 'email', 'api_url') && provider_config_value('EMAIL_API_KEY', 'email', 'api_key')),
+        'push' => (bool) ((provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key') && provider_config_value('VAPID_PRIVATE_KEY', 'push', 'vapid_private_key')) || (provider_config_value('WEB_PUSH_API_URL', 'push', 'api_url') && provider_config_value('WEB_PUSH_API_KEY', 'push', 'api_key'))),
     ];
 }
 
@@ -32,6 +32,133 @@ function document_value(string $key, mixed $fallback): mixed
     $stmt->execute([$key]);
     $row = $stmt->fetch();
     return $row ? parse_json_field($row['value_json'], $fallback) : $fallback;
+}
+
+function credential_crypto_key(): string
+{
+    return hash('sha256', env_value('APP_SECRET', env_value('APP_KEY', database_path())) ?? database_path(), true);
+}
+
+function encrypt_secret_value(string $value): string
+{
+    $iv = random_bytes(16);
+    $cipher = openssl_encrypt($value, 'aes-256-cbc', credential_crypto_key(), OPENSSL_RAW_DATA, $iv);
+    if ($cipher === false) throw new RuntimeException('Unable to encrypt credential.');
+    $mac = hash_hmac('sha256', $iv . $cipher, credential_crypto_key(), true);
+    return base64_encode(json_encode([
+        'iv' => base64_encode($iv),
+        'mac' => base64_encode($mac),
+        'value' => base64_encode($cipher),
+    ], JSON_UNESCAPED_SLASHES));
+}
+
+function decrypt_secret_value(string $stored): string
+{
+    $decoded = json_decode(base64_decode($stored, true) ?: '', true);
+    if (!is_array($decoded)) return '';
+    $iv = base64_decode((string) ($decoded['iv'] ?? ''), true) ?: '';
+    $mac = base64_decode((string) ($decoded['mac'] ?? ''), true) ?: '';
+    $cipher = base64_decode((string) ($decoded['value'] ?? ''), true) ?: '';
+    if (!$iv || !$cipher || !hash_equals($mac, hash_hmac('sha256', $iv . $cipher, credential_crypto_key(), true))) return '';
+    $plain = openssl_decrypt($cipher, 'aes-256-cbc', credential_crypto_key(), OPENSSL_RAW_DATA, $iv);
+    return is_string($plain) ? $plain : '';
+}
+
+function provider_config_value(string $envKey, string $provider, string $key, ?string $fallback = null): ?string
+{
+    $env = env_value($envKey);
+    if ($env !== null) return $env;
+    try {
+        $stmt = Database::pdo()->prepare('SELECT value_encrypted FROM provider_credentials WHERE provider = ? AND key = ? AND enabled = 1');
+        $stmt->execute([$provider, $key]);
+        $row = $stmt->fetch();
+        if ($row) {
+            $value = decrypt_secret_value((string) $row['value_encrypted']);
+            if ($value !== '') return $value;
+        }
+    } catch (Throwable) {
+        return $fallback;
+    }
+    return $fallback;
+}
+
+function provider_credential_summary(): array
+{
+    $rows = Database::pdo()->query('SELECT provider, key, environment, enabled, updated_at FROM provider_credentials ORDER BY provider, key')->fetchAll();
+    return array_map(fn($row) => [
+        'provider' => $row['provider'],
+        'key' => $row['key'],
+        'environment' => $row['environment'],
+        'enabled' => (bool) $row['enabled'],
+        'configured' => true,
+        'updatedAt' => $row['updated_at'],
+    ], $rows);
+}
+
+function request_ip_address(): string
+{
+    foreach (['HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR'] as $key) {
+        $value = trim((string) ($_SERVER[$key] ?? ''));
+        if ($value === '') continue;
+        $ip = trim(explode(',', $value)[0]);
+        if (filter_var($ip, FILTER_VALIDATE_IP)) return $ip;
+    }
+    return '';
+}
+
+function india_detection_signals(array $clientHints = []): array
+{
+    $signals = [];
+    $countryHeaders = [
+        'HTTP_CF_IPCOUNTRY',
+        'HTTP_X_VERCEL_IP_COUNTRY',
+        'HTTP_CLOUDFRONT_VIEWER_COUNTRY',
+        'HTTP_X_APP_COUNTRY',
+        'HTTP_X_COUNTRY_CODE',
+        'GEOIP_COUNTRY_CODE',
+    ];
+    foreach ($countryHeaders as $header) {
+        $value = strtoupper(trim((string) ($_SERVER[$header] ?? '')));
+        if ($value !== '') $signals[] = ['source' => $header, 'value' => $value, 'india' => $value === 'IN'];
+    }
+
+    $acceptLanguage = strtolower((string) ($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? ''));
+    if ($acceptLanguage !== '') $signals[] = ['source' => 'HTTP_ACCEPT_LANGUAGE', 'value' => $acceptLanguage, 'india' => (bool) preg_match('/\b[a-z]{2}-in\b|\bhi\b|\bta-in\b|\bte-in\b|\bnb-in\b|\bmr-in\b/', $acceptLanguage)];
+
+    $locale = strtolower((string) ($clientHints['locale'] ?? ''));
+    if ($locale !== '') $signals[] = ['source' => 'client.locale', 'value' => $locale, 'india' => str_ends_with($locale, '-in') || $locale === 'hi'];
+
+    $languages = strtolower(implode(',', is_array($clientHints['languages'] ?? null) ? $clientHints['languages'] : []));
+    if ($languages !== '') $signals[] = ['source' => 'client.languages', 'value' => $languages, 'india' => (bool) preg_match('/\b[a-z]{2}-in\b|\bhi\b|\bta-in\b|\bte-in\b|\bnb-in\b|\bmr-in\b/', $languages)];
+
+    $timezone = strtolower((string) ($clientHints['timezone'] ?? ''));
+    if ($timezone !== '') $signals[] = ['source' => 'client.timezone', 'value' => $timezone, 'india' => $timezone === 'asia/kolkata' || $timezone === 'asia/calcutta'];
+
+    $geoUrl = provider_config_value('IP_INTELLIGENCE_API_URL', 'geoip', 'api_url');
+    $geoKey = provider_config_value('IP_INTELLIGENCE_API_KEY', 'geoip', 'api_key');
+    $ip = request_ip_address();
+    if ($geoUrl && $geoKey && $ip) {
+        try {
+            $result = http_request_json(str_replace('{ip}', rawurlencode($ip), $geoUrl), [
+                'headers' => ['Authorization' => 'Bearer ' . $geoKey],
+                'timeout' => 4,
+            ]);
+            $country = strtoupper((string) ($result['country'] ?? $result['country_code'] ?? $result['countryCode'] ?? ''));
+            $isProxy = (bool) ($result['proxy'] ?? $result['vpn'] ?? $result['hosting'] ?? $result['threat']['is_proxy'] ?? false);
+            if ($country !== '') $signals[] = ['source' => 'ip_intelligence', 'value' => $country . ($isProxy ? ':proxy' : ''), 'india' => $country === 'IN'];
+        } catch (Throwable) {
+            $signals[] = ['source' => 'ip_intelligence', 'value' => 'unavailable', 'india' => false];
+        }
+    }
+    return $signals;
+}
+
+function paypal_restricted_for_india(?array $session = null, array $clientHints = []): array
+{
+    if (($session['user']['role'] ?? '') === 'admin') return ['restricted' => false, 'adminExempt' => true, 'signals' => []];
+    $signals = india_detection_signals($clientHints);
+    $india = array_values(array_filter($signals, fn($signal) => !empty($signal['india'])));
+    return ['restricted' => count($india) > 0, 'adminExempt' => false, 'signals' => $signals];
 }
 
 function active_ads(): array
@@ -209,10 +336,10 @@ function verify_totp_value(string $secret, string $code): bool
 function send_email_message(string $to, string $subject, array $payload): bool
 {
     if (!provider_status()['email']) return false;
-    http_request_json((string) getenv('EMAIL_API_URL'), [
+    http_request_json((string) provider_config_value('EMAIL_API_URL', 'email', 'api_url'), [
         'method' => 'POST',
         'headers' => [
-            'Authorization' => 'Bearer ' . getenv('EMAIL_API_KEY'),
+            'Authorization' => 'Bearer ' . provider_config_value('EMAIL_API_KEY', 'email', 'api_key'),
             'Content-Type' => 'application/json',
         ],
         'body' => json_encode(['to' => $to, 'subject' => $subject, 'data' => $payload], JSON_UNESCAPED_SLASHES),
@@ -222,6 +349,14 @@ function send_email_message(string $to, string $subject, array $payload): bool
 
 function public_media_asset(array $row): array
 {
+    $variants = [];
+    try {
+        $stmt = Database::pdo()->prepare('SELECT variant, url, mime_type, width, height, size_bytes FROM media_variants WHERE media_asset_id = ? ORDER BY width ASC');
+        $stmt->execute([$row['id']]);
+        $variants = $stmt->fetchAll();
+    } catch (Throwable) {
+        $variants = [];
+    }
     return [
         'id' => $row['id'],
         'originalName' => $row['original_name'],
@@ -231,6 +366,7 @@ function public_media_asset(array $row): array
         'width' => $row['width'] === null ? null : (int) $row['width'],
         'height' => $row['height'] === null ? null : (int) $row['height'],
         'altText' => $row['alt_text'],
+        'variants' => $variants,
         'createdAt' => $row['created_at'],
     ];
 }
@@ -287,20 +423,24 @@ function send_push_message(array $subscription, array $payload): bool
     $subscriptionJson = parse_json_field($subscription['subscription_json'] ?? '{}', []);
     $endpoint = (string) ($subscriptionJson['endpoint'] ?? $subscription['endpoint'] ?? '');
     if ($endpoint === '') return false;
-    if (getenv('WEB_PUSH_API_URL') && getenv('WEB_PUSH_API_KEY')) {
-        http_request_json((string) getenv('WEB_PUSH_API_URL'), [
+    $pushApiUrl = provider_config_value('WEB_PUSH_API_URL', 'push', 'api_url');
+    $pushApiKey = provider_config_value('WEB_PUSH_API_KEY', 'push', 'api_key');
+    if ($pushApiUrl && $pushApiKey) {
+        http_request_json($pushApiUrl, [
             'method' => 'POST',
             'headers' => [
-                'Authorization' => 'Bearer ' . getenv('WEB_PUSH_API_KEY'),
+                'Authorization' => 'Bearer ' . $pushApiKey,
                 'Content-Type' => 'application/json',
             ],
             'body' => json_encode(['subscription' => $subscriptionJson, 'payload' => $payload], JSON_UNESCAPED_SLASHES),
         ]);
         return true;
     }
-    if (!getenv('VAPID_PRIVATE_KEY') || !getenv('VAPID_PUBLIC_KEY')) return false;
+    $vapidPrivate = provider_config_value('VAPID_PRIVATE_KEY', 'push', 'vapid_private_key');
+    $vapidPublic = provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key');
+    if (!$vapidPrivate || !$vapidPublic) return false;
     $audience = parse_url($endpoint, PHP_URL_SCHEME) . '://' . parse_url($endpoint, PHP_URL_HOST);
-    $privateKey = str_replace(['-', '_'], ['+', '/'], (string) getenv('VAPID_PRIVATE_KEY'));
+    $privateKey = str_replace(['-', '_'], ['+', '/'], $vapidPrivate);
     $privateKey = str_pad($privateKey, strlen($privateKey) + (4 - strlen($privateKey) % 4) % 4, '=');
     $pem = "-----BEGIN EC PRIVATE KEY-----\n" . chunk_split($privateKey, 64, "\n") . "-----END EC PRIVATE KEY-----\n";
     $jwtHeader = base64url_encode_value(json_encode(['typ' => 'JWT', 'alg' => 'ES256']));
@@ -310,7 +450,7 @@ function send_push_message(array $subscription, array $payload): bool
     $jwt = $jwtHeader . '.' . $jwtBody . '.' . base64url_encode_value(ecdsa_der_to_raw($signature));
     $headers = [
         'Authorization' => 'WebPush ' . $jwt,
-        'Crypto-Key' => 'p256ecdsa=' . getenv('VAPID_PUBLIC_KEY'),
+        'Crypto-Key' => 'p256ecdsa=' . $vapidPublic,
         'TTL' => '3600',
         'Content-Length' => '0',
     ];
@@ -320,18 +460,19 @@ function send_push_message(array $subscription, array $payload): bool
 
 function openai_text_response(string $prompt, string $system = 'You are a careful editorial assistant.'): string
 {
-    if (getenv('OPENAI_API_KEY')) {
+    $openaiKey = provider_config_value('OPENAI_API_KEY', 'openai', 'api_key');
+    if ($openaiKey) {
         $payload = [
-            'model' => getenv('OPENAI_MODEL') ?: 'gpt-4.1-mini',
+            'model' => provider_config_value('OPENAI_MODEL', 'openai', 'model', 'gpt-4.1-mini'),
             'input' => [
                 ['role' => 'system', 'content' => [['type' => 'input_text', 'text' => $system]]],
                 ['role' => 'user', 'content' => [['type' => 'input_text', 'text' => $prompt]]],
             ],
         ];
-        $result = http_request_json(getenv('OPENAI_API_URL') ?: 'https://api.openai.com/v1/responses', [
+        $result = http_request_json(provider_config_value('OPENAI_API_URL', 'openai', 'api_url', 'https://api.openai.com/v1/responses') ?: 'https://api.openai.com/v1/responses', [
             'method' => 'POST',
             'headers' => [
-                'Authorization' => 'Bearer ' . getenv('OPENAI_API_KEY'),
+                'Authorization' => 'Bearer ' . $openaiKey,
                 'Content-Type' => 'application/json',
             ],
             'body' => json_encode($payload, JSON_UNESCAPED_SLASHES),
@@ -347,10 +488,10 @@ function openai_text_response(string $prompt, string $system = 'You are a carefu
         return trim($text);
     }
 
-    $result = http_request_json((string) getenv('AI_API_URL'), [
+    $result = http_request_json((string) provider_config_value('AI_API_URL', 'ai', 'api_url'), [
         'method' => 'POST',
         'headers' => [
-            'Authorization' => 'Bearer ' . getenv('AI_API_KEY'),
+            'Authorization' => 'Bearer ' . provider_config_value('AI_API_KEY', 'ai', 'api_key'),
             'Content-Type' => 'application/json',
         ],
         'body' => json_encode(['prompt' => $prompt, 'system' => $system], JSON_UNESCAPED_SLASHES),
@@ -488,13 +629,33 @@ function fts_query(string $query): string
     return implode(' ', array_slice($clean, 0, 12));
 }
 
+function story_catalog_hash(array $stories): string
+{
+    $compact = [];
+    foreach ($stories as $story) {
+        if (($story['status'] ?? 'published') !== 'published' || empty($story['slug'])) continue;
+        $compact[] = [
+            'slug' => (string) $story['slug'],
+            'title' => (string) ($story['title'] ?? ''),
+            'dek' => (string) ($story['dek'] ?? ''),
+            'author' => (string) ($story['author'] ?? ''),
+            'publication' => (string) ($story['publication'] ?? $story['role'] ?? ''),
+            'topic' => (string) ($story['topic'] ?? ''),
+            'tags' => is_array($story['tags'] ?? null) ? array_values($story['tags']) : [],
+            'body' => story_plain_text($story),
+        ];
+    }
+    usort($compact, fn($a, $b) => $a['slug'] <=> $b['slug']);
+    return hash('sha256', json_encode($compact, JSON_UNESCAPED_SLASHES));
+}
+
 function rebuild_story_search_index(?array $stories = null): int
 {
     $pdo = Database::pdo();
     $stories ??= recommendation_story_catalog();
     try {
-        $pdo->exec('DROP TABLE IF EXISTS story_search_index');
         $pdo->exec("CREATE VIRTUAL TABLE IF NOT EXISTS story_search_index USING fts5(slug UNINDEXED, title, dek, author, publication, topic, tags, body, tokenize='unicode61 remove_diacritics 2')");
+        $pdo->exec('DELETE FROM story_search_index');
         $stmt = $pdo->prepare('INSERT INTO story_search_index (slug, title, dek, author, publication, topic, tags, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $count = 0;
         foreach ($stories as $story) {
@@ -511,10 +672,27 @@ function rebuild_story_search_index(?array $stories = null): int
             ]);
             $count++;
         }
+        $now = now_iso();
+        $meta = ['hash' => story_catalog_hash($stories), 'count' => $count, 'rebuiltAt' => $now];
+        $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+            ->execute(['search-index-meta', json_encode($meta, JSON_UNESCAPED_SLASHES), null, $now]);
         return $count;
     } catch (Throwable) {
         return 0;
     }
+}
+
+function ensure_story_search_index(array $stories): void
+{
+    $pdo = Database::pdo();
+    try {
+        $count = (int) $pdo->query("SELECT COUNT(*) AS count FROM story_search_index")->fetch()['count'];
+        $meta = document_value('search-index-meta', []);
+        if ($count > 0 && is_array($meta) && ($meta['hash'] ?? '') === story_catalog_hash($stories)) return;
+    } catch (Throwable) {
+        // Missing or incompatible FTS table. Rebuild once, then let the normal query path continue.
+    }
+    rebuild_story_search_index($stories);
 }
 
 function search_stories(array $params): array
@@ -523,7 +701,7 @@ function search_stories(array $params): array
     $stories = recommendation_story_catalog();
     $bySlug = [];
     foreach ($stories as $story) if (!empty($story['slug']) && (($story['status'] ?? 'published') === 'published')) $bySlug[$story['slug']] = $story;
-    rebuild_story_search_index($stories);
+    ensure_story_search_index($stories);
 
     $query = trim((string) ($params['q'] ?? ''));
     $topic = (string) ($params['topic'] ?? 'all');
@@ -770,27 +948,200 @@ function active_discount_for_payment(array $payment, array $metadata): ?array
     return ['row' => $discount, 'amount' => $off];
 }
 
+function normalize_segment_text(string $value): string
+{
+    return trim(strtolower(preg_replace('/\s+/', ' ', $value)));
+}
+
+function segment_rule_parts(mixed $rules): array
+{
+    if (is_array($rules)) {
+        $parts = [];
+        foreach ($rules as $rule) {
+            if (is_array($rule)) {
+                $kind = trim((string) ($rule['kind'] ?? $rule['field'] ?? ''));
+                $value = trim((string) ($rule['value'] ?? $rule['condition'] ?? ''));
+                if ($kind || $value) $parts[] = trim($kind . ' is ' . $value);
+            } elseif (trim((string) $rule) !== '') {
+                $parts[] = trim((string) $rule);
+            }
+        }
+        return $parts;
+    }
+    $text = trim((string) $rules);
+    if ($text === '') return [];
+    return array_values(array_filter(array_map('trim', preg_split('/[·;,]|(?:\s+\bAND\b\s+)/i', $text) ?: [])));
+}
+
+function segment_user_context(array $user, array $docs, array $events, ?array $subscription): array
+{
+    $profile = is_array($docs['recommendation-profile'] ?? null) ? $docs['recommendation-profile'] : [];
+    $preferences = is_array($docs['preferences'] ?? null) ? $docs['preferences'] : [];
+    $following = is_array($docs['following'] ?? null) ? $docs['following'] : [];
+    $history = is_array($docs['reading-history'] ?? null) ? $docs['reading-history'] : [];
+    $selectedInterests = is_array($profile['selectedInterests'] ?? null) ? $profile['selectedInterests'] : [];
+    $eventTypes = array_map(fn($event) => (string) ($event['event_type'] ?? ''), $events);
+    $eventBlob = json_encode($events, JSON_UNESCAPED_SLASHES) ?: '';
+    $docBlob = json_encode($docs, JSON_UNESCAPED_SLASHES) ?: '';
+    return [
+        'haystack' => normalize_segment_text(implode(' ', [
+            $user['id'] ?? '',
+            $user['name'] ?? '',
+            $user['email'] ?? '',
+            $user['role'] ?? '',
+            $user['subscription'] ?? '',
+            $subscription['plan_id'] ?? '',
+            $subscription['status'] ?? '',
+            $docBlob,
+            $eventBlob,
+        ])),
+        'interests' => array_map(fn($value) => normalize_segment_text((string) $value), $selectedInterests),
+        'subscription' => normalize_segment_text(($user['subscription'] ?? '') . ' ' . ($subscription['plan_id'] ?? '') . ' ' . ($subscription['status'] ?? '')),
+        'locale' => normalize_segment_text((string) ($preferences['locale'] ?? '')),
+        'eventTypes' => $eventTypes,
+        'completionCount' => count(array_filter($eventTypes, fn($type) => in_array($type, ['complete', 'read_complete'], true))),
+        'openCount' => count(array_filter($eventTypes, fn($type) => $type === 'open')),
+        'saveCount' => count(array_filter($eventTypes, fn($type) => $type === 'save')),
+        'shareCount' => count(array_filter($eventTypes, fn($type) => $type === 'share')),
+        'historyCount' => count($history),
+        'followingCount' => array_sum(array_map(fn($items) => is_array($items) ? count($items) : 0, $following)),
+        'lastEventAt' => $events[0]['created_at'] ?? null,
+    ];
+}
+
+function segment_rule_matches_context(string $rule, array $context): bool
+{
+    $rule = normalize_segment_text($rule);
+    if ($rule === '') return true;
+
+    if (preg_match('/^interest\s+(?:is|=)\s+(.+)$/', $rule, $m)) {
+        $needle = normalize_segment_text($m[1]);
+        return in_array($needle, $context['interests'], true) || str_contains($context['haystack'], $needle);
+    }
+    if (preg_match('/^plan\s+(?:is|=)\s+(.+)$/', $rule, $m)) {
+        return str_contains($context['subscription'], normalize_segment_text($m[1]));
+    }
+    if (str_contains($rule, 'free plan')) return str_contains($context['subscription'], 'free');
+    if (str_contains($rule, 'annual plan') || str_contains($rule, 'yearly plan')) return str_contains($context['subscription'], 'annual') || str_contains($context['subscription'], 'year');
+    if (preg_match('/^location\s+(?:is\s+)?(.+)$/', $rule, $m)) {
+        $needle = normalize_segment_text($m[1]);
+        return str_contains($context['haystack'], $needle) || ($needle === 'india' && str_contains($context['locale'], 'in'));
+    }
+    if (preg_match('/^source\s+(?:is\s+)?(.+)$/', $rule, $m)) return str_contains($context['haystack'], normalize_segment_text($m[1]));
+    if (preg_match('/^custom tag\s+(?:is\s+)?(.+)$/', $rule, $m)) return str_contains($context['haystack'], normalize_segment_text($m[1]));
+    if (preg_match('/(\d+)\s*\+\s*(completion|completions|complete reads)/', $rule, $m)) return $context['completionCount'] >= (int) $m[1];
+    if (preg_match('/(\d+)\s*\+\s*(open|opens|visits|reads)/', $rule, $m)) return max($context['openCount'], $context['historyCount']) >= (int) $m[1];
+    if (preg_match('/(\d+)\s*\+\s*(save|saves)/', $rule, $m)) return $context['saveCount'] >= (int) $m[1];
+    if (preg_match('/no visit in\s+(\d+)\s+days/', $rule, $m)) {
+        if (!$context['lastEventAt']) return true;
+        return strtotime((string) $context['lastEventAt']) <= time() - ((int) $m[1] * 86400);
+    }
+    if (str_contains($rule, 'engagement')) return ($context['openCount'] + $context['completionCount'] + $context['saveCount'] + $context['shareCount']) > 0;
+    if (str_contains($rule, 'reading behavior')) return $context['historyCount'] > 0 || $context['completionCount'] > 0;
+    return str_contains($context['haystack'], $rule);
+}
+
+function preview_audience_segment(mixed $rules): array
+{
+    $parts = segment_rule_parts($rules);
+    $pdo = Database::pdo();
+    $users = $pdo->query("SELECT * FROM users WHERE status = 'active' ORDER BY created_at DESC")->fetchAll();
+    $matched = [];
+    foreach ($users as $user) {
+        $docStmt = $pdo->prepare('SELECT key, value_json FROM user_documents WHERE user_id = ?');
+        $docStmt->execute([$user['id']]);
+        $docs = [];
+        foreach ($docStmt->fetchAll() as $row) $docs[$row['key']] = parse_json_field($row['value_json'], null);
+
+        $eventStmt = $pdo->prepare('SELECT event_type, story_slug, value, metadata, created_at FROM engagement_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 250');
+        $eventStmt->execute([$user['id']]);
+        $events = $eventStmt->fetchAll();
+
+        $subStmt = $pdo->prepare("SELECT * FROM subscriptions WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1");
+        $subStmt->execute([$user['id']]);
+        $subscription = $subStmt->fetch() ?: null;
+
+        $context = segment_user_context($user, $docs, $events, $subscription);
+        $matches = true;
+        foreach ($parts as $part) {
+            if (!segment_rule_matches_context($part, $context)) {
+                $matches = false;
+                break;
+            }
+        }
+        if ($matches) {
+            $matched[] = [
+                'id' => $user['id'],
+                'name' => $user['name'],
+                'email' => $user['email'],
+                'role' => $user['role'],
+                'subscription' => $user['subscription'],
+                'signals' => [
+                    'interests' => $context['interests'],
+                    'opens' => $context['openCount'],
+                    'completions' => $context['completionCount'],
+                    'saves' => $context['saveCount'],
+                    'lastEventAt' => $context['lastEventAt'],
+                ],
+            ];
+        }
+    }
+    return ['count' => count($matched), 'users' => array_slice($matched, 0, 50), 'rules' => $parts, 'evaluatedAt' => now_iso()];
+}
+
+function payu_response_hash_valid(array $payload): bool
+{
+    $salt = (string) provider_config_value('PAYU_SALT', 'payu', 'salt', '');
+    $received = strtolower(trim((string) ($payload['hash'] ?? '')));
+    if ($salt === '' || $received === '') return false;
+    $fields = [
+        $salt,
+        (string) ($payload['status'] ?? ''),
+        (string) ($payload['udf10'] ?? ''),
+        (string) ($payload['udf9'] ?? ''),
+        (string) ($payload['udf8'] ?? ''),
+        (string) ($payload['udf7'] ?? ''),
+        (string) ($payload['udf6'] ?? ''),
+        (string) ($payload['udf5'] ?? ''),
+        (string) ($payload['udf4'] ?? ''),
+        (string) ($payload['udf3'] ?? ''),
+        (string) ($payload['udf2'] ?? ''),
+        (string) ($payload['udf1'] ?? ''),
+        (string) ($payload['email'] ?? ''),
+        (string) ($payload['firstname'] ?? ''),
+        (string) ($payload['productinfo'] ?? ''),
+        (string) ($payload['amount'] ?? ''),
+        (string) ($payload['txnid'] ?? ''),
+        (string) ($payload['key'] ?? provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key')),
+    ];
+    return hash_equals(hash('sha512', implode('|', $fields)), $received);
+}
+
 function create_provider_order(string $provider, array $payment, array $user): array
 {
     $amount = (int) $payment['amount'];
     $currency = strtoupper((string) $payment['currency']);
     $origin = app_origin();
     if ($provider === 'razorpay') {
+        $keyId = (string) provider_config_value('RAZORPAY_KEY_ID', 'razorpay', 'key_id');
+        $keySecret = (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret');
         $result = http_request_json('https://api.razorpay.com/v1/orders', [
             'method' => 'POST',
             'headers' => [
-                'Authorization' => 'Basic ' . base64_encode(getenv('RAZORPAY_KEY_ID') . ':' . getenv('RAZORPAY_KEY_SECRET')),
+                'Authorization' => 'Basic ' . base64_encode($keyId . ':' . $keySecret),
                 'Content-Type' => 'application/json',
             ],
             'body' => json_encode(['amount' => $amount, 'currency' => $currency, 'receipt' => $payment['id'], 'payment_capture' => 1, 'notes' => ['paymentId' => $payment['id']]], JSON_UNESCAPED_SLASHES),
         ]);
-        return ['providerOrderId' => $result['id'] ?? '', 'checkout' => ['key' => getenv('RAZORPAY_KEY_ID'), 'orderId' => $result['id'] ?? '']];
+        return ['providerOrderId' => $result['id'] ?? '', 'checkout' => ['key' => $keyId, 'orderId' => $result['id'] ?? '']];
     }
     if ($provider === 'paypal') {
-        $base = getenv('PAYPAL_ENVIRONMENT') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+        $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+        $clientId = (string) provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id');
+        $clientSecret = (string) provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret');
         $token = http_request_json($base . '/v1/oauth2/token', [
             'method' => 'POST',
-            'headers' => ['Authorization' => 'Basic ' . base64_encode(getenv('PAYPAL_CLIENT_ID') . ':' . getenv('PAYPAL_CLIENT_SECRET')), 'Content-Type' => 'application/x-www-form-urlencoded'],
+            'headers' => ['Authorization' => 'Basic ' . base64_encode($clientId . ':' . $clientSecret), 'Content-Type' => 'application/x-www-form-urlencoded'],
             'body' => ['grant_type' => 'client_credentials'],
         ]);
         $units = [['reference_id' => $payment['id'], 'amount' => ['currency_code' => $currency, 'value' => number_format($amount / 100, 2, '.', '')]]];
@@ -804,10 +1155,10 @@ function create_provider_order(string $provider, array $payment, array $user): a
         return ['providerOrderId' => $order['id'] ?? '', 'checkout' => ['approveUrl' => $approve]];
     }
     if ($provider === 'cashfree') {
-        $base = getenv('CASHFREE_ENVIRONMENT') === 'production' ? 'https://api.cashfree.com/pg/orders' : 'https://sandbox.cashfree.com/pg/orders';
+        $base = provider_config_value('CASHFREE_ENVIRONMENT', 'cashfree', 'environment', 'sandbox') === 'production' ? 'https://api.cashfree.com/pg/orders' : 'https://sandbox.cashfree.com/pg/orders';
         $order = http_request_json($base, [
             'method' => 'POST',
-            'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => getenv('CASHFREE_CLIENT_ID'), 'x-client-secret' => getenv('CASHFREE_CLIENT_SECRET'), 'Content-Type' => 'application/json'],
+            'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret'), 'Content-Type' => 'application/json'],
             'body' => json_encode(['order_id' => $payment['id'], 'order_amount' => $amount / 100, 'order_currency' => $currency, 'customer_details' => ['customer_id' => $user['id'], 'customer_name' => $user['name'], 'customer_email' => $user['email'], 'customer_phone' => '9999999999'], 'order_meta' => ['return_url' => $origin . '/api/payments/cashfree/return?paymentId=' . rawurlencode($payment['id']) . '&order_id={order_id}']], JSON_UNESCAPED_SLASHES),
         ]);
         return ['providerOrderId' => $order['order_id'] ?? $payment['id'], 'checkout' => ['paymentSessionId' => $order['payment_session_id'] ?? '']];
@@ -816,7 +1167,7 @@ function create_provider_order(string $provider, array $payment, array $user): a
         $txnid = $payment['id'];
         $product = preg_replace('/[^A-Za-z0-9 _.-]/', '', (string) ($payment['purpose'] ?? 'InkRiver payment'));
         $fields = [
-            'key' => getenv('PAYU_MERCHANT_KEY'),
+            'key' => provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key'),
             'txnid' => $txnid,
             'amount' => number_format($amount / 100, 2, '.', ''),
             'productinfo' => $product,
@@ -826,8 +1177,8 @@ function create_provider_order(string $provider, array $payment, array $user): a
             'furl' => $origin . '/api/payments/payu/return',
             'udf1' => $payment['id'],
         ];
-        $fields['hash'] = hash('sha512', implode('|', [$fields['key'], $fields['txnid'], $fields['amount'], $fields['productinfo'], $fields['firstname'], $fields['email'], $fields['udf1'], '', '', '', '', '', '', '', '', '', getenv('PAYU_SALT')]));
-        $action = getenv('PAYU_ENVIRONMENT') === 'production' ? 'https://secure.payu.in/_payment' : 'https://test.payu.in/_payment';
+        $fields['hash'] = hash('sha512', implode('|', [$fields['key'], $fields['txnid'], $fields['amount'], $fields['productinfo'], $fields['firstname'], $fields['email'], $fields['udf1'], '', '', '', '', '', '', '', '', '', provider_config_value('PAYU_SALT', 'payu', 'salt')]));
+        $action = provider_config_value('PAYU_ENVIRONMENT', 'payu', 'environment', 'sandbox') === 'production' ? 'https://secure.payu.in/_payment' : 'https://test.payu.in/_payment';
         return ['providerOrderId' => $txnid, 'checkout' => ['action' => $action, 'fields' => $fields]];
     }
     throw new RuntimeException('Unsupported payment provider.');
@@ -876,6 +1227,254 @@ function activate_paid_payment(string $paymentId, string $providerPaymentId = ''
     $payment['subscription'] = $metadata['planName'] ?? 'Premium';
     $payment['updated_at'] = $now;
     return public_user($payment);
+}
+
+function enqueue_background_job(string $type, array $payload = [], ?string $availableAt = null): string
+{
+    $id = uuid_value('JOB-');
+    $now = now_iso();
+    Database::pdo()->prepare("INSERT INTO background_jobs (id, type, status, payload_json, available_at, created_at, updated_at) VALUES (?, ?, 'queued', ?, ?, ?, ?)")
+        ->execute([$id, $type, json_encode($payload, JSON_UNESCAPED_SLASHES), $availableAt ?: $now, $now, $now]);
+    return $id;
+}
+
+function create_media_variants_for_asset(array $asset): array
+{
+    if (!function_exists('imagecreatefromstring') || !function_exists('imagewebp')) return ['created' => 0, 'reason' => 'GD_WEBP_UNAVAILABLE'];
+    $sourcePath = dirname(__DIR__) . (string) $asset['url'];
+    if (!is_file($sourcePath)) return ['created' => 0, 'reason' => 'SOURCE_MISSING'];
+    $source = @imagecreatefromstring(file_get_contents($sourcePath) ?: '');
+    if (!$source) return ['created' => 0, 'reason' => 'UNSUPPORTED_IMAGE'];
+    $width = imagesx($source);
+    $height = imagesy($source);
+    $variants = [
+        'thumb' => 320,
+        'medium' => 960,
+        'large' => 1600,
+    ];
+    $created = 0;
+    foreach ($variants as $name => $targetWidth) {
+        $ratio = min(1, $targetWidth / max(1, $width));
+        $nextWidth = max(1, (int) round($width * $ratio));
+        $nextHeight = max(1, (int) round($height * $ratio));
+        $canvas = imagecreatetruecolor($nextWidth, $nextHeight);
+        imagealphablending($canvas, false);
+        imagesavealpha($canvas, true);
+        imagecopyresampled($canvas, $source, 0, 0, 0, 0, $nextWidth, $nextHeight, $width, $height);
+        $stored = preg_replace('/\.[^.]+$/', '', basename((string) $asset['stored_name'])) . '-' . $name . '.webp';
+        $variantDir = dirname($sourcePath);
+        $path = $variantDir . '/' . $stored;
+        $variantUrl = rtrim(dirname((string) $asset['url']), '/\\') . '/' . $stored;
+        if (imagewebp($canvas, $path, 82)) {
+            Database::pdo()->prepare('INSERT INTO media_variants (id, media_asset_id, variant, url, mime_type, width, height, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(media_asset_id, variant) DO UPDATE SET url = excluded.url, mime_type = excluded.mime_type, width = excluded.width, height = excluded.height, size_bytes = excluded.size_bytes, created_at = excluded.created_at')
+                ->execute([uuid_value('MVAR-'), $asset['id'], $name, $variantUrl, 'image/webp', $nextWidth, $nextHeight, filesize($path) ?: 0, now_iso()]);
+            $created++;
+        }
+        imagedestroy($canvas);
+    }
+    imagedestroy($source);
+    return ['created' => $created];
+}
+
+function sync_subscription_lifecycle(): array
+{
+    $pdo = Database::pdo();
+    $now = now_iso();
+    $expired = $pdo->prepare("SELECT * FROM subscriptions WHERE status = 'active' AND ends_at IS NOT NULL AND ends_at < ?");
+    $expired->execute([$now]);
+    $expiredRows = $expired->fetchAll();
+    foreach ($expiredRows as $row) {
+        $pdo->prepare("UPDATE subscriptions SET status = 'expired', updated_at = ? WHERE id = ?")->execute([$now, $row['id']]);
+        $pdo->prepare("INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, 'expired', 'active', 'expired', '{}', ?)")
+            ->execute([uuid_value('SEV-'), $row['id'], $row['user_id'], $row['provider'], $now]);
+    }
+    $pastDue = $pdo->query("SELECT * FROM subscriptions WHERE status IN ('past_due', 'failed')")->fetchAll();
+    foreach ($pastDue as $row) {
+        $existing = $pdo->prepare("SELECT id FROM subscription_dunning WHERE subscription_id = ? AND status IN ('open', 'notified') LIMIT 1");
+        $existing->execute([$row['id']]);
+        if ($existing->fetch()) {
+            $pdo->prepare('UPDATE subscription_dunning SET updated_at = ? WHERE subscription_id = ?')->execute([$now, $row['id']]);
+        } else {
+            $pdo->prepare("INSERT INTO subscription_dunning (id, subscription_id, user_id, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, 'open', 0, ?, ?, ?)")
+                ->execute([uuid_value('DUN-'), $row['id'], $row['user_id'], gmdate('Y-m-d\TH:i:s\Z', time() + 86400), $now, $now]);
+        }
+    }
+    $dunning = $pdo->query("SELECT * FROM subscription_dunning WHERE status = 'open' AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))")->fetchAll();
+    foreach ($dunning as $row) {
+        $pdo->prepare("UPDATE subscription_dunning SET status = 'notified', attempts = attempts + 1, next_attempt_at = ?, updated_at = ? WHERE id = ?")
+            ->execute([gmdate('Y-m-d\TH:i:s\Z', time() + 3 * 86400), $now, $row['id']]);
+    }
+    return ['expired' => count($expiredRows), 'dunningQueued' => count($pastDue), 'dunningNotified' => count($dunning)];
+}
+
+function execute_payout_transfer(array $payout): array
+{
+    $snapshot = parse_json_field($payout['payout_account_snapshot'] ?? '{}', []);
+    $method = strtolower((string) ($snapshot['payout_method'] ?? 'manual'));
+    $provider = $method === 'paypal' ? 'paypal' : (provider_config_value('PAYOUT_PROVIDER', 'payouts', 'provider', 'manual') ?: 'manual');
+    $request = [
+        'payoutId' => $payout['id'],
+        'amount' => (int) $payout['amount'],
+        'currency' => $payout['currency'],
+        'account' => $snapshot,
+    ];
+    if ($provider === 'manual') throw new RuntimeException('No automatic payout provider is configured.');
+    if ($provider === 'paypal') {
+        $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+        $token = http_request_json($base . '/v1/oauth2/token', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') . ':' . provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')), 'Content-Type' => 'application/x-www-form-urlencoded'],
+            'body' => ['grant_type' => 'client_credentials'],
+        ]);
+        return http_request_json($base . '/v1/payments/payouts', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
+            'body' => json_encode([
+                'sender_batch_header' => ['sender_batch_id' => $payout['id'], 'email_subject' => 'InkRiver writer payout'],
+                'items' => [[
+                    'recipient_type' => 'EMAIL',
+                    'receiver' => $snapshot['account_reference'] ?? '',
+                    'amount' => ['value' => number_format(((int) $payout['amount']) / 100, 2, '.', ''), 'currency' => $payout['currency']],
+                    'note' => 'InkRiver writer payout',
+                    'sender_item_id' => $payout['id'],
+                ]],
+            ], JSON_UNESCAPED_SLASHES),
+        ]);
+    }
+    $url = provider_config_value('PAYOUT_API_URL', 'payouts', 'api_url');
+    $key = provider_config_value('PAYOUT_API_KEY', 'payouts', 'api_key');
+    if (!$url || !$key) throw new RuntimeException('Payout API credentials are missing.');
+    return http_request_json($url, [
+        'method' => 'POST',
+        'headers' => ['Authorization' => 'Bearer ' . $key, 'Content-Type' => 'application/json'],
+        'body' => json_encode($request, JSON_UNESCAPED_SLASHES),
+    ]);
+}
+
+function run_background_job(array $job): array
+{
+    $payload = parse_json_field($job['payload_json'] ?? '{}', []);
+    return match ($job['type']) {
+        'recommendations.rebuild' => (function () {
+            $users = Database::pdo()->query("SELECT id FROM users WHERE status = 'active'")->fetchAll();
+            foreach ($users as $user) train_recommendations_for_user($user['id']);
+            return ['profiles' => count($users)];
+        })(),
+        'recommendations.train_user' => (function () use ($payload) {
+            $userId = (string) ($payload['userId'] ?? '');
+            if ($userId === '') throw new RuntimeException('Missing userId.');
+            return train_recommendations_for_user($userId);
+        })(),
+        'translations.backfill' => (function () {
+            if (!provider_status()['ai']) throw new RuntimeException('AI provider is not configured.');
+            $stories = array_values(array_filter(document_value('stories', []), fn($story) => ($story['status'] ?? '') === 'published'));
+            $results = [];
+            foreach ($stories as $story) $results[] = ensure_story_translations($story);
+            return ['processed' => count($stories), 'created' => array_sum(array_column($results, 'created')), 'failed' => array_sum(array_column($results, 'failed'))];
+        })(),
+        'subscriptions.sync' => sync_subscription_lifecycle(),
+        'media.variants' => (function () use ($payload) {
+            $stmt = Database::pdo()->prepare('SELECT * FROM media_assets WHERE id = ?');
+            $stmt->execute([(string) ($payload['mediaAssetId'] ?? '')]);
+            $asset = $stmt->fetch();
+            if (!$asset) throw new RuntimeException('Media asset not found.');
+            return create_media_variants_for_asset($asset);
+        })(),
+        'moderation.scan' => scan_moderation_rules(),
+        default => throw new RuntimeException('Unknown job type: ' . $job['type']),
+    };
+}
+
+function run_due_background_jobs(int $limit = 10): array
+{
+    $pdo = Database::pdo();
+    $stmt = $pdo->prepare("SELECT * FROM background_jobs WHERE status = 'queued' AND available_at <= ? ORDER BY available_at ASC LIMIT ?");
+    $stmt->execute([now_iso(), max(1, min(50, $limit))]);
+    $jobs = $stmt->fetchAll();
+    $summary = ['completed' => 0, 'failed' => 0, 'jobs' => []];
+    foreach ($jobs as $job) {
+        $now = now_iso();
+        $pdo->prepare("UPDATE background_jobs SET status = 'running', attempts = attempts + 1, locked_at = ?, updated_at = ? WHERE id = ?")->execute([$now, $now, $job['id']]);
+        try {
+            $result = run_background_job($job);
+            $pdo->prepare("UPDATE background_jobs SET status = 'completed', result_json = ?, updated_at = ? WHERE id = ?")->execute([json_encode($result, JSON_UNESCAPED_SLASHES), now_iso(), $job['id']]);
+            $summary['completed']++;
+            $summary['jobs'][] = ['id' => $job['id'], 'type' => $job['type'], 'status' => 'completed', 'result' => $result];
+        } catch (Throwable $error) {
+            $pdo->prepare("UPDATE background_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?")->execute([$error->getMessage(), now_iso(), $job['id']]);
+            $summary['failed']++;
+            $summary['jobs'][] = ['id' => $job['id'], 'type' => $job['type'], 'status' => 'failed', 'error' => $error->getMessage()];
+        }
+    }
+    return $summary;
+}
+
+function scan_moderation_rules(): array
+{
+    $pdo = Database::pdo();
+    $rules = $pdo->query('SELECT * FROM moderation_rules WHERE enabled = 1')->fetchAll();
+    if (!$rules) return ['scanned' => 0, 'created' => 0];
+    $comments = $pdo->query("SELECT comments.*, users.id AS reporter FROM comments JOIN users ON users.id = comments.user_id WHERE comments.status = 'published' ORDER BY comments.created_at DESC LIMIT 500")->fetchAll();
+    $created = 0;
+    foreach ($comments as $comment) {
+        foreach ($rules as $rule) {
+            $text = strtolower($comment['text']);
+            $pattern = strtolower($rule['pattern']);
+            $hit = $rule['kind'] === 'blocked_word' ? str_contains($text, $pattern) : ($rule['kind'] === 'link_filter' && preg_match('#https?://#i', $comment['text']));
+            if (!$hit) continue;
+            $id = uuid_value('MOD-');
+            $pdo->prepare("INSERT INTO moderation_cases (id, reporter_user_id, target_type, target_id, kind, subject, risk, status, evidence_json, created_at, updated_at) VALUES (?, ?, 'comment', ?, ?, ?, 'Medium', 'Open', ?, ?, ?)")
+                ->execute([$id, $comment['reporter'], $comment['id'], $rule['kind'], 'Automated moderation rule matched', json_encode([['ruleId' => $rule['id'], 'pattern' => $rule['pattern']]], JSON_UNESCAPED_SLASHES), now_iso(), now_iso()]);
+            if (in_array($rule['action'], ['hide', 'block'], true)) $pdo->prepare("UPDATE comments SET status = 'hidden', updated_at = ? WHERE id = ?")->execute([now_iso(), $comment['id']]);
+            $created++;
+            break;
+        }
+    }
+    return ['scanned' => count($comments), 'created' => $created];
+}
+
+function test_provider_connection(string $provider): array
+{
+    try {
+        if ($provider === 'paypal') {
+            $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+            $token = http_request_json($base . '/v1/oauth2/token', [
+                'method' => 'POST',
+                'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') . ':' . provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')), 'Content-Type' => 'application/x-www-form-urlencoded'],
+                'body' => ['grant_type' => 'client_credentials'],
+                'timeout' => 15,
+            ]);
+            return ['provider' => $provider, 'ready' => !empty($token['access_token']), 'mode' => 'live_token'];
+        }
+        if ($provider === 'razorpay') {
+            http_request_json('https://api.razorpay.com/v1/payments?count=1', [
+                'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('RAZORPAY_KEY_ID', 'razorpay', 'key_id') . ':' . provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret'))],
+                'timeout' => 15,
+            ]);
+            return ['provider' => $provider, 'ready' => true, 'mode' => 'live_api'];
+        }
+        if ($provider === 'cashfree') {
+            $base = provider_config_value('CASHFREE_ENVIRONMENT', 'cashfree', 'environment', 'sandbox') === 'production' ? 'https://api.cashfree.com/pg/orders/non-existent-health-check' : 'https://sandbox.cashfree.com/pg/orders/non-existent-health-check';
+            try {
+                http_request_json($base, ['headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret')], 'timeout' => 15]);
+            } catch (Throwable $error) {
+                if (!str_contains($error->getMessage(), '401') && !str_contains($error->getMessage(), '403')) return ['provider' => $provider, 'ready' => true, 'mode' => 'authenticated_probe'];
+                throw $error;
+            }
+            return ['provider' => $provider, 'ready' => true, 'mode' => 'authenticated_probe'];
+        }
+        if ($provider === 'openai') {
+            openai_text_response('Reply with OK.', 'Health check.');
+            return ['provider' => $provider, 'ready' => true, 'mode' => 'live_completion'];
+        }
+        if ($provider === 'payu') {
+            return ['provider' => $provider, 'ready' => provider_status()['payments']['payu'], 'mode' => 'hash_credentials'];
+        }
+        $status = provider_status();
+        return ['provider' => $provider, 'ready' => (bool) ($status['payments'][$provider] ?? $status['social'][$provider] ?? $status[$provider] ?? false), 'mode' => 'configured'];
+    } catch (Throwable $error) {
+        return ['provider' => $provider, 'ready' => false, 'error' => $error->getMessage(), 'mode' => 'live_api'];
+    }
 }
 
 function finish_oauth_login(string $provider, array $profile): never
@@ -1056,7 +1655,8 @@ function handle_api(string $path, string $method): void
             'translationLanguages' => configured_translation_languages(),
             'ads' => active_ads(),
             'providers' => provider_status(),
-            'pushPublicKey' => getenv('VAPID_PUBLIC_KEY') ?: '',
+            'paymentPolicy' => ['paypalIndiaRestriction' => paypal_restricted_for_india($session)],
+            'pushPublicKey' => provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key', '') ?: '',
             'socialAccounts' => [],
         ]);
     }
@@ -1102,6 +1702,50 @@ function handle_api(string $path, string $method): void
         }
     }
 
+    if ($path === '/api/admin/provider-credentials') {
+        $session = require_auth(['admin']);
+        if ($method === 'GET') json_response(['credentials' => provider_credential_summary(), 'providers' => provider_status()]);
+        if ($method === 'PUT') {
+            $body = read_json();
+            $provider = preg_replace('/[^a-z0-9_-]/', '', strtolower((string) ($body['provider'] ?? '')));
+            $key = preg_replace('/[^a-z0-9_-]/', '', strtolower((string) ($body['key'] ?? '')));
+            $value = (string) ($body['value'] ?? '');
+            if (!$provider || !$key || $value === '') json_response(['error' => 'INVALID_CREDENTIAL', 'message' => 'Provider, key, and value are required.'], 400);
+            $pdo->prepare('INSERT INTO provider_credentials (provider, key, value_encrypted, environment, enabled, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider, key) DO UPDATE SET value_encrypted = excluded.value_encrypted, environment = excluded.environment, enabled = excluded.enabled, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+                ->execute([$provider, $key, encrypt_secret_value($value), substr((string) ($body['environment'] ?? 'production'), 0, 40), empty($body['enabled']) ? 0 : 1, $session['user']['id'], now_iso()]);
+            audit_log($session['user']['id'], 'admin.provider_credential_update', 'provider', $provider . ':' . $key);
+            json_response(['credentials' => provider_credential_summary(), 'providers' => provider_status()]);
+        }
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/providers/test') {
+        require_auth(['admin']);
+        $body = read_json();
+        json_response(test_provider_connection((string) ($body['provider'] ?? '')) + ['checkedAt' => now_iso()]);
+    }
+
+    if ($path === '/api/admin/jobs') {
+        require_auth(['admin']);
+        if ($method === 'GET') {
+            $rows = $pdo->query('SELECT * FROM background_jobs ORDER BY created_at DESC LIMIT 100')->fetchAll();
+            json_response(['jobs' => $rows]);
+        }
+        if ($method === 'POST') {
+            $body = read_json();
+            $type = (string) ($body['type'] ?? '');
+            if (!in_array($type, ['recommendations.rebuild', 'recommendations.train_user', 'translations.backfill', 'subscriptions.sync', 'moderation.scan', 'media.variants'], true)) {
+                json_response(['error' => 'INVALID_JOB_TYPE', 'message' => 'Unsupported background job type.'], 400);
+            }
+            json_response(['jobId' => enqueue_background_job($type, is_array($body['payload'] ?? null) ? $body['payload'] : [])], 201);
+        }
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/jobs/run') {
+        require_auth(['admin']);
+        $body = read_json();
+        json_response(run_due_background_jobs((int) ($body['limit'] ?? 10)));
+    }
+
     if ($method === 'GET' && $path === '/api/admin/media') {
         require_auth(['admin']);
         $rows = $pdo->query('SELECT * FROM media_assets ORDER BY created_at DESC LIMIT 200')->fetchAll();
@@ -1133,6 +1777,7 @@ function handle_api(string $path, string $method): void
             ->execute([$id, $session['user']['id'], substr((string) $file['name'], 0, 240), $storedName, $url, $mime, (int) $file['size'], (int) $info[0], (int) $info[1], substr((string) ($_POST['altText'] ?? ''), 0, 500), now_iso()]);
         $stmt = $pdo->prepare('SELECT * FROM media_assets WHERE id = ?');
         $stmt->execute([$id]);
+        enqueue_background_job('media.variants', ['mediaAssetId' => $id]);
         audit_log($session['user']['id'], 'admin.media_upload', 'media_asset', $id);
         json_response(['asset' => public_media_asset($stmt->fetch())], 201);
     }
@@ -1181,16 +1826,13 @@ function handle_api(string $path, string $method): void
         $metadata = is_array($body['metadata'] ?? null) ? $body['metadata'] : [];
         $pdo->prepare('INSERT INTO engagement_events (id, user_id, anonymous_id, story_slug, event_type, value, metadata, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)')
             ->execute([uuid_value(), $session['user']['id'], $storySlug, $type, $body['value'] ?? null, json_encode($metadata, JSON_UNESCAPED_SLASHES), now_iso()]);
-        $summary = train_recommendations_for_user($session['user']['id']);
-        json_response(['ok' => true, 'training' => $summary, 'feed' => recommendation_feed_for_user($session['user']['id'], 24)]);
+        $jobId = enqueue_background_job('recommendations.train_user', ['userId' => $session['user']['id']]);
+        json_response(['ok' => true, 'training' => ['status' => 'queued', 'jobId' => $jobId], 'feed' => recommendation_feed_for_user($session['user']['id'], 24)]);
     }
 
     if ($method === 'POST' && $path === '/api/admin/recommendations/rebuild') {
         require_auth(['admin']);
-        $users = $pdo->query("SELECT id FROM users WHERE status = 'active' ORDER BY last_login_at DESC NULLS LAST LIMIT 500")->fetchAll();
-        $results = [];
-        foreach ($users as $user) $results[] = ['userId' => $user['id'], ...train_recommendations_for_user($user['id'])];
-        json_response(['rebuilt' => count($results), 'results' => $results]);
+        json_response(['jobId' => enqueue_background_job('recommendations.rebuild'), 'status' => 'queued'], 202);
     }
 
     if ($method === 'POST' && $path === '/api/admin/search/rebuild') {
@@ -1319,6 +1961,7 @@ function handle_api(string $path, string $method): void
             $now = now_iso();
             $pdo->prepare("INSERT INTO comments (id, story_slug, parent_id, user_id, text, status, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'published', 0, ?, ?)")
                 ->execute([$id, $slug, $body['parentId'] ?? null, $session['user']['id'], substr($text, 0, 4000), $now, $now]);
+            enqueue_background_job('moderation.scan');
             json_response(['comment' => ['id' => $id, 'parentId' => $body['parentId'] ?? '', 'author' => $session['user']['name'], 'role' => $session['user']['role'], 'text' => $text, 'likes' => 0, 'liked' => false, 'pinned' => false, 'reported' => false, 'createdAt' => $now, 'updatedAt' => $now]], 201);
         }
     }
@@ -1371,6 +2014,38 @@ function handle_api(string $path, string $method): void
         json_response(['eventCounts' => [], 'storyCounts' => [], 'dailyEvents' => [], 'revenueByStory' => [], 'revenue' => $revenue, 'activeSubscriptions' => $activeSubscriptions, 'tickets' => [], 'moderation' => []]);
     }
 
+    if ($method === 'POST' && $path === '/api/admin/subscriptions/sync') {
+        require_auth(['admin']);
+        json_response(sync_subscription_lifecycle());
+    }
+
+    if ($path === '/api/admin/security/policies') {
+        $session = require_auth(['admin']);
+        if ($method === 'GET') {
+            $policies = [];
+            foreach ($pdo->query('SELECT * FROM security_policies ORDER BY key')->fetchAll() as $row) $policies[$row['key']] = parse_json_field($row['value_json'], null);
+            $permissions = $pdo->query('SELECT * FROM role_permissions ORDER BY role, permission')->fetchAll();
+            json_response(['policies' => $policies, 'permissions' => $permissions]);
+        }
+        if ($method === 'PUT') {
+            $body = read_json();
+            $now = now_iso();
+            foreach (($body['policies'] ?? []) as $key => $value) {
+                $pdo->prepare('INSERT INTO security_policies (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+                    ->execute([preg_replace('/[^a-z0-9_.-]/i', '', (string) $key), json_encode($value, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
+            }
+            foreach (($body['permissions'] ?? []) as $permission) {
+                if (!is_array($permission)) continue;
+                $role = (string) ($permission['role'] ?? '');
+                $perm = (string) ($permission['permission'] ?? '');
+                if (!$role || !$perm) continue;
+                $pdo->prepare('INSERT INTO role_permissions (role, permission, allowed, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(role, permission) DO UPDATE SET allowed = excluded.allowed, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+                    ->execute([$role, $perm, empty($permission['allowed']) ? 0 : 1, $session['user']['id'], $now]);
+            }
+            json_response(['ok' => true, 'updatedAt' => $now]);
+        }
+    }
+
     if ($path === '/api/admin/moderation') {
         $session = require_auth(['admin', 'moderator']);
         if ($method === 'GET') {
@@ -1384,6 +2059,23 @@ function handle_api(string $path, string $method): void
             $pdo->prepare("INSERT INTO moderation_cases (id, reporter_user_id, target_type, target_id, kind, subject, risk, status, evidence_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'Open', '[]', ?, ?)")
                 ->execute([$id, $session['user']['id'], $body['targetType'] ?? 'post', $body['targetId'] ?? '', $body['kind'] ?? 'Report', $body['subject'] ?? 'Moderation case', $body['risk'] ?? 'Medium', $now, $now]);
             json_response(['case' => ['id' => $id]], 201);
+        }
+    }
+
+    if ($path === '/api/admin/moderation/rules') {
+        $session = require_auth(['admin', 'moderator']);
+        if ($method === 'GET') json_response(['rules' => $pdo->query('SELECT * FROM moderation_rules ORDER BY created_at DESC')->fetchAll()]);
+        if ($method === 'POST') {
+            $body = read_json();
+            $kind = in_array($body['kind'] ?? '', ['blocked_word', 'link_filter', 'bot_score', 'duplicate_check', 'plagiarism'], true) ? $body['kind'] : 'blocked_word';
+            $action = in_array($body['action'] ?? '', ['allow', 'queue', 'hide', 'block'], true) ? $body['action'] : 'queue';
+            $pattern = trim((string) ($body['pattern'] ?? ''));
+            if ($pattern === '') json_response(['error' => 'INVALID_RULE', 'message' => 'A moderation pattern is required.'], 400);
+            $id = uuid_value('MRL-');
+            $now = now_iso();
+            $pdo->prepare('INSERT INTO moderation_rules (id, kind, pattern, action, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                ->execute([$id, $kind, $pattern, $action, empty($body['enabled']) ? 0 : 1, $session['user']['id'], $now, $now]);
+            json_response(['rule' => ['id' => $id]], 201);
         }
     }
 
@@ -1522,9 +2214,9 @@ function handle_api(string $path, string $method): void
         $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
             ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
         rebuild_story_search_index($stories);
-        $translationResult = null;
-        if ($story['status'] === 'published' && provider_status()['ai']) $translationResult = ensure_story_translations($story);
-        json_response(['story' => $story, 'translations' => $translationResult], 201);
+        $translationJobId = null;
+        if ($story['status'] === 'published' && provider_status()['ai']) $translationJobId = enqueue_background_job('translations.backfill');
+        json_response(['story' => $story, 'translationJobId' => $translationJobId], 201);
     }
 
     if ($method === 'GET' && $path === '/api/me/payouts') {
@@ -1588,6 +2280,32 @@ function handle_api(string $path, string $method): void
         json_response(['ok' => true]);
     }
 
+    if ($method === 'POST' && preg_match('#^/api/admin/payouts/([^/]+)/execute$#', $path, $m)) {
+        require_auth(['admin']);
+        $payoutId = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM writer_payouts WHERE id = ?');
+        $stmt->execute([$payoutId]);
+        $payout = $stmt->fetch();
+        if (!$payout) json_response(['error' => 'NOT_FOUND', 'message' => 'Payout not found.'], 404);
+        $transferId = uuid_value('PTR-');
+        $now = now_iso();
+        $pdo->prepare("INSERT INTO payout_transfers (id, payout_id, provider, status, request_json, created_at, updated_at) VALUES (?, ?, ?, 'processing', ?, ?, ?)")
+            ->execute([$transferId, $payoutId, provider_config_value('PAYOUT_PROVIDER', 'payouts', 'provider', 'manual') ?: 'manual', json_encode(['payoutId' => $payoutId], JSON_UNESCAPED_SLASHES), $now, $now]);
+        $pdo->prepare("UPDATE writer_payouts SET status = 'processing', updated_at = ? WHERE id = ?")->execute([$now, $payoutId]);
+        try {
+            $response = execute_payout_transfer($payout);
+            $providerTransferId = (string) ($response['batch_header']['payout_batch_id'] ?? $response['id'] ?? $response['transferId'] ?? '');
+            $pdo->prepare("UPDATE payout_transfers SET status = 'paid', provider_transfer_id = ?, response_json = ?, updated_at = ? WHERE id = ?")
+                ->execute([$providerTransferId, json_encode($response, JSON_UNESCAPED_SLASHES), now_iso(), $transferId]);
+            $pdo->prepare("UPDATE writer_payouts SET status = 'paid', paid_at = ?, updated_at = ? WHERE id = ?")->execute([now_iso(), now_iso(), $payoutId]);
+            json_response(['transferId' => $transferId, 'providerTransferId' => $providerTransferId, 'status' => 'paid']);
+        } catch (Throwable $error) {
+            $pdo->prepare("UPDATE payout_transfers SET status = 'failed', error = ?, updated_at = ? WHERE id = ?")->execute([$error->getMessage(), now_iso(), $transferId]);
+            $pdo->prepare("UPDATE writer_payouts SET status = 'failed', updated_at = ? WHERE id = ?")->execute([now_iso(), $payoutId]);
+            json_response(['error' => 'PAYOUT_TRANSFER_FAILED', 'message' => $error->getMessage(), 'transferId' => $transferId], 502);
+        }
+    }
+
     if ($method === 'PATCH' && preg_match('#^/api/admin/payout-accounts/([^/]+)$#', $path, $m)) {
         require_auth(['admin']);
         $body = read_json();
@@ -1598,14 +2316,21 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'POST' && $path === '/api/admin/segments/preview') {
         require_auth(['admin']);
-        $count = (int) $pdo->query("SELECT COUNT(*) AS count FROM users WHERE status = 'active'")->fetch()['count'];
-        json_response(['count' => $count, 'users' => [], 'evaluatedAt' => now_iso()]);
+        $body = read_json();
+        json_response(preview_audience_segment($body['rules'] ?? ''));
     }
 
     if ($method === 'POST' && $path === '/api/payments/orders') {
         $session = require_auth();
         $body = read_json();
         $provider = (string) ($body['provider'] ?? '');
+        if ($provider === 'paypal') {
+            $restriction = paypal_restricted_for_india($session, is_array($body['clientHints'] ?? null) ? $body['clientHints'] : []);
+            if ($restriction['restricted']) {
+                audit_log($session['user']['id'], 'payment.paypal_blocked_india', 'payment_provider', 'paypal', ['signals' => $restriction['signals']]);
+                json_response(['error' => 'PAYPAL_NOT_AVAILABLE_IN_INDIA', 'message' => 'PayPal is not available for users located in India. Please choose Razorpay, PayU, or Cashfree.', 'restriction' => $restriction], 403);
+            }
+        }
         if (empty(provider_status()['payments'][$provider])) json_response(['error' => 'PROVIDER_NOT_CONFIGURED', 'message' => 'Payment provider is not configured.'], 503);
         $id = 'PAY-' . uuid_value();
         $now = now_iso();
@@ -1634,7 +2359,7 @@ function handle_api(string $path, string $method): void
         $orderId = (string) ($body['razorpay_order_id'] ?? '');
         $razorpayPaymentId = (string) ($body['razorpay_payment_id'] ?? '');
         $signature = (string) ($body['razorpay_signature'] ?? '');
-        $expected = hash_hmac('sha256', $orderId . '|' . $razorpayPaymentId, (string) getenv('RAZORPAY_KEY_SECRET'));
+        $expected = hash_hmac('sha256', $orderId . '|' . $razorpayPaymentId, (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret'));
         if (!$paymentId || !$orderId || !$razorpayPaymentId || !hash_equals($expected, $signature)) {
             json_response(['error' => 'INVALID_PAYMENT_SIGNATURE', 'message' => 'Payment verification failed.'], 400);
         }
@@ -1647,10 +2372,10 @@ function handle_api(string $path, string $method): void
         $paymentId = (string) ($_GET['paymentId'] ?? '');
         $tokenId = (string) ($_GET['token'] ?? '');
         if ($paymentId === '' || $tokenId === '') redirect_response('/pricing?payment=invalid');
-        $base = getenv('PAYPAL_ENVIRONMENT') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+        $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
         $token = http_request_json($base . '/v1/oauth2/token', [
             'method' => 'POST',
-            'headers' => ['Authorization' => 'Basic ' . base64_encode(getenv('PAYPAL_CLIENT_ID') . ':' . getenv('PAYPAL_CLIENT_SECRET')), 'Content-Type' => 'application/x-www-form-urlencoded'],
+            'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') . ':' . provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')), 'Content-Type' => 'application/x-www-form-urlencoded'],
             'body' => ['grant_type' => 'client_credentials'],
         ]);
         $capture = http_request_json($base . '/v2/checkout/orders/' . rawurlencode($tokenId) . '/capture', [
@@ -1666,9 +2391,9 @@ function handle_api(string $path, string $method): void
     if ($method === 'GET' && $path === '/api/payments/cashfree/return') {
         $paymentId = (string) ($_GET['paymentId'] ?? $_GET['order_id'] ?? '');
         if ($paymentId === '') redirect_response('/pricing?payment=invalid');
-        $base = getenv('CASHFREE_ENVIRONMENT') === 'production' ? 'https://api.cashfree.com/pg/orders/' : 'https://sandbox.cashfree.com/pg/orders/';
+        $base = provider_config_value('CASHFREE_ENVIRONMENT', 'cashfree', 'environment', 'sandbox') === 'production' ? 'https://api.cashfree.com/pg/orders/' : 'https://sandbox.cashfree.com/pg/orders/';
         $order = http_request_json($base . rawurlencode($paymentId), [
-            'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => getenv('CASHFREE_CLIENT_ID'), 'x-client-secret' => getenv('CASHFREE_CLIENT_SECRET')],
+            'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret')],
         ]);
         if (($order['order_status'] ?? '') !== 'PAID') redirect_response('/pricing?payment=failed');
         activate_paid_payment($paymentId, $order['cf_order_id'] ?? $paymentId);
@@ -1678,7 +2403,7 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/payments/payu/return') {
         $body = $_POST;
         $paymentId = (string) ($body['udf1'] ?? $body['txnid'] ?? '');
-        if (($body['status'] ?? '') !== 'success' || $paymentId === '') redirect_response('/pricing?payment=failed');
+        if (($body['status'] ?? '') !== 'success' || $paymentId === '' || !payu_response_hash_valid($body)) redirect_response('/pricing?payment=failed');
         activate_paid_payment($paymentId, (string) ($body['mihpayid'] ?? $body['txnid'] ?? ''));
         redirect_response('/dashboard?payment=success');
     }
@@ -1695,7 +2420,7 @@ function handle_api(string $path, string $method): void
 
         if ($provider === 'razorpay') {
             $signature = (string) ($_SERVER['HTTP_X_RAZORPAY_SIGNATURE'] ?? '');
-            $secret = getenv('RAZORPAY_WEBHOOK_SECRET') ?: getenv('RAZORPAY_KEY_SECRET');
+            $secret = provider_config_value('RAZORPAY_WEBHOOK_SECRET', 'razorpay', 'webhook_secret') ?: provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret');
             $valid = $secret && $signature && hash_equals(hash_hmac('sha256', $raw, (string) $secret), $signature);
             $entity = $payload['payload']['payment']['entity'] ?? $payload['payload']['order']['entity'] ?? [];
             $providerPaymentId = (string) ($entity['id'] ?? '');
@@ -1708,20 +2433,21 @@ function handle_api(string $path, string $method): void
         } elseif ($provider === 'cashfree') {
             $signature = (string) ($_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? $_SERVER['HTTP_X_CASHFREE_SIGNATURE'] ?? '');
             $timestamp = (string) ($_SERVER['HTTP_X_WEBHOOK_TIMESTAMP'] ?? '');
-            $secret = (string) (getenv('CASHFREE_WEBHOOK_SECRET') ?: getenv('CASHFREE_CLIENT_SECRET'));
+            $secret = (string) (provider_config_value('CASHFREE_WEBHOOK_SECRET', 'cashfree', 'webhook_secret') ?: provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret'));
             $valid = $secret && $signature ? hash_equals(base64_encode(hash_hmac('sha256', $timestamp . $raw, $secret, true)), $signature) : false;
             $data = $payload['data'] ?? $payload;
             $paymentId = (string) ($data['order']['order_id'] ?? $data['order_id'] ?? '');
             $providerPaymentId = (string) ($data['payment']['cf_payment_id'] ?? $data['cf_payment_id'] ?? '');
         } elseif ($provider === 'paypal') {
             $eventType = (string) ($payload['event_type'] ?? 'paypal.webhook');
-            $valid = true;
-            if (getenv('PAYPAL_WEBHOOK_ID')) {
+            $valid = false;
+            $paypalWebhookId = provider_config_value('PAYPAL_WEBHOOK_ID', 'paypal', 'webhook_id');
+            if ($paypalWebhookId) {
                 try {
-                    $base = getenv('PAYPAL_ENVIRONMENT') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+                    $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
                     $token = http_request_json($base . '/v1/oauth2/token', [
                         'method' => 'POST',
-                        'headers' => ['Authorization' => 'Basic ' . base64_encode(getenv('PAYPAL_CLIENT_ID') . ':' . getenv('PAYPAL_CLIENT_SECRET')), 'Content-Type' => 'application/x-www-form-urlencoded'],
+                        'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') . ':' . provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')), 'Content-Type' => 'application/x-www-form-urlencoded'],
                         'body' => ['grant_type' => 'client_credentials'],
                     ]);
                     $verify = http_request_json($base . '/v1/notifications/verify-webhook-signature', [
@@ -1733,7 +2459,7 @@ function handle_api(string $path, string $method): void
                             'transmission_id' => $_SERVER['HTTP_PAYPAL_TRANSMISSION_ID'] ?? '',
                             'transmission_sig' => $_SERVER['HTTP_PAYPAL_TRANSMISSION_SIG'] ?? '',
                             'transmission_time' => $_SERVER['HTTP_PAYPAL_TRANSMISSION_TIME'] ?? '',
-                            'webhook_id' => getenv('PAYPAL_WEBHOOK_ID'),
+                            'webhook_id' => $paypalWebhookId,
                             'webhook_event' => $payload,
                         ], JSON_UNESCAPED_SLASHES),
                     ]);
@@ -1750,10 +2476,7 @@ function handle_api(string $path, string $method): void
         } else {
             $paymentId = (string) ($payload['udf1'] ?? $payload['txnid'] ?? '');
             $providerPaymentId = (string) ($payload['mihpayid'] ?? $payload['payuMoneyId'] ?? '');
-            $valid = true;
-            if (getenv('PAYU_SALT') && isset($payload['hash'])) {
-                $valid = (bool) $paymentId;
-            }
+            $valid = $paymentId !== '' && payu_response_hash_valid($payload);
         }
 
         $paidEvent = preg_match('/paid|captured|completed|success/i', $eventType . ' ' . json_encode($payload));
@@ -1806,6 +2529,20 @@ function handle_api(string $path, string $method): void
         json_response(['ok' => true], 201);
     }
 
+    if ($method === 'POST' && $path === '/api/pwa/sync') {
+        $session = current_session();
+        $body = read_json();
+        $items = is_array($body['items'] ?? null) ? $body['items'] : [$body];
+        $saved = 0;
+        foreach ($items as $item) {
+            if (!is_array($item)) continue;
+            $pdo->prepare("INSERT INTO pwa_sync_queue (id, user_id, client_id, type, payload_json, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)")
+                ->execute([uuid_value('SYNC-'), $session['user']['id'] ?? null, substr((string) ($item['clientId'] ?? ''), 0, 120), substr((string) ($item['type'] ?? 'event'), 0, 80), json_encode($item['payload'] ?? $item, JSON_UNESCAPED_SLASHES), now_iso()]);
+            $saved++;
+        }
+        json_response(['queued' => $saved], 202);
+    }
+
     if ($method === 'POST' && $path === '/api/admin/push/send') {
         require_auth(['admin']);
         $body = read_json();
@@ -1841,9 +2578,9 @@ function handle_api(string $path, string $method): void
         $pdo->prepare('INSERT INTO oauth_states (state, provider, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
             ->execute([$state, $m[1], $redirectUri, gmdate('Y-m-d\TH:i:s.v\Z', time() + 600), now_iso()]);
         if ($m[1] === 'google') {
-            redirect_response('https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query(['client_id' => getenv('GOOGLE_CLIENT_ID'), 'redirect_uri' => $redirectUri, 'response_type' => 'code', 'scope' => 'openid email profile', 'state' => $state]));
+            redirect_response('https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query(['client_id' => provider_config_value('GOOGLE_CLIENT_ID', 'google', 'client_id'), 'redirect_uri' => $redirectUri, 'response_type' => 'code', 'scope' => 'openid email profile', 'state' => $state]));
         }
-        redirect_response('https://www.facebook.com/v23.0/dialog/oauth?' . http_build_query(['client_id' => getenv('FACEBOOK_APP_ID'), 'redirect_uri' => $redirectUri, 'response_type' => 'code', 'scope' => 'email,public_profile', 'state' => $state]));
+        redirect_response('https://www.facebook.com/v23.0/dialog/oauth?' . http_build_query(['client_id' => provider_config_value('FACEBOOK_APP_ID', 'facebook', 'app_id'), 'redirect_uri' => $redirectUri, 'response_type' => 'code', 'scope' => 'email,public_profile', 'state' => $state]));
     }
 
     if ($method === 'GET' && preg_match('#^/api/auth/oauth/(google|facebook)/callback$#', $path, $m)) {
@@ -1861,8 +2598,8 @@ function handle_api(string $path, string $method): void
                     'method' => 'POST',
                     'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
                     'body' => [
-                        'client_id' => getenv('GOOGLE_CLIENT_ID'),
-                        'client_secret' => getenv('GOOGLE_CLIENT_SECRET'),
+                        'client_id' => provider_config_value('GOOGLE_CLIENT_ID', 'google', 'client_id'),
+                        'client_secret' => provider_config_value('GOOGLE_CLIENT_SECRET', 'google', 'client_secret'),
                         'code' => $code,
                         'grant_type' => 'authorization_code',
                         'redirect_uri' => $oauthState['redirect_uri'],
@@ -1874,8 +2611,8 @@ function handle_api(string $path, string $method): void
                 finish_oauth_login('google', $profile);
             }
             $token = http_request_json('https://graph.facebook.com/v23.0/oauth/access_token?' . http_build_query([
-                'client_id' => getenv('FACEBOOK_APP_ID'),
-                'client_secret' => getenv('FACEBOOK_APP_SECRET'),
+                'client_id' => provider_config_value('FACEBOOK_APP_ID', 'facebook', 'app_id'),
+                'client_secret' => provider_config_value('FACEBOOK_APP_SECRET', 'facebook', 'app_secret'),
                 'redirect_uri' => $oauthState['redirect_uri'],
                 'code' => $code,
             ]));
@@ -1920,12 +2657,7 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/admin/translations/run') {
         require_auth(['admin']);
         if (!provider_status()['ai']) json_response(['error' => 'AI_NOT_CONFIGURED', 'message' => 'Add OPENAI_API_KEY to generate article translations.'], 503);
-        $stories = array_values(array_filter(document_value('stories', []), fn($story) => ($story['status'] ?? '') === 'published'));
-        $results = [];
-        foreach ($stories as $story) $results[] = ensure_story_translations($story);
-        $created = array_sum(array_column($results, 'created'));
-        $failed = array_sum(array_column($results, 'failed'));
-        json_response(['processed' => count($stories), 'created' => $created, 'failed' => $failed, 'locales' => array_column(configured_translation_languages(), 'locale'), 'results' => $results]);
+        json_response(['jobId' => enqueue_background_job('translations.backfill'), 'status' => 'queued', 'locales' => array_column(configured_translation_languages(), 'locale')], 202);
     }
 
     if ($method === 'GET' && $path === '/api/me/payout-account') {
