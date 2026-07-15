@@ -134,6 +134,18 @@
     PRIMARY KEY (story_slug, locale)
   );
 
+  CREATE VIRTUAL TABLE IF NOT EXISTS story_search_index USING fts5(
+    slug UNINDEXED,
+    title,
+    dek,
+    author,
+    publication,
+    topic,
+    tags,
+    body,
+    tokenize='unicode61 remove_diacritics 2'
+  );
+
   CREATE TABLE IF NOT EXISTS subscriptions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -470,6 +470,134 @@ function recommendation_story_catalog(): array
     ];
 }
 
+function story_plain_text(array $story): string
+{
+    $body = is_array($story['body'] ?? null) ? implode(' ', $story['body']) : (string) ($story['body'] ?? '');
+    $html = trim((string) ($story['contentHtml'] ?? ''));
+    return trim($body . ' ' . strip_tags($html));
+}
+
+function fts_query(string $query): string
+{
+    $terms = preg_split('/\s+/', trim($query));
+    $clean = [];
+    foreach ($terms ?: [] as $term) {
+        $term = preg_replace('/[^\p{L}\p{N}_-]+/u', '', $term);
+        if ($term !== '') $clean[] = $term . '*';
+    }
+    return implode(' ', array_slice($clean, 0, 12));
+}
+
+function rebuild_story_search_index(?array $stories = null): int
+{
+    $pdo = Database::pdo();
+    $stories ??= recommendation_story_catalog();
+    try {
+        $pdo->exec('DROP TABLE IF EXISTS story_search_index');
+        $pdo->exec("CREATE VIRTUAL TABLE IF NOT EXISTS story_search_index USING fts5(slug UNINDEXED, title, dek, author, publication, topic, tags, body, tokenize='unicode61 remove_diacritics 2')");
+        $stmt = $pdo->prepare('INSERT INTO story_search_index (slug, title, dek, author, publication, topic, tags, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+        $count = 0;
+        foreach ($stories as $story) {
+            if (($story['status'] ?? 'published') !== 'published' || empty($story['slug'])) continue;
+            $stmt->execute([
+                (string) $story['slug'],
+                (string) ($story['title'] ?? ''),
+                (string) ($story['dek'] ?? ''),
+                (string) ($story['author'] ?? ''),
+                (string) ($story['publication'] ?? $story['role'] ?? ''),
+                (string) ($story['topic'] ?? ''),
+                implode(' ', is_array($story['tags'] ?? null) ? $story['tags'] : []),
+                story_plain_text($story),
+            ]);
+            $count++;
+        }
+        return $count;
+    } catch (Throwable) {
+        return 0;
+    }
+}
+
+function search_stories(array $params): array
+{
+    $pdo = Database::pdo();
+    $stories = recommendation_story_catalog();
+    $bySlug = [];
+    foreach ($stories as $story) if (!empty($story['slug']) && (($story['status'] ?? 'published') === 'published')) $bySlug[$story['slug']] = $story;
+    rebuild_story_search_index($stories);
+
+    $query = trim((string) ($params['q'] ?? ''));
+    $topic = (string) ($params['topic'] ?? 'all');
+    $author = (string) ($params['author'] ?? 'all');
+    $access = (string) ($params['access'] ?? 'all');
+    $maxMinutes = (string) ($params['maxMinutes'] ?? 'all');
+    $sort = (string) ($params['sort'] ?? 'relevance');
+    $limit = max(1, min(80, (int) ($params['limit'] ?? 40)));
+    $scores = [];
+    $slugs = [];
+
+    try {
+        if ($query !== '') {
+            $fts = fts_query($query);
+            if ($fts !== '') {
+                $stmt = $pdo->prepare('SELECT slug, bm25(story_search_index, 8.0, 4.0, 2.0, 1.5, 2.0, 1.2, 1.0, 1.0) AS rank FROM story_search_index WHERE story_search_index MATCH ? ORDER BY rank LIMIT 200');
+                $stmt->execute([$fts]);
+                foreach ($stmt->fetchAll() as $row) {
+                    $slugs[] = $row['slug'];
+                    $scores[$row['slug']] = abs((float) $row['rank']);
+                }
+            }
+        } else {
+            $slugs = array_keys($bySlug);
+        }
+    } catch (Throwable) {
+        $needle = strtolower($query);
+        foreach ($bySlug as $slug => $story) {
+            $haystack = strtolower(($story['title'] ?? '') . ' ' . ($story['dek'] ?? '') . ' ' . ($story['author'] ?? '') . ' ' . ($story['topic'] ?? '') . ' ' . implode(' ', $story['tags'] ?? []) . ' ' . story_plain_text($story));
+            if ($needle === '' || str_contains($haystack, $needle)) {
+                $slugs[] = $slug;
+                $scores[$slug] = substr_count($haystack, $needle ?: ' ') + (str_contains(strtolower((string) ($story['title'] ?? '')), $needle) ? 10 : 0);
+            }
+        }
+    }
+
+    $results = [];
+    foreach (array_values(array_unique($slugs)) as $slug) {
+        if (!isset($bySlug[$slug])) continue;
+        $story = $bySlug[$slug];
+        if ($topic !== 'all' && ($story['topic'] ?? '') !== $topic) continue;
+        if ($author !== 'all' && ($story['author'] ?? '') !== $author) continue;
+        if ($access === 'free' && !empty($story['premium'])) continue;
+        if ($access === 'premium' && empty($story['premium'])) continue;
+        $minutes = (int) preg_replace('/\D+/', '', (string) ($story['readTime'] ?? '5'));
+        if ($maxMinutes !== 'all' && $minutes > (int) $maxMinutes) continue;
+        $results[] = [
+            'slug' => $slug,
+            'title' => (string) ($story['title'] ?? ''),
+            'dek' => (string) ($story['dek'] ?? ''),
+            'author' => (string) ($story['author'] ?? ''),
+            'publication' => (string) ($story['publication'] ?? $story['role'] ?? 'InkRiver'),
+            'topic' => (string) ($story['topic'] ?? ''),
+            'readTime' => (string) ($story['readTime'] ?? '5 min read'),
+            'premium' => (bool) ($story['premium'] ?? false),
+            'tags' => is_array($story['tags'] ?? null) ? $story['tags'] : [],
+            'imageUrl' => (string) ($story['imageUrl'] ?? ''),
+            'publishedAt' => (string) ($story['publishedAt'] ?? ''),
+            'reads' => (int) ($story['reads'] ?? 0),
+            'claps' => (int) ($story['claps'] ?? 0),
+            'searchScore' => (float) ($scores[$slug] ?? 0),
+        ];
+    }
+    usort($results, function ($a, $b) use ($sort) {
+        return match ($sort) {
+            'popular' => ($b['reads'] + $b['claps']) <=> ($a['reads'] + $a['claps']),
+            'newest' => strtotime($b['publishedAt'] ?: '1970-01-01') <=> strtotime($a['publishedAt'] ?: '1970-01-01'),
+            'shortest' => ((int) $a['readTime']) <=> ((int) $b['readTime']),
+            default => $b['searchScore'] <=> $a['searchScore'],
+        };
+    });
+    return array_slice($results, 0, $limit);
+}
+
 function train_recommendations_for_user(string $userId): array
 {
     $pdo = Database::pdo();
@@ -933,6 +1061,21 @@ function handle_api(string $path, string $method): void
         ]);
     }
 
+    if ($method === 'GET' && $path === '/api/search') {
+        json_response(['results' => search_stories($_GET), 'query' => (string) ($_GET['q'] ?? '')]);
+    }
+
+    if ($method === 'GET' && $path === '/api/search/suggest') {
+        $results = search_stories(['q' => $_GET['q'] ?? '', 'limit' => 8, 'sort' => 'relevance']);
+        $authors = [];
+        foreach (recommendation_story_catalog() as $story) {
+            $name = (string) ($story['author'] ?? '');
+            if ($name && stripos($name, (string) ($_GET['q'] ?? '')) !== false) $authors[$name] = ['type' => 'Writer', 'label' => $name, 'meta' => (string) ($story['topic'] ?? ''), 'route' => '/@' . strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', $name), '-'))];
+        }
+        $suggestions = array_map(fn($story) => ['type' => 'Story', 'label' => $story['title'], 'meta' => $story['author'] . ' · ' . $story['topic'], 'route' => '/stories/' . $story['slug']], $results);
+        json_response(['suggestions' => array_slice(array_merge($suggestions, array_values($authors)), 0, 8)]);
+    }
+
     if (preg_match('#^/api/admin/documents/([^/]+)$#', $path, $m)) {
         $session = require_auth(['admin']);
         $key = urldecode($m[1]);
@@ -953,6 +1096,7 @@ function handle_api(string $path, string $method): void
                 $pdo->prepare("INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES ('site-seo-public', ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at")
                     ->execute([json_encode($value, JSON_UNESCAPED_SLASHES), $session['user']['id'], $updatedAt]);
             }
+            if ($key === 'stories') rebuild_story_search_index(is_array($value) ? $value : null);
             audit_log($session['user']['id'], 'admin.document_update', 'platform_document', $key);
             json_response(['value' => $value, 'updatedAt' => $updatedAt]);
         }
@@ -1047,6 +1191,11 @@ function handle_api(string $path, string $method): void
         $results = [];
         foreach ($users as $user) $results[] = ['userId' => $user['id'], ...train_recommendations_for_user($user['id'])];
         json_response(['rebuilt' => count($results), 'results' => $results]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/search/rebuild') {
+        require_auth(['admin']);
+        json_response(['indexed' => rebuild_story_search_index(), 'rebuiltAt' => now_iso()]);
     }
 
     if ($method === 'GET' && $path === '/api/admin/recommendations/status') {
@@ -1372,6 +1521,7 @@ function handle_api(string $path, string $method): void
         array_unshift($stories, $story);
         $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
             ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
+        rebuild_story_search_index($stories);
         $translationResult = null;
         if ($story['status'] === 'published' && provider_status()['ai']) $translationResult = ensure_story_translations($story);
         json_response(['story' => $story, 'translations' => $translationResult], 201);

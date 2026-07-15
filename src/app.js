@@ -1392,6 +1392,11 @@ const state = {
   pendingResumeSlug: "",
   searchOpen: false,
   searchFilters: { topic: "all", author: "all", access: "all", maxMinutes: "all", sort: "relevance" },
+  serverSearchResults: [],
+  serverSearchSuggestions: [],
+  serverSearchKey: "",
+  searchStatus: "",
+  searchTimer: 0,
   checkoutPlan: null,
   copiedShare: "",
   paymentMessage: "",
@@ -1788,6 +1793,11 @@ function searchScore(story, query) {
 function advancedSearchResults() {
   const query = state.query.trim().toLowerCase();
   const filters = state.searchFilters;
+  const key = searchRequestKey();
+  if (state.serverSearchKey === key && state.serverSearchResults.length) {
+    const localBySlug = new Map(publishedStories().map((story) => [story.slug, story]));
+    return state.serverSearchResults.map((result) => ({ ...(localBySlug.get(result.slug) || {}), ...result })).filter((story) => story.slug);
+  }
   const results = publishedStories().filter((story) => {
     if (query && !fullTextForStory(story).includes(query)) return false;
     if (filters.topic !== "all" && story.topic !== filters.topic) return false;
@@ -1808,6 +1818,7 @@ function advancedSearchResults() {
 function searchSuggestions() {
   const query = state.query.trim().toLowerCase();
   if (query.length < 2) return [];
+  if (state.serverSearchSuggestions.length) return state.serverSearchSuggestions;
   const storySuggestions = publishedStories()
     .filter((story) => fullTextForStory(story).includes(query))
     .slice(0, 5)
@@ -1817,6 +1828,42 @@ function searchSuggestions() {
     .slice(0, 3)
     .map(([slug, profile]) => ({ type: "Writer", label: profile.name, meta: profile.expertise[0], route: `/@${slug}` }));
   return [...storySuggestions, ...writerSuggestions].slice(0, 7);
+}
+
+function searchRequestKey() {
+  const params = new URLSearchParams({
+    q: state.query.trim(),
+    topic: state.searchFilters.topic,
+    author: state.searchFilters.author,
+    access: state.searchFilters.access,
+    maxMinutes: state.searchFilters.maxMinutes,
+    sort: state.searchFilters.sort,
+  });
+  return params.toString();
+}
+
+function scheduleServerSearch(includeSuggestions = false) {
+  window.clearTimeout(state.searchTimer);
+  state.searchTimer = window.setTimeout(() => runServerSearch(includeSuggestions), 220);
+}
+
+async function runServerSearch(includeSuggestions = false) {
+  const key = searchRequestKey();
+  state.searchStatus = "Searching index...";
+  try {
+    const payload = await apiRequest(`/api/search?${key}`);
+    if (searchRequestKey() !== key) return;
+    state.serverSearchResults = payload.results || [];
+    state.serverSearchKey = key;
+    state.searchStatus = "SQLite full-text index";
+    if (includeSuggestions && state.query.trim().length >= 2) {
+      const suggestions = await apiRequest(`/api/search/suggest?q=${encodeURIComponent(state.query.trim())}`);
+      state.serverSearchSuggestions = suggestions.suggestions || [];
+    }
+  } catch (error) {
+    state.searchStatus = `Local fallback: ${error.message}`;
+  }
+  render();
 }
 
 function profileForSlug(slug) {
@@ -2479,6 +2526,7 @@ function setRoute(to) {
   window.scrollTo({ top: 0, behavior: "smooth" });
   render();
   if (to.startsWith("/admin/users")) loadAdminUsers();
+  if (to.startsWith("/search")) runServerSearch(false);
 }
 
 function filteredStories(topic = state.activeTopic) {
@@ -2669,7 +2717,7 @@ function searchPageTemplate() {
         <label><span>Sort</span><select data-search-filter="sort">${[["relevance", "Most relevant"], ["popular", "Most popular"], ["newest", "Newest"], ["shortest", "Shortest"]].map(([value, label]) => `<option value="${value}" ${state.searchFilters.sort === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
         <button class="secondary-button" data-action="clear-search-filters">${icon("close", 15)}Clear</button>
       </section>
-      <div class="search-results-summary"><strong>${results.length}</strong><span>result${results.length === 1 ? "" : "s"}${state.query ? ` for "${escapeHtml(state.query)}"` : ""}</span></div>
+      <div class="search-results-summary"><strong>${results.length}</strong><span>result${results.length === 1 ? "" : "s"}${state.query ? ` for "${escapeHtml(state.query)}"` : ""}</span><em>${escapeHtml(state.searchStatus || "SQLite full-text search ready")}</em></div>
       <section class="search-results-layout">
         <div class="story-list">
           ${results.length ? results.map((story) => storyCardTemplate(story, false)).join("") : `<div class="empty-state">No stories match these filters. Try a broader topic, longer reading time, or fewer keywords.</div>`}
@@ -3751,7 +3799,7 @@ function platformHealthTemplate() {
   return adminShellTemplate("Platform health", "Monitor reliability, delivery, APIs, indexing, moderation load, recommendations, storage, and payment operations.", `
     <section class="health-banner"><span class="health-pulse"></span><div><strong>Health is derived from current configuration and database records</strong><p>Unavailable providers remain disabled until their server credentials are supplied.</p></div></section>
     <div class="health-service-grid">${health.map(([name, status, detail]) => `<article class="${status === "Unavailable" ? "degraded" : ""}"><span>${icon(status === "Operational" ? "check" : "gauge", 17)}</span><div><strong>${name}</strong><small>${status}</small></div><b>${detail}</b></article>`).join("")}</div>
-    <div class="analytics-split"><section class="analytics-chart"><header><div><h2>Recorded engagement</h2><p>Events stored by the production analytics endpoint.</p></div><strong>${eventTotal} events</strong></header><div class="line-chart health-chart">${state.adminAnalytics.eventCounts.map((item) => `<i style="height:${Math.min(100, Math.max(8, Number(item.count) * 8))}%"><em>${escapeHtml(item.event_type)}</em></i>`).join("") || `<div class="empty-state">No engagement events recorded yet.</div>`}</div></section><section class="health-queue"><h2>Operational queues</h2>${[["Moderation backlog", openModeration], ["Support tickets", openTickets], ["Active subscriptions", state.adminAnalytics.activeSubscriptions], ["Payment revenue", state.adminAnalytics.revenue / 100], ["Recommendation signals", Number(rec.signals || 0)], ["Last model train", rec.lastTrainedAt ? new Date(rec.lastTrainedAt).toLocaleString("en-IN") : "Pending"]].map(([name, count]) => `<div><span><strong>${name}</strong><em>${count}</em></span></div>`).join("")}<button class="secondary-button" data-action="rebuild-recommendations">Rebuild recommendation model</button></section></div>
+    <div class="analytics-split"><section class="analytics-chart"><header><div><h2>Recorded engagement</h2><p>Events stored by the production analytics endpoint.</p></div><strong>${eventTotal} events</strong></header><div class="line-chart health-chart">${state.adminAnalytics.eventCounts.map((item) => `<i style="height:${Math.min(100, Math.max(8, Number(item.count) * 8))}%"><em>${escapeHtml(item.event_type)}</em></i>`).join("") || `<div class="empty-state">No engagement events recorded yet.</div>`}</div></section><section class="health-queue"><h2>Operational queues</h2>${[["Moderation backlog", openModeration], ["Support tickets", openTickets], ["Active subscriptions", state.adminAnalytics.activeSubscriptions], ["Payment revenue", state.adminAnalytics.revenue / 100], ["Recommendation signals", Number(rec.signals || 0)], ["Last model train", rec.lastTrainedAt ? new Date(rec.lastTrainedAt).toLocaleString("en-IN") : "Pending"]].map(([name, count]) => `<div><span><strong>${name}</strong><em>${count}</em></span></div>`).join("")}<button class="secondary-button" data-action="rebuild-recommendations">Rebuild recommendation model</button><button class="secondary-button" data-action="rebuild-search-index">Rebuild search index</button></section></div>
   `);
 }
 
@@ -4871,6 +4919,8 @@ function bindInputs() {
     searchInput.addEventListener("input", (event) => {
       state.query = event.target.value;
       state.searchOpen = true;
+      state.serverSearchSuggestions = [];
+      scheduleServerSearch(true);
       render();
       const next = document.getElementById("searchInput");
       next?.focus();
@@ -4890,6 +4940,9 @@ function bindInputs() {
   const searchPageInput = document.getElementById("searchPageInput");
   searchPageInput?.addEventListener("input", (event) => {
     state.query = event.target.value;
+    state.serverSearchResults = [];
+    state.serverSearchKey = "";
+    scheduleServerSearch(false);
     render();
     const next = document.getElementById("searchPageInput");
     next?.focus();
@@ -4898,6 +4951,9 @@ function bindInputs() {
   document.querySelectorAll("[data-search-filter]").forEach((field) => {
     field.addEventListener("change", (event) => {
       state.searchFilters[event.target.dataset.searchFilter] = event.target.value;
+      state.serverSearchResults = [];
+      state.serverSearchKey = "";
+      scheduleServerSearch(false);
       render();
     });
   });
@@ -5708,6 +5764,18 @@ document.addEventListener("click", async (event) => {
     }
     render();
   }
+  if (action === "rebuild-search-index") {
+    try {
+      state.userMessage = "Rebuilding full-text search index...";
+      render();
+      const payload = await apiRequest("/api/admin/search/rebuild", { method: "POST", body: "{}" });
+      state.searchStatus = `Indexed ${payload.indexed || 0} stories`;
+      state.userMessage = state.searchStatus;
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
   if (action === "toggle-writer-preview") {
     state.draftPreview = !state.draftPreview;
     render();
@@ -6139,6 +6207,9 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "clear-search-filters") {
     state.searchFilters = { topic: "all", author: "all", access: "all", maxMinutes: "all", sort: "relevance" };
+    state.serverSearchResults = [];
+    state.serverSearchKey = "";
+    runServerSearch(false);
     render();
   }
   if (action === "cancel-comment") {

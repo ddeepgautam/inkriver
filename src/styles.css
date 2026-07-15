@@ -3216,6 +3216,7 @@ button:disabled {
 .search-results-summary { display: flex; align-items: baseline; gap: 6px; margin: 22px 0 0; }
 .search-results-summary strong { font-size: 22px; }
 .search-results-summary span { color: var(--muted); }
+.search-results-summary em { margin-left: auto; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 800; }
 .search-results-layout, .profile-content-grid, .curated-list-layout { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 40px; }
 .search-discovery-rail, .profile-sidebar { display: grid; align-content: start; gap: 14px; padding-top: 22px; }
 .discovery-follow-row, .follow-manager-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); }

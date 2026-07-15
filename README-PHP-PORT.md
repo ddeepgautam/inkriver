@@ -26,6 +26,7 @@ Completed:
 - Payment webhook endpoints for Razorpay, PayPal, PayU, and Cashfree.
 - Push subscription storage and admin push-send endpoint.
 - Server-side recommendation training with persisted user profiles, story scores, transparent factors, feedback controls, and admin rebuild/status APIs.
+- SQLite FTS5 full-text search with filters, autocomplete, fallback search, and admin index rebuild.
 
 Remaining production services to connect with live provider credentials:
 
@@ -92,6 +93,12 @@ Recommendation model:
 - The personalized feed reads `/api/recommendations/feed`.
 - Admins can rebuild all active user profiles from `/api/admin/recommendations/rebuild`.
 - Add a Hostinger cron job that POSTs to `/api/admin/recommendations/rebuild` with an authenticated admin session, or trigger it manually from Platform Health.
+
+Search index:
+
+- Public search uses `/api/search` and `/api/search/suggest`.
+- The index is stored in the SQLite FTS5 table `story_search_index`.
+- Admins can rebuild it from Platform Health or by POSTing to `/api/admin/search/rebuild`.
 
 Uploads:
 
