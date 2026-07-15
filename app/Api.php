@@ -415,6 +415,199 @@ function ensure_story_translations(array $story): array
     return ['slug' => $slug, 'created' => $created, 'failed' => $failed];
 }
 
+function rec_add_weight(array &$map, string $key, float $amount): void
+{
+    $key = trim($key);
+    if ($key === '') return;
+    $map[$key] = max(-100, min(180, (float) ($map[$key] ?? 0) + $amount));
+}
+
+function rec_story_tags(array $story): array
+{
+    return array_values(array_unique(array_filter(array_merge([(string) ($story['topic'] ?? '')], is_array($story['tags'] ?? null) ? $story['tags'] : []))));
+}
+
+function rec_signal_weight(string $eventType): float
+{
+    return [
+        'open' => 1.0,
+        'read_midpoint' => 2.2,
+        'read_complete' => 5.0,
+        'complete' => 5.0,
+        'long_read' => 3.4,
+        'clap' => 3.8,
+        'save' => 7.0,
+        'share' => 4.0,
+        'follow' => 5.5,
+        'interest_added' => 10.0,
+        'interest_removed' => -12.0,
+        'unsave' => -5.0,
+        'not_interested' => -14.0,
+        'less_like_this' => -9.0,
+        'more_like_this' => 9.0,
+        'hide_topic' => -16.0,
+        'unfollow' => -7.0,
+    ][$eventType] ?? 0.8;
+}
+
+function recommendation_story_catalog(): array
+{
+    $stories = array_values(array_filter(document_value('stories', []), fn($story) => ($story['status'] ?? 'published') === 'published'));
+    if ($stories) return $stories;
+    return [
+        ['slug' => 'inside-the-new-reader-economy', 'title' => 'Inside the new reader economy', 'topic' => 'Marketing', 'author' => 'Meera Iyer', 'tags' => ['publishing', 'memberships', 'audience'], 'reads' => 21800, 'claps' => 1840, 'publishedAt' => '2026-06-01T00:00:00.000Z'],
+        ['slug' => 'building-a-practical-ai-content-desk', 'title' => 'Building a practical AI content desk', 'topic' => 'AI', 'author' => 'Arjun Rao', 'tags' => ['artificial intelligence', 'workflow', 'content'], 'reads' => 14600, 'claps' => 920, 'publishedAt' => '2026-06-02T00:00:00.000Z'],
+        ['slug' => 'why-small-publications-win-loyalty', 'title' => 'Why small publications win loyalty', 'topic' => 'Startups', 'author' => 'Naina Kapoor', 'tags' => ['community', 'publishing', 'loyalty'], 'reads' => 17400, 'claps' => 1320, 'publishedAt' => '2026-06-03T00:00:00.000Z'],
+        ['slug' => 'the-clean-dashboard-test', 'title' => 'The clean dashboard test', 'topic' => 'Design', 'author' => 'Dev Shah', 'tags' => ['user experience', 'dashboards', 'systems'], 'reads' => 9800, 'claps' => 760, 'publishedAt' => '2026-06-04T00:00:00.000Z'],
+        ['slug' => 'the-indian-creator-business-stack', 'title' => 'The Indian creator business stack', 'topic' => 'India', 'author' => 'Kavya Menon', 'tags' => ['india', 'creators', 'payments'], 'reads' => 15800, 'claps' => 1160, 'publishedAt' => '2026-06-05T00:00:00.000Z'],
+        ['slug' => 'a-calm-system-for-personal-finance', 'title' => 'A calm system for personal finance', 'topic' => 'Money', 'author' => 'Rohan Sen', 'tags' => ['personal finance', 'habits', 'planning'], 'reads' => 19600, 'claps' => 1480, 'publishedAt' => '2026-06-06T00:00:00.000Z'],
+        ['slug' => 'what-communities-remember', 'title' => 'What communities remember', 'topic' => 'Culture', 'author' => 'Zoya Khan', 'tags' => ['community', 'media', 'culture'], 'reads' => 12100, 'claps' => 880, 'publishedAt' => '2026-06-07T00:00:00.000Z'],
+        ['slug' => 'designing-ai-products-people-trust', 'title' => 'Designing AI products people trust', 'topic' => 'Design', 'author' => 'Leena Bose', 'tags' => ['artificial intelligence', 'trust', 'user experience'], 'reads' => 20400, 'claps' => 1730, 'publishedAt' => '2026-06-08T00:00:00.000Z'],
+        ['slug' => 'the-seo-brief-that-writers-use', 'title' => 'The SEO brief writers actually use', 'topic' => 'Marketing', 'author' => 'Ishita Verma', 'tags' => ['seo', 'content strategy', 'writing'], 'reads' => 13900, 'claps' => 1040, 'publishedAt' => '2026-06-09T00:00:00.000Z'],
+        ['slug' => 'from-side-project-to-small-company', 'title' => 'From side project to small company', 'topic' => 'Startups', 'author' => 'Kabir Malhotra', 'tags' => ['founders', 'operations', 'growth'], 'reads' => 16900, 'claps' => 1260, 'publishedAt' => '2026-06-10T00:00:00.000Z'],
+        ['slug' => 'small-language-models-at-work', 'title' => 'Where small language models fit at work', 'topic' => 'AI', 'author' => 'Arjun Rao', 'tags' => ['artificial intelligence', 'business', 'automation'], 'reads' => 15100, 'claps' => 970, 'publishedAt' => '2026-06-11T00:00:00.000Z'],
+        ['slug' => 'the-new-shape-of-indian-internet-culture', 'title' => 'The new shape of Indian internet culture', 'topic' => 'India', 'author' => 'Aditi Nair', 'tags' => ['india', 'culture', 'creators'], 'reads' => 18300, 'claps' => 1390, 'publishedAt' => '2026-06-12T00:00:00.000Z'],
+    ];
+}
+
+function train_recommendations_for_user(string $userId): array
+{
+    $pdo = Database::pdo();
+    $stories = recommendation_story_catalog();
+    $storyBySlug = [];
+    foreach ($stories as $story) if (!empty($story['slug'])) $storyBySlug[$story['slug']] = $story;
+
+    $docStmt = $pdo->prepare('SELECT key, value_json FROM user_documents WHERE user_id = ?');
+    $docStmt->execute([$userId]);
+    $docs = [];
+    foreach ($docStmt->fetchAll() as $row) $docs[$row['key']] = parse_json_field($row['value_json'], null);
+
+    $profileDoc = is_array($docs['recommendation-profile'] ?? null) ? $docs['recommendation-profile'] : [];
+    $following = is_array($docs['following'] ?? null) ? $docs['following'] : [];
+    $saved = is_array($docs['saved'] ?? null) ? $docs['saved'] : [];
+    $history = is_array($docs['reading-history'] ?? null) ? $docs['reading-history'] : [];
+
+    $topicWeights = [];
+    $tagWeights = [];
+    $authorWeights = [];
+    $storyWeights = [];
+    $hiddenStories = [];
+    $hiddenTopics = [];
+    $hiddenAuthors = [];
+    $signals = 0;
+
+    foreach (($profileDoc['selectedInterests'] ?? []) as $topic) rec_add_weight($topicWeights, (string) $topic, 18);
+    foreach (($profileDoc['topicScores'] ?? []) as $topic => $score) rec_add_weight($topicWeights, (string) $topic, (float) $score * 1.4);
+    foreach (($profileDoc['tagScores'] ?? []) as $tag => $score) rec_add_weight($tagWeights, (string) $tag, (float) $score);
+    foreach (($profileDoc['authorScores'] ?? []) as $author => $score) rec_add_weight($authorWeights, (string) $author, (float) $score);
+    foreach (($profileDoc['storyScores'] ?? []) as $slug => $score) rec_add_weight($storyWeights, (string) $slug, (float) $score * 1.2);
+    foreach (($profileDoc['hiddenStories'] ?? []) as $slug) $hiddenStories[(string) $slug] = true;
+
+    foreach (($following['topics'] ?? []) as $topic) rec_add_weight($topicWeights, (string) $topic, 16);
+    foreach (($following['tags'] ?? []) as $tag) rec_add_weight($tagWeights, (string) $tag, 11);
+    foreach (($following['writers'] ?? []) as $author) rec_add_weight($authorWeights, (string) $author, 13);
+    foreach (($saved ?: []) as $slug) {
+        if (!isset($storyBySlug[$slug])) continue;
+        $story = $storyBySlug[$slug];
+        rec_add_weight($storyWeights, (string) $slug, 11);
+        rec_add_weight($topicWeights, (string) ($story['topic'] ?? ''), 4);
+        rec_add_weight($authorWeights, (string) ($story['author'] ?? ''), 2.5);
+        foreach (rec_story_tags($story) as $tag) rec_add_weight($tagWeights, $tag, 2.5);
+    }
+    foreach ($history as $entry) {
+        $slug = (string) ($entry['slug'] ?? '');
+        if (!isset($storyBySlug[$slug])) continue;
+        $progress = (float) ($entry['progress'] ?? 0);
+        $weight = $progress >= 95 ? 6 : ($progress >= 50 ? 3 : 1);
+        $story = $storyBySlug[$slug];
+        rec_add_weight($storyWeights, $slug, $weight);
+        rec_add_weight($topicWeights, (string) ($story['topic'] ?? ''), $weight * 0.8);
+        foreach (rec_story_tags($story) as $tag) rec_add_weight($tagWeights, $tag, $weight * 0.4);
+    }
+
+    $eventStmt = $pdo->prepare('SELECT story_slug, event_type, metadata, value, created_at FROM engagement_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 1000');
+    $eventStmt->execute([$userId]);
+    foreach ($eventStmt->fetchAll() as $event) {
+        $signals++;
+        $type = (string) $event['event_type'];
+        $weight = rec_signal_weight($type);
+        $metadata = parse_json_field($event['metadata'] ?? '{}', []);
+        $slug = (string) ($event['story_slug'] ?? '');
+        $story = $storyBySlug[$slug] ?? null;
+        $topic = (string) ($metadata['topic'] ?? ($story['topic'] ?? ''));
+        $author = (string) ($metadata['author'] ?? ($story['author'] ?? ''));
+        if ($type === 'interest_added' || $type === 'interest_removed') $topic = (string) ($metadata['topic'] ?? '');
+        if ($type === 'hide_topic' && $topic) $hiddenTopics[$topic] = true;
+        if ($type === 'unfollow' && ($metadata['type'] ?? '') === 'writers') $hiddenAuthors[(string) ($metadata['value'] ?? '')] = true;
+        if (in_array($type, ['not_interested', 'less_like_this'], true) && $slug) $hiddenStories[$slug] = true;
+        if ($type === 'more_like_this' && $slug) unset($hiddenStories[$slug]);
+        rec_add_weight($topicWeights, $topic, $weight);
+        rec_add_weight($authorWeights, $author, $weight * 0.45);
+        if ($slug) rec_add_weight($storyWeights, $slug, $weight);
+        $tags = is_array($metadata['tags'] ?? null) ? $metadata['tags'] : ($story ? rec_story_tags($story) : []);
+        foreach ($tags as $tag) rec_add_weight($tagWeights, (string) $tag, $weight * 0.55);
+    }
+
+    $now = now_iso();
+    $version = 2;
+    $pdo->prepare('INSERT INTO recommendation_profiles (user_id, topic_weights_json, tag_weights_json, author_weights_json, story_weights_json, hidden_topics_json, hidden_authors_json, hidden_stories_json, model_version, signals_count, last_trained_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET topic_weights_json = excluded.topic_weights_json, tag_weights_json = excluded.tag_weights_json, author_weights_json = excluded.author_weights_json, story_weights_json = excluded.story_weights_json, hidden_topics_json = excluded.hidden_topics_json, hidden_authors_json = excluded.hidden_authors_json, hidden_stories_json = excluded.hidden_stories_json, model_version = excluded.model_version, signals_count = excluded.signals_count, last_trained_at = excluded.last_trained_at, updated_at = excluded.updated_at')
+        ->execute([$userId, json_encode($topicWeights), json_encode($tagWeights), json_encode($authorWeights), json_encode($storyWeights), json_encode(array_keys($hiddenTopics)), json_encode(array_keys($hiddenAuthors)), json_encode(array_keys($hiddenStories)), $version, $signals, $now, $now]);
+
+    $pdo->prepare('DELETE FROM recommendation_story_scores WHERE user_id = ?')->execute([$userId]);
+    $insert = $pdo->prepare('INSERT INTO recommendation_story_scores (user_id, story_slug, score, reason, factors_json, model_version, computed_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    foreach ($stories as $story) {
+        $slug = (string) ($story['slug'] ?? '');
+        if ($slug === '') continue;
+        $topic = (string) ($story['topic'] ?? '');
+        $author = (string) ($story['author'] ?? '');
+        $factors = [];
+        $score = 0.0;
+        if (isset($hiddenStories[$slug]) || isset($hiddenTopics[$topic]) || isset($hiddenAuthors[$author])) $score -= 250;
+        $topicScore = (float) ($topicWeights[$topic] ?? 0);
+        $authorScore = (float) ($authorWeights[$author] ?? 0);
+        $storyScore = (float) ($storyWeights[$slug] ?? 0);
+        $tagScore = 0.0;
+        foreach (rec_story_tags($story) as $tag) $tagScore += (float) ($tagWeights[$tag] ?? 0);
+        $popularity = log10(max(10, (int) ($story['reads'] ?? 10))) * 2 + log10(max(10, (int) ($story['claps'] ?? 10)));
+        $freshness = !empty($story['publishedAt']) ? max(0, 8 - min(8, (time() - strtotime((string) $story['publishedAt'])) / 86400 / 30)) : 2;
+        $score += $topicScore * 2.5 + $tagScore * 0.65 + $authorScore * 0.9 + $storyScore * 1.4 + $popularity + $freshness;
+        if ($topicScore > 0) $factors[] = ['label' => $topic, 'kind' => 'topic', 'weight' => round($topicScore, 2)];
+        if ($authorScore > 0) $factors[] = ['label' => $author, 'kind' => 'author', 'weight' => round($authorScore, 2)];
+        if ($tagScore > 0) $factors[] = ['label' => 'Related tags', 'kind' => 'tags', 'weight' => round($tagScore, 2)];
+        if ($storyScore > 0) $factors[] = ['label' => 'Prior engagement', 'kind' => 'behavior', 'weight' => round($storyScore, 2)];
+        $reason = $factors[0]['kind'] ?? '' ? match ($factors[0]['kind']) {
+            'topic' => 'Matched to your interest in ' . $factors[0]['label'],
+            'author' => 'More from a writer you engage with',
+            'tags' => 'Related to tags you read',
+            'behavior' => 'Similar to stories you engaged with',
+            default => 'Ranked by reader engagement',
+        } : 'Ranked by reader engagement';
+        $insert->execute([$userId, $slug, $score, $reason, json_encode(array_slice($factors, 0, 5), JSON_UNESCAPED_SLASHES), $version, $now]);
+    }
+    return ['signals' => $signals, 'stories' => count($stories), 'trainedAt' => $now, 'modelVersion' => $version];
+}
+
+function recommendation_feed_for_user(string $userId, int $limit = 24): array
+{
+    $pdo = Database::pdo();
+    $profile = $pdo->prepare('SELECT * FROM recommendation_profiles WHERE user_id = ?');
+    $profile->execute([$userId]);
+    $profileRow = $profile->fetch();
+    if (!$profileRow || strtotime((string) $profileRow['last_trained_at']) < time() - 300) train_recommendations_for_user($userId);
+    $stmt = $pdo->prepare('SELECT * FROM recommendation_story_scores WHERE user_id = ? ORDER BY score DESC LIMIT ?');
+    $stmt->bindValue(1, $userId);
+    $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    return array_map(fn($row) => [
+        'storySlug' => $row['story_slug'],
+        'score' => round((float) $row['score'], 3),
+        'reason' => $row['reason'],
+        'factors' => parse_json_field($row['factors_json'], []),
+        'computedAt' => $row['computed_at'],
+        'modelVersion' => (int) $row['model_version'],
+    ], $stmt->fetchAll());
+}
+
 function payment_amount_for_checkout(array $payment, array $metadata): int
 {
     $amount = (int) $payment['amount'];
@@ -819,6 +1012,48 @@ function handle_api(string $path, string $method): void
         $pdo->prepare('INSERT INTO engagement_events (id, user_id, anonymous_id, story_slug, event_type, value, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
             ->execute([uuid_value(), $session['user']['id'] ?? null, null, substr((string) ($body['storySlug'] ?? ''), 0, 200), (string) ($body['type'] ?? 'open'), $body['value'] ?? null, json_encode($body['metadata'] ?? []), now_iso()]);
         json_response(['ok' => true], 201);
+    }
+
+    if ($method === 'GET' && $path === '/api/recommendations/feed') {
+        $session = require_auth();
+        $feed = recommendation_feed_for_user($session['user']['id'], max(1, min(80, (int) ($_GET['limit'] ?? 24))));
+        $profile = $pdo->prepare('SELECT signals_count, last_trained_at, model_version FROM recommendation_profiles WHERE user_id = ?');
+        $profile->execute([$session['user']['id']]);
+        $row = $profile->fetch();
+        json_response(['feed' => $feed, 'profile' => ['signalsCount' => (int) ($row['signals_count'] ?? 0), 'lastTrainedAt' => $row['last_trained_at'] ?? null, 'modelVersion' => (int) ($row['model_version'] ?? 2)]]);
+    }
+
+    if ($method === 'POST' && $path === '/api/recommendations/feedback') {
+        $session = require_auth();
+        $body = read_json();
+        $type = (string) ($body['type'] ?? 'feedback');
+        if ($type === 'reset_recommendations') {
+            $pdo->prepare('DELETE FROM recommendation_profiles WHERE user_id = ?')->execute([$session['user']['id']]);
+            $pdo->prepare('DELETE FROM recommendation_story_scores WHERE user_id = ?')->execute([$session['user']['id']]);
+            $pdo->prepare("DELETE FROM engagement_events WHERE user_id = ? AND event_type IN ('open','read_midpoint','read_complete','complete','long_read','clap','save','unsave','share','not_interested','less_like_this','more_like_this','hide_topic','interest_added','interest_removed')")->execute([$session['user']['id']]);
+            json_response(['ok' => true, 'training' => ['signals' => 0, 'stories' => 0, 'trainedAt' => now_iso(), 'modelVersion' => 2], 'feed' => []]);
+        }
+        $storySlug = substr((string) ($body['storySlug'] ?? ''), 0, 200);
+        $metadata = is_array($body['metadata'] ?? null) ? $body['metadata'] : [];
+        $pdo->prepare('INSERT INTO engagement_events (id, user_id, anonymous_id, story_slug, event_type, value, metadata, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)')
+            ->execute([uuid_value(), $session['user']['id'], $storySlug, $type, $body['value'] ?? null, json_encode($metadata, JSON_UNESCAPED_SLASHES), now_iso()]);
+        $summary = train_recommendations_for_user($session['user']['id']);
+        json_response(['ok' => true, 'training' => $summary, 'feed' => recommendation_feed_for_user($session['user']['id'], 24)]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/recommendations/rebuild') {
+        require_auth(['admin']);
+        $users = $pdo->query("SELECT id FROM users WHERE status = 'active' ORDER BY last_login_at DESC NULLS LAST LIMIT 500")->fetchAll();
+        $results = [];
+        foreach ($users as $user) $results[] = ['userId' => $user['id'], ...train_recommendations_for_user($user['id'])];
+        json_response(['rebuilt' => count($results), 'results' => $results]);
+    }
+
+    if ($method === 'GET' && $path === '/api/admin/recommendations/status') {
+        require_auth(['admin']);
+        $row = $pdo->query('SELECT COUNT(*) AS profiles, COALESCE(SUM(signals_count), 0) AS signals, MAX(last_trained_at) AS last_trained_at FROM recommendation_profiles')->fetch();
+        $scores = $pdo->query('SELECT COUNT(*) AS scores FROM recommendation_story_scores')->fetch();
+        json_response(['profiles' => (int) ($row['profiles'] ?? 0), 'signals' => (int) ($row['signals'] ?? 0), 'scores' => (int) ($scores['scores'] ?? 0), 'lastTrainedAt' => $row['last_trained_at'] ?? null]);
     }
 
     if ($method === 'GET' && $path === '/api/admin/users') {

@@ -1187,6 +1187,7 @@ async function loadAdminOperationalData() {
   try {
     const moderation = await apiRequest("/api/admin/moderation");
     if (state.user.role === "admin") state.adminAnalytics = await apiRequest("/api/admin/analytics");
+    if (state.user.role === "admin") state.adminRecommendationStatus = await apiRequest("/api/admin/recommendations/status");
     state.operations.moderation = (moderation.cases || []).map((item) => ({
       id: item.id,
       kind: item.kind,
@@ -1209,6 +1210,37 @@ async function loadMediaAssets() {
     state.mediaAssets = payload.assets || [];
   } catch (error) {
     state.mediaMessage = error.message;
+  }
+}
+
+async function loadRecommendationFeed() {
+  if (!state.user || !state.preferences.personalized) return;
+  try {
+    const payload = await apiRequest("/api/recommendations/feed?limit=48");
+    state.serverRecommendations = payload.feed || [];
+    state.serverRecommendationMap = Object.fromEntries(state.serverRecommendations.map((item) => [item.storySlug, item]));
+    state.recommendationModel = payload.profile || state.recommendationModel;
+  } catch (error) {
+    state.recommendationMessage = `Server recommendations unavailable: ${error.message}`;
+  }
+}
+
+async function sendRecommendationFeedback(type, story, metadata = {}) {
+  if (!state.user || !story) return;
+  try {
+    const payload = await apiRequest("/api/recommendations/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        type,
+        storySlug: story.slug,
+        metadata: { topic: story.topic, author: story.author, tags: story.tags || [], ...metadata },
+      }),
+    });
+    state.serverRecommendations = payload.feed || state.serverRecommendations;
+    state.serverRecommendationMap = Object.fromEntries(state.serverRecommendations.map((item) => [item.storySlug, item]));
+    if (payload.training) state.recommendationModel = { ...state.recommendationModel, signalsCount: payload.training.signals, lastTrainedAt: payload.training.trainedAt, modelVersion: payload.training.modelVersion };
+  } catch {
+    // Local scoring remains available if the recommendation service is unreachable.
   }
 }
 
@@ -1393,6 +1425,7 @@ const state = {
   plans: loadSubscriptionPlans(),
   users: [],
   adminAnalytics: { eventCounts: [], storyCounts: [], dailyEvents: [], revenueByStory: [], revenue: 0, activeSubscriptions: 0, tickets: [], moderation: [] },
+  adminRecommendationStatus: { profiles: 0, signals: 0, scores: 0, lastTrainedAt: "" },
   creatorAnalytics: { stories: [], eventRows: [], commentRows: [], tipRows: [] },
   userSearch: "",
   userMessage: "",
@@ -1432,6 +1465,9 @@ const state = {
   aiResult: "",
   aiRunning: false,
   recommendationPanel: "",
+  serverRecommendations: [],
+  serverRecommendationMap: {},
+  recommendationModel: { signalsCount: 0, lastTrainedAt: "", modelVersion: 0 },
   tipStory: "",
   tipAmount: 200,
   tipMessage: "",
@@ -1454,6 +1490,9 @@ const recommendationSignals = {
   unsave: -4,
   share: 3,
   not_interested: -9,
+  more_like_this: 9,
+  less_like_this: -9,
+  hide_topic: -14,
 };
 
 function addScore(scoreMap, key, amount) {
@@ -1491,7 +1530,8 @@ function recordRecommendationActivity(story, type) {
     ...state.recommendation.activity,
   ].slice(0, 80);
   persistRecommendationProfile();
-  recordServerEvent(type, story.slug, null, { topic: story.topic, author: story.author, tags: story.tags || [] });
+  if (state.user) sendRecommendationFeedback(type, story);
+  else recordServerEvent(type, story.slug, null, { topic: story.topic, author: story.author, tags: story.tags || [] });
 }
 
 function updateInterestPreference(topic, enabled, source = "dashboard") {
@@ -1513,7 +1553,16 @@ function updateInterestPreference(topic, enabled, source = "dashboard") {
   ].slice(0, 80);
   state.onboardingSelection = new Set(state.recommendation.selectedInterests);
   persistRecommendationProfile();
-  recordServerEvent(enabled ? "interest_added" : "interest_removed", "", null, { topic, source });
+  if (state.user) {
+    apiRequest("/api/recommendations/feedback", {
+      method: "POST",
+      body: JSON.stringify({ type: enabled ? "interest_added" : "interest_removed", storySlug: "", metadata: { topic, source } }),
+    }).then((payload) => {
+      state.serverRecommendations = payload.feed || state.serverRecommendations;
+      state.serverRecommendationMap = Object.fromEntries(state.serverRecommendations.map((item) => [item.storySlug, item]));
+      render();
+    }).catch(() => {});
+  } else recordServerEvent(enabled ? "interest_added" : "interest_removed", "", null, { topic, source });
 }
 
 function resetRecommendationProfile() {
@@ -1524,10 +1573,19 @@ function resetRecommendationProfile() {
   };
   state.onboardingSelection = new Set();
   state.recommendationMessage = "Recommendation history cleared. Choose interests to rebuild your feed.";
+  state.serverRecommendations = [];
+  state.serverRecommendationMap = {};
   persistRecommendationProfile();
+  if (state.user) {
+    apiRequest("/api/recommendations/feedback", {
+      method: "POST",
+      body: JSON.stringify({ type: "reset_recommendations", storySlug: "", metadata: { reset: true } }),
+    }).then(() => loadRecommendationFeed()).catch(() => {});
+  }
 }
 
 function recommendationScore(story) {
+  if (state.serverRecommendationMap[story.slug]) return Number(state.serverRecommendationMap[story.slug].score || 0);
   const selectedBoost = state.recommendation.selectedInterests.includes(story.topic) ? 28 : 0;
   const topicScore = Number(state.recommendation.topicScores[story.topic] || 0) * 2.4;
   const tagScore = storyTags(story).reduce((total, tag) => total + Number(state.recommendation.tagScores[tag] || 0), 0) * 0.55;
@@ -1539,6 +1597,7 @@ function recommendationScore(story) {
 }
 
 function recommendationReason(story) {
+  if (state.serverRecommendationMap[story.slug]?.reason) return state.serverRecommendationMap[story.slug].reason;
   if (isFollowing("writers", story.author)) return `New from ${story.author}, whom you follow`;
   if (isFollowing("publications", story.publication)) return `From ${story.publication}, which you follow`;
   if (isFollowing("topics", story.topic)) return `Because you follow ${story.topic}`;
@@ -2250,6 +2309,7 @@ async function submitAuthentication() {
     });
     applyAuthenticatedUser(payload.user, registering);
     await hydratePlatformState();
+    await loadRecommendationFeed();
     state.loginMessage = registering ? "Account created securely." : "Signed in successfully.";
     if (payload.user.role === "admin") await loadAdminUsers();
     if (!state.onboardingOpen) setRoute(payload.user.role === "admin" ? "/admin" : "/dashboard");
@@ -2323,6 +2383,9 @@ async function logoutUser() {
   state.following = loadReaderData("following", emptyFollowing(), null);
   state.readingHistory = loadReaderData("reading-history", [], null);
   state.pollResponses = loadReaderData("interactive-responses", {}, null);
+  state.serverRecommendations = [];
+  state.serverRecommendationMap = {};
+  state.recommendationModel = { signalsCount: 0, lastTrainedAt: "", modelVersion: 0 };
   state.onboardingSelection = new Set(state.recommendation.selectedInterests);
   state.loginMessage = "Signed out.";
   state.loginOpen = false;
@@ -2425,6 +2488,16 @@ function filteredStories(topic = state.activeTopic) {
     return matchesTopic && `${story.title} ${story.dek} ${story.author} ${story.topic}`.toLowerCase().includes(query);
   });
   if (topic !== "For you" || query) return matches;
+  if (state.serverRecommendations.length) {
+    const bySlug = new Map(matches.map((story) => [story.slug, story]));
+    const ranked = state.serverRecommendations
+      .map((item) => bySlug.get(item.storySlug))
+      .filter(Boolean)
+      .filter((story) => !state.recommendation.hiddenStories.includes(story.slug));
+    const rankedSlugs = new Set(ranked.map((story) => story.slug));
+    return [...ranked, ...matches.filter((story) => !rankedSlugs.has(story.slug) && !state.recommendation.hiddenStories.includes(story.slug))]
+      .slice(0, matches.length);
+  }
   const relevantMatches = state.recommendation.selectedInterests.length
     ? matches.filter((story) => (
       state.recommendation.selectedInterests.includes(story.topic)
@@ -2948,7 +3021,11 @@ function articleInsightTemplate(story) {
 }
 
 function recommendationTransparencyTemplate(story) {
-  return `<section class="recommendation-explainer"><header><div><h2>Why you are seeing this</h2><p>${escapeHtml(recommendationReason(story))}. Your feed also considers reading completion, saves, follows, and recent activity.</p></div><button data-recommendation-panel="${story.slug}">${icon("close", 15)}</button></header><div class="recommendation-factors"><span><strong>${story.topic}</strong>Selected interest</span><span><strong>${story.author}</strong>${isFollowing("writers", story.author) ? "Followed writer" : "Related writer"}</span><span><strong>${story.publication}</strong>${isFollowing("publications", story.publication) ? "Followed publication" : "Relevant publication"}</span></div><div class="recommendation-controls"><button data-action-story="more" data-story-slug="${story.slug}">${icon("heart",14)}More like this</button><button data-action-story="less" data-story-slug="${story.slug}">${icon("eye",14)}Less like this</button><button data-action-story="hide-topic" data-story-slug="${story.slug}">Hide ${story.topic}</button><button data-action-story="unfollow-author" data-story-slug="${story.slug}">Unfollow ${story.author}</button><button data-action="reset-recommendations">Reset recommendations</button></div></section>`;
+  const server = state.serverRecommendationMap[story.slug];
+  const factors = server?.factors?.length
+    ? server.factors.map((factor) => `<span><strong>${escapeHtml(factor.label)}</strong>${escapeHtml(factor.kind)} · ${Number(factor.weight || 0).toFixed(1)}</span>`).join("")
+    : `<span><strong>${story.topic}</strong>Selected interest</span><span><strong>${story.author}</strong>${isFollowing("writers", story.author) ? "Followed writer" : "Related writer"}</span><span><strong>${story.publication}</strong>${isFollowing("publications", story.publication) ? "Followed publication" : "Relevant publication"}</span>`;
+  return `<section class="recommendation-explainer"><header><div><h2>Why you are seeing this</h2><p>${escapeHtml(recommendationReason(story))}. ${server ? `Server model v${server.modelVersion} last scored this story at ${Number(server.score || 0).toFixed(1)}.` : "Your feed also considers reading completion, saves, follows, and recent activity."}</p></div><button data-recommendation-panel="${story.slug}">${icon("close", 15)}</button></header><div class="recommendation-factors">${factors}</div><div class="recommendation-controls"><button data-action-story="more" data-story-slug="${story.slug}">${icon("heart",14)}More like this</button><button data-action-story="less" data-story-slug="${story.slug}">${icon("eye",14)}Less like this</button><button data-action-story="hide-topic" data-story-slug="${story.slug}">Hide ${story.topic}</button><button data-action-story="unfollow-author" data-story-slug="${story.slug}">Unfollow ${story.author}</button><button data-action="reset-recommendations">Reset recommendations</button></div></section>`;
 }
 
 function writerTipTemplate(story) {
@@ -3667,13 +3744,14 @@ function supportCenterTemplate() {
 function platformHealthTemplate() {
   const configuredPayments = Object.values(state.providerStatus.payments).filter(Boolean).length;
   const eventTotal = state.adminAnalytics.eventCounts.reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const rec = state.adminRecommendationStatus || {};
   const openModeration = state.operations.moderation.filter((item) => item.status !== "Resolved" && item.status !== "Dismissed").length;
   const openTickets = state.operations.tickets.filter((ticket) => ticket.status !== "Resolved" && ticket.status !== "Closed").length;
-  const health = [["Publishing API", "Operational", `${publishedStories().length} published`], ["Payments", configuredPayments ? "Operational" : "Unavailable", `${configuredPayments}/4 configured`], ["Email delivery", state.providerStatus.email ? "Operational" : "Unavailable", state.providerStatus.email ? "Configured" : "No provider"], ["AI provider", state.providerStatus.ai ? "Operational" : "Unavailable", state.providerStatus.ai ? "Configured" : "No provider"], ["Push notifications", state.providerStatus.push ? "Operational" : "Unavailable", state.providerStatus.push ? "Configured" : "No VAPID keys"], ["Recommendations", eventTotal ? "Operational" : "Collecting", `${eventTotal} events`]];
+  const health = [["Publishing API", "Operational", `${publishedStories().length} published`], ["Payments", configuredPayments ? "Operational" : "Unavailable", `${configuredPayments}/4 configured`], ["Email delivery", state.providerStatus.email ? "Operational" : "Unavailable", state.providerStatus.email ? "Configured" : "No provider"], ["AI provider", state.providerStatus.ai ? "Operational" : "Unavailable", state.providerStatus.ai ? "Configured" : "No provider"], ["Push notifications", state.providerStatus.push ? "Operational" : "Unavailable", state.providerStatus.push ? "Configured" : "No VAPID keys"], ["Recommendations", Number(rec.profiles || 0) ? "Operational" : "Collecting", `${Number(rec.profiles || 0).toLocaleString("en-IN")} profiles · ${Number(rec.scores || 0).toLocaleString("en-IN")} scores`]];
   return adminShellTemplate("Platform health", "Monitor reliability, delivery, APIs, indexing, moderation load, recommendations, storage, and payment operations.", `
     <section class="health-banner"><span class="health-pulse"></span><div><strong>Health is derived from current configuration and database records</strong><p>Unavailable providers remain disabled until their server credentials are supplied.</p></div></section>
     <div class="health-service-grid">${health.map(([name, status, detail]) => `<article class="${status === "Unavailable" ? "degraded" : ""}"><span>${icon(status === "Operational" ? "check" : "gauge", 17)}</span><div><strong>${name}</strong><small>${status}</small></div><b>${detail}</b></article>`).join("")}</div>
-    <div class="analytics-split"><section class="analytics-chart"><header><div><h2>Recorded engagement</h2><p>Events stored by the production analytics endpoint.</p></div><strong>${eventTotal} events</strong></header><div class="line-chart health-chart">${state.adminAnalytics.eventCounts.map((item) => `<i style="height:${Math.min(100, Math.max(8, Number(item.count) * 8))}%"><em>${escapeHtml(item.event_type)}</em></i>`).join("") || `<div class="empty-state">No engagement events recorded yet.</div>`}</div></section><section class="health-queue"><h2>Operational queues</h2>${[["Moderation backlog", openModeration], ["Support tickets", openTickets], ["Active subscriptions", state.adminAnalytics.activeSubscriptions], ["Payment revenue", state.adminAnalytics.revenue / 100]].map(([name, count]) => `<div><span><strong>${name}</strong><em>${count}</em></span></div>`).join("")}</section></div>
+    <div class="analytics-split"><section class="analytics-chart"><header><div><h2>Recorded engagement</h2><p>Events stored by the production analytics endpoint.</p></div><strong>${eventTotal} events</strong></header><div class="line-chart health-chart">${state.adminAnalytics.eventCounts.map((item) => `<i style="height:${Math.min(100, Math.max(8, Number(item.count) * 8))}%"><em>${escapeHtml(item.event_type)}</em></i>`).join("") || `<div class="empty-state">No engagement events recorded yet.</div>`}</div></section><section class="health-queue"><h2>Operational queues</h2>${[["Moderation backlog", openModeration], ["Support tickets", openTickets], ["Active subscriptions", state.adminAnalytics.activeSubscriptions], ["Payment revenue", state.adminAnalytics.revenue / 100], ["Recommendation signals", Number(rec.signals || 0)], ["Last model train", rec.lastTrainedAt ? new Date(rec.lastTrainedAt).toLocaleString("en-IN") : "Pending"]].map(([name, count]) => `<div><span><strong>${name}</strong><em>${count}</em></span></div>`).join("")}<button class="secondary-button" data-action="rebuild-recommendations">Rebuild recommendation model</button></section></div>
   `);
 }
 
@@ -5299,12 +5377,13 @@ document.addEventListener("click", async (event) => {
   }
   if (actionStory && storySlug) {
     const story = state.stories.find((item) => item.slug === storySlug);
-    if (story && actionStory === "more") recordRecommendationActivity(story, "save");
-    if (story && actionStory === "less") recordRecommendationActivity(story, "not_interested");
+    if (story && actionStory === "more") recordRecommendationActivity(story, "more_like_this");
+    if (story && actionStory === "less") recordRecommendationActivity(story, "less_like_this");
     if (story && actionStory === "hide-topic") {
       updateInterestPreference(story.topic, false);
       state.recommendation.hiddenStories = [...new Set([...state.recommendation.hiddenStories, ...state.stories.filter((item) => item.topic === story.topic).map((item) => item.slug)])];
       persistRecommendationProfile();
+      if (state.user) sendRecommendationFeedback("hide_topic", story, { topic: story.topic });
     }
     if (story && actionStory === "unfollow-author" && isFollowing("writers", story.author)) toggleFollow("writers", story.author);
     state.recommendationPanel = "";
@@ -5616,6 +5695,18 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "forgot-password") {
     await requestPasswordReset();
+  }
+  if (action === "rebuild-recommendations") {
+    try {
+      state.userMessage = "Rebuilding recommendation profiles...";
+      render();
+      const payload = await apiRequest("/api/admin/recommendations/rebuild", { method: "POST", body: "{}" });
+      state.adminRecommendationStatus = await apiRequest("/api/admin/recommendations/status");
+      state.userMessage = `Recommendation model rebuilt for ${payload.rebuilt || 0} users.`;
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
   }
   if (action === "toggle-writer-preview") {
     state.draftPreview = !state.draftPreview;
@@ -6167,6 +6258,7 @@ async function bootstrapApp() {
   }
   try {
     await hydratePlatformState();
+    await loadRecommendationFeed();
   } catch (error) {
     state.userMessage = `Platform data could not be synchronized: ${error.message}`;
   }

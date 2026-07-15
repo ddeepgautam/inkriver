@@ -70,6 +70,32 @@
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS recommendation_profiles (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    topic_weights_json TEXT NOT NULL DEFAULT '{}',
+    tag_weights_json TEXT NOT NULL DEFAULT '{}',
+    author_weights_json TEXT NOT NULL DEFAULT '{}',
+    story_weights_json TEXT NOT NULL DEFAULT '{}',
+    hidden_topics_json TEXT NOT NULL DEFAULT '[]',
+    hidden_authors_json TEXT NOT NULL DEFAULT '[]',
+    hidden_stories_json TEXT NOT NULL DEFAULT '[]',
+    model_version INTEGER NOT NULL DEFAULT 1,
+    signals_count INTEGER NOT NULL DEFAULT 0,
+    last_trained_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS recommendation_story_scores (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    story_slug TEXT NOT NULL,
+    score REAL NOT NULL,
+    reason TEXT NOT NULL,
+    factors_json TEXT NOT NULL DEFAULT '[]',
+    model_version INTEGER NOT NULL DEFAULT 1,
+    computed_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, story_slug)
+  );
+
   CREATE TABLE IF NOT EXISTS comments (
     id TEXT PRIMARY KEY,
     story_slug TEXT NOT NULL,
@@ -378,6 +404,7 @@
   CREATE INDEX IF NOT EXISTS idx_user_documents_user ON user_documents(user_id);
   CREATE INDEX IF NOT EXISTS idx_engagement_user_created ON engagement_events(user_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_engagement_story_type ON engagement_events(story_slug, event_type);
+  CREATE INDEX IF NOT EXISTS idx_recommendation_scores_user_score ON recommendation_story_scores(user_id, score DESC);
   CREATE INDEX IF NOT EXISTS idx_comments_story_created ON comments(story_slug, created_at);
   CREATE INDEX IF NOT EXISTS idx_story_translations_locale ON story_translations(locale, status);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);

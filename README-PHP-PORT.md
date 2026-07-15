@@ -25,6 +25,7 @@ Completed:
 - Admin media upload manager for post images.
 - Payment webhook endpoints for Razorpay, PayPal, PayU, and Cashfree.
 - Push subscription storage and admin push-send endpoint.
+- Server-side recommendation training with persisted user profiles, story scores, transparent factors, feedback controls, and admin rebuild/status APIs.
 
 Remaining production services to connect with live provider credentials:
 
@@ -84,6 +85,13 @@ Webhook URLs:
 - `https://your-domain.com/api/webhooks/paypal`
 - `https://your-domain.com/api/webhooks/payu`
 - `https://your-domain.com/api/webhooks/cashfree`
+
+Recommendation model:
+
+- Signed-in reader events train `recommendation_profiles` and `recommendation_story_scores`.
+- The personalized feed reads `/api/recommendations/feed`.
+- Admins can rebuild all active user profiles from `/api/admin/recommendations/rebuild`.
+- Add a Hostinger cron job that POSTs to `/api/admin/recommendations/rebuild` with an authenticated admin session, or trigger it manually from Platform Health.
 
 Uploads:
 
