@@ -1,0 +1,7 @@
+data/*.sqlite
+data/*.sqlite-*
+uploads/*
+.env
+.env.*
+!.env.example
+*.log

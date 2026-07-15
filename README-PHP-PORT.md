@@ -1,0 +1,118 @@
+# InkRiver PHP Port
+
+This folder is a PHP/SQLite port of the InkRiver Node.js project.
+
+## Current Port Status
+
+Completed:
+
+- Same frontend layout and assets copied from InkRiver.
+- PHP front controller with clean URL fallback.
+- SQLite schema creation from the Node.js schema.
+- User registration, login, logout, sessions, cookies, and admin creation.
+- Public bootstrap API for stories/settings/user documents.
+- Admin platform document save API.
+- Reader document sync API.
+- Engagement event API.
+- Admin user management APIs.
+- Security/session/email-verification/TOTP endpoints, including login-time 2FA enforcement.
+- Comments, support tickets, moderation, analytics, ads, discounts, payouts, story publishing, creator analytics, privacy export, account deletion, push subscription, and translation-backfill endpoints.
+- Razorpay, PayPal, PayU, and Cashfree checkout creation/callback routes.
+- Google and Facebook OAuth callback token exchange and account linking.
+- OpenAI-backed AI assistant and stored article translation generation.
+- Discount redemption tracking, paid gift membership records, paid tips, and subscription activation after payment capture.
+- Password reset request/reset flow using signed recovery tokens.
+- Admin media upload manager for post images.
+- Payment webhook endpoints for Razorpay, PayPal, PayU, and Cashfree.
+- Push subscription storage and admin push-send endpoint.
+
+Remaining production services to connect with live provider credentials:
+
+- Email delivery requires `EMAIL_API_URL` and `EMAIL_API_KEY`.
+- Web-push payload delivery can use `WEB_PUSH_API_URL` and `WEB_PUSH_API_KEY`; direct VAPID ping delivery is also attempted when VAPID keys are configured.
+- Payment and OAuth callbacks must be configured in each provider dashboard to point at this domain.
+
+The current PHP copy now covers the main application routes and runs locally. Live payments, OAuth, email, and AI translation require valid production keys on the host.
+
+## Environment Variables
+
+Core:
+
+- `APP_ENV=production`
+- `APP_ORIGIN=https://your-domain.com`
+- `DATABASE_PATH=/absolute/path/to/inkriver.sqlite`
+- `SESSION_DAYS=30`
+
+Payments:
+
+- `RAZORPAY_KEY_ID`
+- `RAZORPAY_KEY_SECRET`
+- `RAZORPAY_WEBHOOK_SECRET`
+- `PAYPAL_CLIENT_ID`
+- `PAYPAL_CLIENT_SECRET`
+- `PAYPAL_ENVIRONMENT=sandbox` or `production`
+- `PAYPAL_WEBHOOK_ID`
+- `PAYU_MERCHANT_KEY`
+- `PAYU_SALT`
+- `PAYU_ENVIRONMENT=test` or `production`
+- `CASHFREE_CLIENT_ID`
+- `CASHFREE_CLIENT_SECRET`
+- `CASHFREE_ENVIRONMENT=sandbox` or `production`
+- `CASHFREE_WEBHOOK_SECRET`
+
+Social login:
+
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `FACEBOOK_APP_ID`
+- `FACEBOOK_APP_SECRET`
+
+AI and communication:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL=gpt-4.1-mini`
+- `EMAIL_API_URL`
+- `EMAIL_API_KEY`
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `WEB_PUSH_API_URL`
+- `WEB_PUSH_API_KEY`
+
+Webhook URLs:
+
+- `https://your-domain.com/api/webhooks/razorpay`
+- `https://your-domain.com/api/webhooks/paypal`
+- `https://your-domain.com/api/webhooks/payu`
+- `https://your-domain.com/api/webhooks/cashfree`
+
+Uploads:
+
+- Uploaded images are stored under `/uploads/YYYY/MM/`.
+- Ensure the PHP process can write to the `uploads` directory.
+
+## Local Run
+
+From `InkRiver-PHP`:
+
+```bash
+php -S 127.0.0.1:8080 index.php
+```
+
+Create an admin:
+
+```bash
+php scripts/create-admin.php admin@example.com "StrongPasswordHere" "Site Administrator"
+```
+
+## Hostinger PHP Upload
+
+Upload this folder's contents to your PHP-enabled hosting directory.
+
+Required PHP extensions:
+
+- PDO
+- PDO SQLite
+- SQLite3
+- OpenSSL
+
+Set environment variables where your Hostinger plan allows it, or edit `app/config.php` carefully for deployment values.

@@ -1,0 +1,17 @@
+{
+  "name": "InkRiver Publishing",
+  "short_name": "InkRiver",
+  "description": "Read, publish, subscribe, and manage an independent editorial platform.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#176b48",
+  "icons": [
+    {
+      "src": "/src/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
