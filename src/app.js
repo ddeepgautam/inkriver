@@ -1149,6 +1149,7 @@ async function loadSecuritySettings() {
       emailVerified: Boolean(payload.emailVerified),
       twoFactorEnabled: Boolean(payload.twoFactorEnabled),
       loginAlertsEnabled: Boolean(payload.loginAlertsEnabled),
+      passkeys: payload.passkeys || [],
     };
     state.user = { ...state.user, emailVerified: Boolean(payload.emailVerified) };
   } catch (error) {
@@ -1434,6 +1435,7 @@ const state = {
     ai: false,
     email: false,
     push: false,
+    geoip: false,
   },
   paymentPolicy: { paypalIndiaRestriction: { restricted: false, adminExempt: false, signals: [] } },
   pushPublicKey: "",
@@ -1465,7 +1467,7 @@ const state = {
   userSearch: "",
   userMessage: "",
   securitySessions: [],
-  securitySettings: { emailVerified: false, twoFactorEnabled: false, loginAlertsEnabled: false },
+  securitySettings: { emailVerified: false, twoFactorEnabled: false, loginAlertsEnabled: false, passkeys: [] },
   currentSessionId: "",
   editingBlogId: "",
   blogForm: emptyBlogForm(),
@@ -2139,6 +2141,13 @@ function urlBase64ToUint8Array(value) {
   const padding = "=".repeat((4 - value.length % 4) % 4);
   const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
   return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+}
+
+function arrayBufferToBase64Url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let value = "";
+  bytes.forEach((byte) => { value += String.fromCharCode(byte); });
+  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 async function enablePushNotifications() {
@@ -3851,6 +3860,7 @@ function sessionDeviceLabel(userAgent = "") {
 function securityWorkspaceTemplate(admin = false) {
   const emailVerified = Boolean(state.securitySettings.emailVerified || state.user?.emailVerified);
   const twoFactorEnabled = Boolean(state.securitySettings.twoFactorEnabled);
+  const passkeys = state.securitySettings.passkeys || [];
   const score = 35 + (emailVerified ? 25 : 0) + (twoFactorEnabled ? 25 : 0) + (state.securitySessions.length ? 15 : 0);
   const sessions = state.securitySessions.length ? state.securitySessions : [];
   return `
@@ -3863,9 +3873,10 @@ function securityWorkspaceTemplate(admin = false) {
           <article><span>${icon("lock", 16)}</span><div><strong>Login alerts</strong><small>${state.providerStatus.email ? "Email provider available for alerts" : "Email API key required for delivery"}</small></div><button class="secondary-button" disabled>${state.providerStatus.email ? "Ready" : "Needs email API"}</button></article>
           <article><span>${icon(emailVerified ? "check" : "lock", 16)}</span><div><strong>Account recovery</strong><small>${emailVerified ? "Verified email can receive recovery links" : "Verify email first"}</small></div><button class="secondary-button" disabled>${emailVerified ? "Enabled" : "Unavailable"}</button></article>
         </section>
+        <section class="session-panel"><header><h2>Passkeys</h2><button class="secondary-button" data-action="enable-passkey" ${emailVerified ? "" : "disabled"}>Add passkey</button></header>${passkeys.map((passkey) => `<article><span>${icon("lock", 16)}</span><div><strong>${escapeHtml(passkey.credentialId || passkey.id)}</strong><small>Created ${new Date(passkey.createdAt).toLocaleString()}${passkey.lastUsedAt ? ` - Last used ${new Date(passkey.lastUsedAt).toLocaleString()}` : ""}</small></div><button class="text-button" data-passkey-delete="${passkey.id}">Remove</button></article>`).join("") || `<div class="empty-state">No passkeys are registered yet.</div>`}</section>
         <section class="session-panel"><header><h2>Sessions and devices</h2><button class="secondary-button" data-action="signout-other-sessions" ${sessions.length > 1 ? "" : "disabled"}>Sign out others</button></header>${sessions.map((session) => `<article><span>${icon("gauge", 16)}</span><div><strong>${escapeHtml(sessionDeviceLabel(session.user_agent))}</strong><small>${escapeHtml(session.ip_address || "Unknown network")} · Last active ${new Date(session.last_seen_at).toLocaleString()}</small></div>${session.id === state.currentSessionId ? `<b>Current</b>` : `<button class="text-button" data-session-revoke="${session.id}">Revoke</button>`}</article>`).join("") || `<div class="empty-state">No active sessions could be loaded.</div>`}</section>
       </div>
-      <aside class="audit-panel"><h2>${admin ? "Security status" : "Recent security activity"}</h2><article><span></span><div><strong>${sessions.length} active session${sessions.length === 1 ? "" : "s"}</strong><small>Loaded from the session database</small><time>${new Date().toLocaleString()}</time></div></article><article><span></span><div><strong>Email ${emailVerified ? "verified" : "not verified"}</strong><small>${escapeHtml(state.user?.email || "")}</small><time>Account status</time></div></article>${admin ? `<div class="backup-state"><strong>Backup status unavailable</strong><span>Configure infrastructure monitoring to report backups.</span><small>No fabricated backup claims are shown.</small></div>` : ""}</aside>
+      <aside class="audit-panel"><h2>${admin ? "Security status" : "Recent security activity"}</h2><article><span></span><div><strong>${sessions.length} active session${sessions.length === 1 ? "" : "s"}</strong><small>Loaded from the session database</small><time>${new Date().toLocaleString()}</time></div></article><article><span></span><div><strong>Email ${emailVerified ? "verified" : "not verified"}</strong><small>${escapeHtml(state.user?.email || "")}</small><time>Account status</time></div></article>${admin ? `<div class="backup-state"><strong>Backup verification</strong><span>Creates a SQLite backup copy and verifies it can be opened.</span><button class="secondary-button" data-action="verify-backup">Run verification</button><small>${escapeHtml(state.securityMessage || "No recent backup verification in this session.")}</small></div>` : ""}</aside>
     </section>
   `;
 }
@@ -4537,7 +4548,7 @@ function subscriptionManagerTemplate() {
 
 function gatewaySettingsTemplate() {
   const credentialRows = state.providerCredentials || [];
-  const providerTests = ["razorpay", "paypal", "payu", "cashfree", "openai", "email", "push", "google", "facebook"];
+  const providerTests = ["razorpay", "paypal", "payu", "cashfree", "openai", "email", "push", "geoip", "google", "facebook"];
   return `
     <div class="work-panel gateway-settings-panel">
       <div class="panel-title">${icon("card")}<h2>Provider configuration</h2></div>
@@ -4574,6 +4585,12 @@ function gatewaySettingsTemplate() {
               <option value="production" ${state.gatewaySettings.cashfreeEnvironment === "production" ? "selected" : ""}>Production</option>
             </select>
           </label>
+        </fieldset>
+        <fieldset class="gateway-fieldset">
+          <legend>IP intelligence</legend>
+          <small>Used to enforce the strict rule that PayPal is hidden from Indian readers, including likely VPN or proxy traffic. Admins are exempt.</small>
+          <div class="gateway-status ${state.providerStatus.geoip ? "ready" : "needs-key"}"><strong>${state.providerStatus.geoip ? "GeoIP configured" : "GeoIP credentials missing"}</strong><span>IP_INTELLIGENCE_API_URL and IP_INTELLIGENCE_API_KEY, or geoip.api_url and geoip.api_key</span></div>
+          <button class="secondary-button" data-action="configure-ip-intelligence">Add IP intelligence API</button>
         </fieldset>
       </div>
       <section class="credential-vault">
@@ -5350,6 +5367,7 @@ document.addEventListener("click", async (event) => {
   const authMode = target.dataset.authMode;
   const dashboardSection = target.dataset.dashboardSection;
   const sessionRevoke = target.dataset.sessionRevoke;
+  const passkeyDelete = target.dataset.passkeyDelete;
   const adClick = target.dataset.adClick;
   const adUrl = target.dataset.adUrl;
   const testProvider = target.dataset.testProvider;
@@ -5363,6 +5381,17 @@ document.addEventListener("click", async (event) => {
   if (adClick) {
     recordAdEvent(adClick, "click", "", state.path.startsWith("/stories/") ? state.path.split("/").pop() : "");
     if (adUrl && adUrl !== "#") window.open(adUrl, "_blank", "noopener,noreferrer");
+  }
+
+  if (passkeyDelete) {
+    try {
+      await apiRequest(`/api/me/security/passkeys/${encodeURIComponent(passkeyDelete)}`, { method: "DELETE" });
+      await loadSecuritySettings();
+      state.securityMessage = "Passkey removed from this account.";
+    } catch (error) {
+      state.securityMessage = error.message;
+    }
+    render();
   }
 
   if (executePayout) {
@@ -6085,8 +6114,8 @@ document.addEventListener("click", async (event) => {
     render();
   }
   if (action === "add-provider-credential") {
-    const provider = window.prompt("Provider id, for example razorpay, paypal, cashfree, payu, openai, email, push, google, facebook, payouts:");
-    const key = provider?.trim() ? window.prompt("Credential key, for example key_id, key_secret, client_id, api_key, webhook_secret:") : "";
+    const provider = window.prompt("Provider id, for example razorpay, paypal, cashfree, payu, openai, email, push, geoip, google, facebook, payouts, cron:");
+    const key = provider?.trim() ? window.prompt("Credential key, for example key_id, key_secret, client_id, api_key, api_url, webhook_secret, secret:") : "";
     const value = key?.trim() ? window.prompt("Secret value. It will be encrypted on the server and never shown again:") : "";
     const environment = value?.trim() ? window.prompt("Environment label:", "production") || "production" : "production";
     if (provider?.trim() && key?.trim() && value?.trim()) {
@@ -6098,6 +6127,28 @@ document.addEventListener("click", async (event) => {
         state.providerCredentials = payload.credentials || state.providerCredentials;
         state.providerStatus = payload.providers || state.providerStatus;
         state.providerTestMessage = `${provider.trim()} · ${key.trim()} saved in the encrypted vault.`;
+      } catch (error) {
+        state.providerTestMessage = error.message;
+      }
+      render();
+    }
+  }
+  if (action === "configure-ip-intelligence") {
+    const apiUrl = window.prompt("IP intelligence API URL. Use {ip} where the visitor IP should be inserted:");
+    const apiKey = apiUrl?.trim() ? window.prompt("IP intelligence API key. It will be encrypted on the server:") : "";
+    if (apiUrl?.trim() && apiKey?.trim()) {
+      try {
+        let payload = await apiRequest("/api/admin/provider-credentials", {
+          method: "PUT",
+          body: JSON.stringify({ provider: "geoip", key: "api_url", value: apiUrl.trim(), environment: "production", enabled: true }),
+        });
+        payload = await apiRequest("/api/admin/provider-credentials", {
+          method: "PUT",
+          body: JSON.stringify({ provider: "geoip", key: "api_key", value: apiKey.trim(), environment: "production", enabled: true }),
+        });
+        state.providerCredentials = payload.credentials || state.providerCredentials;
+        state.providerStatus = payload.providers || state.providerStatus;
+        state.providerTestMessage = "IP intelligence credentials saved. PayPal India restriction will use this provider on the next payment-policy check.";
       } catch (error) {
         state.providerTestMessage = error.message;
       }
@@ -6262,8 +6313,51 @@ document.addEventListener("click", async (event) => {
     }
     render();
   }
+  if (action === "verify-backup") {
+    try {
+      const payload = await apiRequest("/api/admin/security/backups/verify", { method: "POST", body: "{}" });
+      state.securityMessage = `Backup ${payload.status}. ${Number(payload.details?.sizeBytes || 0).toLocaleString("en-IN")} bytes verified.`;
+    } catch (error) {
+      state.securityMessage = error.message;
+    }
+    render();
+  }
   if (action === "enable-passkey") {
-    state.securityMessage = "Passkeys remain disabled until WebAuthn relying-party settings and verified email delivery are configured.";
+    try {
+      if (!window.PublicKeyCredential || !navigator.credentials?.create) {
+        throw new Error("This browser does not support passkey registration.");
+      }
+      const options = await apiRequest("/api/me/security/passkeys/challenge", { method: "POST", body: "{}" });
+      const credential = await navigator.credentials.create({
+        publicKey: {
+          challenge: urlBase64ToUint8Array(options.challenge),
+          rp: options.rp?.id && options.rp.id !== "localhost" ? options.rp : { name: options.rp?.name || "InkRiver" },
+          user: {
+            id: urlBase64ToUint8Array(options.user.idEncoded),
+            name: options.user.name,
+            displayName: options.user.displayName,
+          },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+          authenticatorSelection: { userVerification: "preferred", residentKey: "preferred" },
+          timeout: 60000,
+          attestation: "none",
+        },
+      });
+      await apiRequest("/api/me/security/passkeys", {
+        method: "POST",
+        body: JSON.stringify({
+          credentialId: credential.id,
+          rawId: arrayBufferToBase64Url(credential.rawId),
+          clientDataJSON: arrayBufferToBase64Url(credential.response.clientDataJSON),
+          attestationObject: arrayBufferToBase64Url(credential.response.attestationObject),
+          transports: typeof credential.response.getTransports === "function" ? credential.response.getTransports() : [],
+        }),
+      });
+      await loadSecuritySettings();
+      state.securityMessage = "Passkey added to this account.";
+    } catch (error) {
+      state.securityMessage = error.message;
+    }
     render();
   }
   if (action === "signout-other-sessions") {

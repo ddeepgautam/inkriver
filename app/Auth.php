@@ -73,7 +73,40 @@ function require_auth(array $roles = []): array
     if ($roles && !in_array($session['user']['role'], $roles, true)) {
         json_response(['error' => 'FORBIDDEN', 'message' => 'This account cannot perform that action.'], 403);
     }
+    if (!role_permission_allows_request($session['user']['role'])) {
+        json_response(['error' => 'FORBIDDEN_BY_POLICY', 'message' => 'This role is blocked by the permission matrix.'], 403);
+    }
     return $session;
+}
+
+function role_permission_allows_request(string $role): bool
+{
+    try {
+        $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+        $candidates = [
+            '*',
+            $method . ' *',
+            $path,
+            $method . ' ' . $path,
+        ];
+        $segments = array_values(array_filter(explode('/', trim($path, '/'))));
+        if ($segments) {
+            $candidates[] = '/' . $segments[0] . '/*';
+            $candidates[] = $method . ' /' . $segments[0] . '/*';
+        }
+        if (count($segments) >= 2) {
+            $candidates[] = '/' . $segments[0] . '/' . $segments[1] . '/*';
+            $candidates[] = $method . ' /' . $segments[0] . '/' . $segments[1] . '/*';
+        }
+        $placeholders = implode(',', array_fill(0, count($candidates), '?'));
+        $stmt = Database::pdo()->prepare("SELECT permission, allowed FROM role_permissions WHERE role = ? AND permission IN ($placeholders) ORDER BY LENGTH(permission) DESC LIMIT 1");
+        $stmt->execute(array_merge([$role], $candidates));
+        $row = $stmt->fetch();
+        return !$row || (bool) $row['allowed'];
+    } catch (Throwable) {
+        return true;
+    }
 }
 
 function audit_log(?string $actorUserId, string $action, ?string $targetType = null, ?string $targetId = null, array $metadata = []): void
@@ -81,4 +114,3 @@ function audit_log(?string $actorUserId, string $action, ?string $targetType = n
     Database::pdo()->prepare('INSERT INTO audit_logs (id, actor_user_id, action, target_type, target_id, ip_address, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         ->execute([uuid_value(), $actorUserId, $action, $targetType, $targetId, $_SERVER['REMOTE_ADDR'] ?? '', json_encode($metadata), now_iso()]);
 }
-

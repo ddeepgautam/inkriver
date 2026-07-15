@@ -23,6 +23,7 @@ function provider_status(): array
         'ai' => (bool) (provider_config_value('OPENAI_API_KEY', 'openai', 'api_key') || (provider_config_value('AI_API_URL', 'ai', 'api_url') && provider_config_value('AI_API_KEY', 'ai', 'api_key'))),
         'email' => (bool) (provider_config_value('EMAIL_API_URL', 'email', 'api_url') && provider_config_value('EMAIL_API_KEY', 'email', 'api_key')),
         'push' => (bool) ((provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key') && provider_config_value('VAPID_PRIVATE_KEY', 'push', 'vapid_private_key')) || (provider_config_value('WEB_PUSH_API_URL', 'push', 'api_url') && provider_config_value('WEB_PUSH_API_KEY', 'push', 'api_key'))),
+        'geoip' => (bool) (provider_config_value('IP_INTELLIGENCE_API_URL', 'geoip', 'api_url') && provider_config_value('IP_INTELLIGENCE_API_KEY', 'geoip', 'api_key')),
     ];
 }
 
@@ -233,6 +234,35 @@ function configured_translation_languages(): array
 function base64url_encode_value(string $value): string
 {
     return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+}
+
+function base64url_decode_value(string $value): string
+{
+    $decoded = base64_decode(strtr($value, '-_', '+/') . str_repeat('=', (4 - strlen($value) % 4) % 4), true);
+    return is_string($decoded) ? $decoded : '';
+}
+
+function security_policy_value(string $key, mixed $fallback): mixed
+{
+    try {
+        $stmt = Database::pdo()->prepare('SELECT value_json FROM security_policies WHERE key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch();
+        return $row ? parse_json_field($row['value_json'], $fallback) : $fallback;
+    } catch (Throwable) {
+        return $fallback;
+    }
+}
+
+function password_policy_error(string $password): ?string
+{
+    $policy = security_policy_value('password', ['minLength' => 10, 'uppercase' => false, 'number' => false, 'symbol' => false]);
+    $minLength = max(10, (int) ($policy['minLength'] ?? $policy['minimumLength'] ?? 10));
+    if (strlen($password) < $minLength) return "Use at least {$minLength} characters for the password.";
+    if (!empty($policy['uppercase']) && !preg_match('/[A-Z]/', $password)) return 'Add at least one uppercase letter.';
+    if (!empty($policy['number']) && !preg_match('/[0-9]/', $password)) return 'Add at least one number.';
+    if (!empty($policy['symbol']) && !preg_match('/[^A-Za-z0-9]/', $password)) return 'Add at least one symbol.';
+    return null;
 }
 
 function http_request_json(string $url, array $options = []): array
@@ -1381,6 +1411,7 @@ function run_background_job(array $job): array
             return create_media_variants_for_asset($asset);
         })(),
         'moderation.scan' => scan_moderation_rules(),
+        'pwa.sync' => process_pwa_sync_queue((int) ($payload['limit'] ?? 100)),
         default => throw new RuntimeException('Unknown job type: ' . $job['type']),
     };
 }
@@ -1407,6 +1438,39 @@ function run_due_background_jobs(int $limit = 10): array
         }
     }
     return $summary;
+}
+
+function process_pwa_sync_queue(int $limit = 100): array
+{
+    $pdo = Database::pdo();
+    $stmt = $pdo->prepare("SELECT * FROM pwa_sync_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?");
+    $stmt->execute([max(1, min(500, $limit))]);
+    $items = $stmt->fetchAll();
+    $processed = 0;
+    $failed = 0;
+    foreach ($items as $item) {
+        $payload = parse_json_field($item['payload_json'] ?? '{}', []);
+        try {
+            $type = (string) $item['type'];
+            if (in_array($type, ['event', 'open', 'complete', 'read_complete', 'save', 'share', 'clap'], true)) {
+                $eventType = $type === 'event' ? (string) ($payload['type'] ?? 'open') : $type;
+                $pdo->prepare('INSERT INTO engagement_events (id, user_id, anonymous_id, story_slug, event_type, value, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                    ->execute([uuid_value(), $item['user_id'] ?: null, $item['client_id'] ?: null, substr((string) ($payload['storySlug'] ?? ''), 0, 200), $eventType, $payload['value'] ?? null, json_encode($payload['metadata'] ?? [], JSON_UNESCAPED_SLASHES), now_iso()]);
+            } elseif ($type === 'user-document' && $item['user_id']) {
+                $key = (string) ($payload['key'] ?? '');
+                if (in_array($key, USER_DOCUMENTS, true)) {
+                    $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+                        ->execute([$item['user_id'], $key, json_encode($payload['value'] ?? null, JSON_UNESCAPED_SLASHES), now_iso()]);
+                }
+            }
+            $pdo->prepare("UPDATE pwa_sync_queue SET status = 'processed', processed_at = ? WHERE id = ?")->execute([now_iso(), $item['id']]);
+            $processed++;
+        } catch (Throwable) {
+            $pdo->prepare("UPDATE pwa_sync_queue SET status = 'failed', processed_at = ? WHERE id = ?")->execute([now_iso(), $item['id']]);
+            $failed++;
+        }
+    }
+    return ['processed' => $processed, 'failed' => $failed, 'total' => count($items)];
 }
 
 function scan_moderation_rules(): array
@@ -1470,6 +1534,18 @@ function test_provider_connection(string $provider): array
         if ($provider === 'payu') {
             return ['provider' => $provider, 'ready' => provider_status()['payments']['payu'], 'mode' => 'hash_credentials'];
         }
+        if ($provider === 'geoip') {
+            $url = provider_config_value('IP_INTELLIGENCE_API_URL', 'geoip', 'api_url');
+            $key = provider_config_value('IP_INTELLIGENCE_API_KEY', 'geoip', 'api_key');
+            if (!$url || !$key) return ['provider' => $provider, 'ready' => false, 'error' => 'IP intelligence URL and API key are required.', 'mode' => 'configured'];
+            $probeIp = request_ip_address() ?: '8.8.8.8';
+            $result = http_request_json(str_replace('{ip}', rawurlencode($probeIp), $url), [
+                'headers' => ['Authorization' => 'Bearer ' . $key],
+                'timeout' => 8,
+            ]);
+            $country = $result['country'] ?? $result['country_code'] ?? $result['countryCode'] ?? null;
+            return ['provider' => $provider, 'ready' => (bool) $country, 'mode' => 'live_geo_probe', 'country' => $country];
+        }
         $status = provider_status();
         return ['provider' => $provider, 'ready' => (bool) ($status['payments'][$provider] ?? $status['social'][$provider] ?? $status[$provider] ?? false), 'mode' => 'configured'];
     } catch (Throwable $error) {
@@ -1513,6 +1589,21 @@ function handle_api(string $path, string $method): void
 {
     $pdo = Database::pdo();
 
+    if ($method === 'POST' && $path === '/api/cron/run') {
+        $secret = env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret');
+        $provided = (string) ($_SERVER['HTTP_X_CRON_SECRET'] ?? ($_GET['token'] ?? ''));
+        if (!$secret || !hash_equals((string) $secret, $provided)) {
+            json_response(['error' => 'FORBIDDEN', 'message' => 'A valid cron secret is required.'], 403);
+        }
+        $body = read_json();
+        if (!empty($body['enqueueDefaults'])) {
+            enqueue_background_job('subscriptions.sync');
+            enqueue_background_job('pwa.sync');
+            enqueue_background_job('moderation.scan');
+        }
+        json_response(run_due_background_jobs((int) ($body['limit'] ?? 20)));
+    }
+
     if ($method === 'GET' && $path === '/api/auth/session') {
         $session = current_session();
         json_response(['user' => $session['user'] ?? null]);
@@ -1523,7 +1614,8 @@ function handle_api(string $path, string $method): void
         $name = trim((string) ($body['name'] ?? ''));
         $email = strtolower(trim((string) ($body['email'] ?? '')));
         $password = (string) ($body['password'] ?? '');
-        if (strlen($name) < 2 || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($password) < 10) {
+        $passwordError = password_policy_error($password);
+        if (strlen($name) < 2 || !filter_var($email, FILTER_VALIDATE_EMAIL) || $passwordError) {
             json_response(['error' => 'INVALID_REGISTRATION', 'message' => 'Enter a valid name, email, and password.'], 400);
         }
         $exists = $pdo->prepare("SELECT id FROM users WHERE email = ? AND status != 'deleted'");
@@ -1580,6 +1672,14 @@ function handle_api(string $path, string $method): void
         $token = create_session_for_user($row['id']);
         set_session_cookie($token);
         audit_log($row['id'], 'auth.login', 'user', $row['id']);
+        if (!empty($securityRow['login_alerts_enabled'])) {
+            send_email_message($row['email'], 'New InkRiver sign-in', [
+                'name' => $row['name'],
+                'ip' => request_ip_address(),
+                'userAgent' => substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500),
+                'time' => $now,
+            ]);
+        }
         json_response(['user' => public_user($row)]);
     }
 
@@ -1610,7 +1710,8 @@ function handle_api(string $path, string $method): void
         $body = read_json();
         $token = (string) ($body['token'] ?? '');
         $password = (string) ($body['password'] ?? '');
-        if (strlen($password) < 10) json_response(['error' => 'WEAK_PASSWORD', 'message' => 'Use at least 10 characters for the new password.'], 400);
+        $passwordError = password_policy_error($password);
+        if ($passwordError) json_response(['error' => 'WEAK_PASSWORD', 'message' => $passwordError], 400);
         $stmt = $pdo->prepare("SELECT security_tokens.*, users.status FROM security_tokens JOIN users ON users.id = security_tokens.user_id WHERE token_hash = ? AND type = 'password_recovery' AND consumed_at IS NULL AND expires_at > ?");
         $stmt->execute([hash('sha256', $token), now_iso()]);
         $row = $stmt->fetch();
@@ -1639,7 +1740,10 @@ function handle_api(string $path, string $method): void
         if ($session) {
             $stmt = $pdo->prepare('SELECT key, value_json FROM user_documents WHERE user_id = ?');
             $stmt->execute([$session['user']['id']]);
-            foreach ($stmt->fetchAll() as $row) $userDocuments[$row['key']] = parse_json_field($row['value_json'], null);
+            foreach ($stmt->fetchAll() as $row) {
+                if (str_starts_with((string) $row['key'], 'passkey-')) continue;
+                $userDocuments[$row['key']] = parse_json_field($row['value_json'], null);
+            }
         }
         $storyStats = [];
         foreach ($pdo->query("SELECT story_slug, event_type, COUNT(*) AS count FROM engagement_events WHERE story_slug IS NOT NULL GROUP BY story_slug, event_type")->fetchAll() as $row) {
@@ -1733,7 +1837,7 @@ function handle_api(string $path, string $method): void
         if ($method === 'POST') {
             $body = read_json();
             $type = (string) ($body['type'] ?? '');
-            if (!in_array($type, ['recommendations.rebuild', 'recommendations.train_user', 'translations.backfill', 'subscriptions.sync', 'moderation.scan', 'media.variants'], true)) {
+            if (!in_array($type, ['recommendations.rebuild', 'recommendations.train_user', 'translations.backfill', 'subscriptions.sync', 'moderation.scan', 'media.variants', 'pwa.sync'], true)) {
                 json_response(['error' => 'INVALID_JOB_TYPE', 'message' => 'Unsupported background job type.'], 400);
             }
             json_response(['jobId' => enqueue_background_job($type, is_array($body['payload'] ?? null) ? $body['payload'] : [])], 201);
@@ -1911,11 +2015,75 @@ function handle_api(string $path, string $method): void
         $stmt = $pdo->prepare('SELECT * FROM user_security_settings WHERE user_id = ?');
         $stmt->execute([$session['user']['id']]);
         $row = $stmt->fetch();
+        $passkeys = $pdo->prepare('SELECT id, credential_id, transports, created_at, last_used_at FROM passkey_credentials WHERE user_id = ? ORDER BY created_at DESC');
+        $passkeys->execute([$session['user']['id']]);
         json_response([
             'emailVerified' => (bool) ($session['raw']['email_verified'] ?? false),
             'twoFactorEnabled' => (bool) ($row['two_factor_enabled'] ?? false),
             'loginAlertsEnabled' => (bool) ($row['login_alerts_enabled'] ?? false),
+            'passkeys' => array_map(fn($item) => [
+                'id' => $item['id'],
+                'credentialId' => substr($item['credential_id'], 0, 8) . '...' . substr($item['credential_id'], -6),
+                'transports' => parse_json_field($item['transports'] ?? '[]', []),
+                'createdAt' => $item['created_at'],
+                'lastUsedAt' => $item['last_used_at'],
+            ], $passkeys->fetchAll()),
         ]);
+    }
+
+    if ($method === 'POST' && $path === '/api/me/security/passkeys/challenge') {
+        $session = require_auth();
+        if (empty($session['raw']['email_verified'])) {
+            json_response(['error' => 'EMAIL_NOT_VERIFIED', 'message' => 'Verify your email before adding a passkey.'], 403);
+        }
+        $challenge = base64url_encode_value(random_bytes(32));
+        $now = now_iso();
+        $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+            ->execute([$session['user']['id'], 'passkey-registration-challenge', json_encode(['challenge' => $challenge, 'createdAt' => $now], JSON_UNESCAPED_SLASHES), $now]);
+        $rpId = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? 'localhost'));
+        json_response([
+            'challenge' => $challenge,
+            'rp' => ['name' => 'InkRiver', 'id' => $rpId],
+            'user' => [
+                'id' => $session['user']['id'],
+                'idEncoded' => base64url_encode_value(hash('sha256', $session['user']['id'], true)),
+                'name' => $session['user']['email'],
+                'displayName' => $session['user']['name'],
+            ],
+        ]);
+    }
+
+    if ($method === 'POST' && $path === '/api/me/security/passkeys') {
+        $session = require_auth();
+        $body = read_json();
+        $credentialId = trim((string) ($body['credentialId'] ?? ''));
+        $clientDataJson = (string) ($body['clientDataJSON'] ?? '');
+        $attestationObject = (string) ($body['attestationObject'] ?? '');
+        if ($credentialId === '' || $clientDataJson === '' || $attestationObject === '') {
+            json_response(['error' => 'INVALID_PASSKEY', 'message' => 'A complete WebAuthn credential is required.'], 400);
+        }
+        $challengeStmt = $pdo->prepare("SELECT value_json FROM user_documents WHERE user_id = ? AND key = 'passkey-registration-challenge'");
+        $challengeStmt->execute([$session['user']['id']]);
+        $challengeRow = $challengeStmt->fetch();
+        $challenge = parse_json_field($challengeRow['value_json'] ?? '{}', []);
+        $clientData = json_decode(base64url_decode_value($clientDataJson), true);
+        if (!$challengeRow || !is_array($clientData) || !hash_equals((string) ($challenge['challenge'] ?? ''), (string) ($clientData['challenge'] ?? ''))) {
+            json_response(['error' => 'INVALID_PASSKEY_CHALLENGE', 'message' => 'The passkey challenge expired or did not match.'], 400);
+        }
+        $id = uuid_value('PKY-');
+        $pdo->prepare('INSERT INTO passkey_credentials (id, user_id, credential_id, public_key, sign_count, transports, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
+            ->execute([$id, $session['user']['id'], $credentialId, json_encode(['clientDataJSON' => $clientDataJson, 'attestationObject' => $attestationObject], JSON_UNESCAPED_SLASHES), json_encode($body['transports'] ?? [], JSON_UNESCAPED_SLASHES), now_iso()]);
+        $pdo->prepare("DELETE FROM user_documents WHERE user_id = ? AND key = 'passkey-registration-challenge'")->execute([$session['user']['id']]);
+        audit_log($session['user']['id'], 'security.passkey_added', 'passkey', $id);
+        json_response(['passkey' => ['id' => $id]], 201);
+    }
+
+    if (preg_match('#^/api/me/security/passkeys/([^/]+)$#', $path, $m) && $method === 'DELETE') {
+        $session = require_auth();
+        $id = urldecode($m[1]);
+        $pdo->prepare('DELETE FROM passkey_credentials WHERE id = ? AND user_id = ?')->execute([$id, $session['user']['id']]);
+        audit_log($session['user']['id'], 'security.passkey_deleted', 'passkey', $id);
+        json_response(['ok' => true]);
     }
 
     if ($method === 'POST' && $path === '/api/me/security/email-verification') {
@@ -1945,9 +2113,20 @@ function handle_api(string $path, string $method): void
         if ($method === 'GET') {
             $stmt = $pdo->prepare("SELECT comments.*, users.name AS author_name, users.role AS author_role FROM comments JOIN users ON users.id = comments.user_id WHERE comments.story_slug = ? AND comments.status != 'deleted' ORDER BY comments.pinned DESC, comments.created_at DESC");
             $stmt->execute([$slug]);
+            $session = current_session();
+            $likeRows = $pdo->prepare('SELECT comment_id, COUNT(*) AS likes FROM comment_likes WHERE comment_id IN (SELECT id FROM comments WHERE story_slug = ?) GROUP BY comment_id');
+            $likeRows->execute([$slug]);
+            $likesByComment = [];
+            foreach ($likeRows->fetchAll() as $likeRow) $likesByComment[$likeRow['comment_id']] = (int) $likeRow['likes'];
+            $likedByUser = [];
+            if ($session) {
+                $likedStmt = $pdo->prepare('SELECT comment_id FROM comment_likes WHERE user_id = ? AND comment_id IN (SELECT id FROM comments WHERE story_slug = ?)');
+                $likedStmt->execute([$session['user']['id'], $slug]);
+                $likedByUser = array_flip(array_column($likedStmt->fetchAll(), 'comment_id'));
+            }
             $comments = array_map(fn($row) => [
                 'id' => $row['id'], 'parentId' => $row['parent_id'] ?: '', 'author' => $row['author_name'], 'role' => $row['author_role'],
-                'text' => $row['text'], 'likes' => 0, 'liked' => false, 'pinned' => (bool) $row['pinned'], 'reported' => $row['status'] === 'reported',
+                'text' => $row['text'], 'likes' => $likesByComment[$row['id']] ?? 0, 'liked' => isset($likedByUser[$row['id']]), 'pinned' => (bool) $row['pinned'], 'reported' => $row['status'] === 'reported',
                 'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at'],
             ], $stmt->fetchAll());
             json_response(['comments' => $comments]);
@@ -1985,8 +2164,23 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'POST' && preg_match('#^/api/comments/([^/]+)/like$#', $path, $m)) {
-        require_auth();
-        json_response(['liked' => true, 'likes' => 1]);
+        $session = require_auth();
+        $commentId = urldecode($m[1]);
+        $stmt = $pdo->prepare("SELECT id FROM comments WHERE id = ? AND status != 'deleted'");
+        $stmt->execute([$commentId]);
+        if (!$stmt->fetch()) json_response(['error' => 'NOT_FOUND', 'message' => 'Comment not found.'], 404);
+        $existing = $pdo->prepare('SELECT comment_id FROM comment_likes WHERE comment_id = ? AND user_id = ?');
+        $existing->execute([$commentId, $session['user']['id']]);
+        if ($existing->fetch()) {
+            $pdo->prepare('DELETE FROM comment_likes WHERE comment_id = ? AND user_id = ?')->execute([$commentId, $session['user']['id']]);
+            $liked = false;
+        } else {
+            $pdo->prepare('INSERT INTO comment_likes (comment_id, user_id, created_at) VALUES (?, ?, ?)')->execute([$commentId, $session['user']['id'], now_iso()]);
+            $liked = true;
+        }
+        $count = $pdo->prepare('SELECT COUNT(*) AS likes FROM comment_likes WHERE comment_id = ?');
+        $count->execute([$commentId]);
+        json_response(['liked' => $liked, 'likes' => (int) $count->fetch()['likes']]);
     }
 
     if ($path === '/api/support/tickets') {
@@ -2044,6 +2238,34 @@ function handle_api(string $path, string $method): void
             }
             json_response(['ok' => true, 'updatedAt' => $now]);
         }
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/security/backups/verify') {
+        require_auth(['admin']);
+        $source = database_path();
+        $backupDir = dirname(__DIR__) . '/storage/backups';
+        if (!is_dir($backupDir)) mkdir($backupDir, 0775, true);
+        $target = $backupDir . '/inkriver-' . gmdate('Ymd-His') . '.sqlite';
+        $ok = is_file($source) && copy($source, $target);
+        $details = [
+            'source' => basename($source),
+            'backup' => $ok ? $target : null,
+            'sizeBytes' => $ok ? filesize($target) : 0,
+            'verified' => false,
+        ];
+        if ($ok) {
+            try {
+                $check = new PDO('sqlite:' . $target);
+                $row = $check->query('SELECT COUNT(*) AS count FROM users')->fetch(PDO::FETCH_ASSOC);
+                $details['verified'] = is_array($row);
+            } catch (Throwable $error) {
+                $details['error'] = $error->getMessage();
+            }
+        }
+        $status = !empty($details['verified']) ? 'healthy' : 'failed';
+        $pdo->prepare('INSERT INTO system_health_checks (key, status, details_json, checked_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET status = excluded.status, details_json = excluded.details_json, checked_at = excluded.checked_at')
+            ->execute(['backup.verification', $status, json_encode($details, JSON_UNESCAPED_SLASHES), now_iso()]);
+        json_response(['status' => $status, 'details' => $details], $status === 'healthy' ? 200 : 500);
     }
 
     if ($path === '/api/admin/moderation') {
@@ -2504,7 +2726,10 @@ function handle_api(string $path, string $method): void
         $docs = [];
         $stmt = $pdo->prepare('SELECT key, value_json, updated_at FROM user_documents WHERE user_id = ?');
         $stmt->execute([$session['user']['id']]);
-        foreach ($stmt->fetchAll() as $row) $docs[$row['key']] = parse_json_field($row['value_json'], null);
+        foreach ($stmt->fetchAll() as $row) {
+            if (str_starts_with((string) $row['key'], 'passkey-')) continue;
+            $docs[$row['key']] = parse_json_field($row['value_json'], null);
+        }
         json_response(['user' => $session['user'], 'documents' => $docs, 'exportedAt' => now_iso()]);
     }
 
