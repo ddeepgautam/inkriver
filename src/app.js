@@ -242,6 +242,14 @@ function slugifyName(value) {
   return String(value || "reader").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+const reservedProfileRoutes = new Set(["about", "admin", "administrator", "api", "auth", "billing", "blog", "category", "dashboard", "help", "lists", "login", "logout", "me", "moderator", "pricing", "privacy", "publications", "publication-invites", "root", "search", "security", "settings", "signup", "stories", "support", "terms", "write"]);
+
+function cleanProfileRouteSlug(path = state.path) {
+  const slug = decodeURIComponent(String(path || "").replace(/^\/+|\/+$/g, "")).toLowerCase();
+  if (!slug || slug.includes("/") || reservedProfileRoutes.has(slug)) return "";
+  return /^[a-z0-9_-]{3,30}$/.test(slug) ? slug : "";
+}
+
 const defaultPlans = [
   {
     id: "starter",
@@ -460,6 +468,22 @@ function paypalRestrictedForCurrentUser() {
 
 function visiblePaymentGateways() {
   return paymentGateways.filter((gateway) => gateway.id !== "paypal" || !paypalRestrictedForCurrentUser());
+}
+
+function featureEnabled(key, fallback = true) {
+  return state.featureFlags[key] === undefined ? fallback : Boolean(state.featureFlags[key]);
+}
+
+function featureDisabledMessage(label) {
+  return `<div class="empty-state">${escapeHtml(label)} is currently disabled by an administrator.</div>`;
+}
+
+function safeJson(value, fallback = null) {
+  try {
+    return typeof value === "string" ? JSON.parse(value) : (value ?? fallback);
+  } catch {
+    return fallback;
+  }
 }
 
 function loadSubscriptionPlans() {
@@ -743,6 +767,7 @@ function emptyBlogForm() {
     imageUrl: "",
     tagsText: "",
     publication: "InkRiver",
+    scheduledAt: "",
     interactiveBlocks: [],
     body: defaultStoryBody.join("\n\n"),
     contentHtml: defaultStoryBody.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
@@ -769,11 +794,26 @@ function populateBlogForm(story) {
     contentHtml: story.contentHtml || story.body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
     tagsText: (story.tags || []).join(", "),
     publication: story.publication || story.role || "InkRiver",
+    scheduledAt: story.scheduledAt || "",
     interactiveBlocks: structuredClone(story.interactiveBlocks || []),
     seo: { ...defaultPostSeo(story), ...(story.seo || {}) },
   };
   state.blogMessage = `Editing ${story.title}`;
+  loadDraftNotes(story.slug);
   setRoute(`/admin/blogs/edit/${story.id}`);
+}
+
+async function loadDraftNotes(slug = state.blogForm.slug) {
+  if (!slug || !state.user || !["admin", "moderator", "writer"].includes(state.user.role)) {
+    state.draftNotes = [];
+    return;
+  }
+  try {
+    const payload = await apiRequest(`/api/stories/${encodeURIComponent(slug)}/collaboration-notes`);
+    state.draftNotes = payload.notes || [];
+  } catch (error) {
+    state.blogMessage = error.message;
+  }
 }
 
 function saveBlogFromForm(status = "published") {
@@ -797,6 +837,7 @@ function saveBlogFromForm(status = "published") {
     topic: state.blogForm.topic || "Marketing",
     tags: state.blogForm.tagsText ? state.blogForm.tagsText.split(",").map((tag) => tag.trim()).filter(Boolean) : (previous?.tags || []),
     publication: state.blogForm.publication.trim() || "InkRiver",
+    scheduledAt: status === "scheduled" ? (state.blogForm.scheduledAt || new Date().toISOString()) : "",
     publishedAt: previous?.publishedAt || new Date().toISOString(),
     interactiveBlocks: state.blogForm.interactiveBlocks || [],
     readTime: state.blogForm.readTime.trim() || "5 min read",
@@ -895,8 +936,15 @@ async function saveWriterStory(status) {
 }
 
 function setBlogStatus(blogId, status) {
+  const allowed = ["draft", "review", "approved", "scheduled", "published"];
+  if (!allowed.includes(status)) return;
   const blog = state.stories.find((story) => story.id === blogId);
-  state.stories = state.stories.map((story) => (story.id === blogId ? { ...story, status } : story));
+  if (status === "scheduled") {
+    openAdminModal("scheduleStatus", { blogId, scheduledAt: blog?.scheduledAt || new Date().toISOString().slice(0, 16) });
+    return;
+  }
+  const scheduledAt = "";
+  state.stories = state.stories.map((story) => (story.id === blogId ? { ...story, status, scheduledAt: scheduledAt || story.scheduledAt || "" } : story));
   state.blogMessage = `${blog?.title || "Blog"} moved to ${status}.`;
   persistBlogs();
   render();
@@ -919,6 +967,24 @@ function emptyPlanForm() {
     note: "",
     features: "",
   };
+}
+
+function emptyPublicationForm() {
+  return { id: "", name: "", slug: "", description: "", logoUrl: "", status: "active" };
+}
+
+function populatePublicationForm(publication) {
+  state.editingPublicationId = publication.id || publication.slug;
+  state.publicationForm = {
+    id: publication.id || "",
+    name: publication.name || "",
+    slug: publication.slug || "",
+    description: publication.description || "",
+    logoUrl: publication.logoUrl || "",
+    status: publication.status || "active",
+  };
+  state.userMessage = `Editing ${publication.name}`;
+  render();
 }
 
 function slugifyPlanId(name) {
@@ -1004,10 +1070,11 @@ function subscriptionOptions() {
 }
 
 async function apiRequest(path, options = {}) {
+  const headers = options.body instanceof FormData ? { ...(options.headers || {}) } : { "Content-Type": "application/json", ...(options.headers || {}) };
   const response = await fetch(path, {
     credentials: "same-origin",
     cache: "no-store",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers,
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
@@ -1102,16 +1169,19 @@ async function hydratePlatformState() {
     }
   }
   state.providerStatus = payload.providers || state.providerStatus;
+  state.featureFlags = payload.featureFlags || {};
   state.paymentPolicy = payload.paymentPolicy || state.paymentPolicy;
   state.pushPublicKey = payload.pushPublicKey || "";
   state.socialAccounts = payload.socialAccounts || [];
   state.adCampaigns = payload.ads || state.adCampaigns;
+  await loadPlatformAddons();
 
   if (["moderator", "admin"].includes(state.user?.role)) {
     await loadAdminOperationalData();
   }
   if (state.user?.role === "admin") {
     await loadAdminCommerceData();
+    await loadProductionSuite();
     if (!Array.isArray(documents.stories) || !documents.stories.length) persistAdminDocument("stories", state.stories);
     if (!Array.isArray(documents.categories) || !documents.categories.length) persistAdminDocument("categories", state.categories);
     if (!Array.isArray(documents.plans) || !documents.plans.length) persistAdminDocument("plans", state.plans);
@@ -1138,6 +1208,50 @@ async function loadAdminCommerceData() {
     state.providerStatus = credentials.providers || state.providerStatus;
   } catch (error) {
     state.userMessage = error.message;
+  }
+}
+
+async function loadProductionSuite() {
+  if (state.user?.role !== "admin") return;
+  try {
+    const payload = await apiRequest("/api/admin/production-suite");
+    state.productionSuite = { ...state.productionSuite, ...payload };
+    state.productionSuite.taxSettings = { ...state.productionSuite.taxSettings, ...(payload.taxSettings || {}) };
+  } catch (error) {
+    state.userMessage = error.message;
+  }
+}
+
+async function loadPlatformAddons() {
+  try {
+    const publications = await apiRequest("/api/publications");
+    state.publications = publications.publications || [];
+  } catch {}
+  if (!state.user) return;
+  try {
+    const [notifications, invoices, pwa] = await Promise.all([
+      apiRequest("/api/me/notifications"),
+      apiRequest("/api/me/invoices"),
+      apiRequest("/api/me/pwa/settings"),
+    ]);
+    state.notifications = notifications.notifications || [];
+    state.unreadNotifications = notifications.unread || 0;
+    state.invoices = invoices.invoices || [];
+    state.pwaSettings = { ...state.pwaSettings, ...(pwa.settings || {}) };
+  } catch (error) {
+    state.userMessage = error.message;
+  }
+  if (state.user.role === "admin") {
+    try {
+      const [seo, dictionary, permissions] = await Promise.all([
+        apiRequest("/api/admin/seo/artifacts"),
+        apiRequest("/api/admin/moderation/dictionary"),
+        apiRequest("/api/admin/permissions"),
+      ]);
+      state.seoArtifacts = seo.artifacts || [];
+      state.moderationDictionary = dictionary.terms || [];
+      state.adminPermissions = permissions.permissions || [];
+    } catch {}
   }
 }
 
@@ -1449,6 +1563,16 @@ const state = {
   payoutSummary: { availableAmount: 0, availableTips: [], payouts: [] },
   providerCredentials: [],
   providerTestMessage: "",
+  publications: [],
+  notifications: [],
+  unreadNotifications: 0,
+  invoices: [],
+  seoArtifacts: [],
+  moderationDictionary: [],
+  adminPermissions: [],
+  pwaSettings: { offlineSavedArticles: true, backgroundSync: true, pushDigest: true },
+  editingPublicationId: "",
+  publicationForm: emptyPublicationForm(),
   checkoutDiscountCode: "",
   checkoutDiscount: null,
   gateway: "razorpay",
@@ -1464,6 +1588,23 @@ const state = {
   adminAnalytics: { eventCounts: [], storyCounts: [], dailyEvents: [], revenueByStory: [], revenue: 0, activeSubscriptions: 0, tickets: [], moderation: [] },
   adminRecommendationStatus: { profiles: 0, signals: 0, scores: 0, lastTrainedAt: "" },
   creatorAnalytics: { stories: [], eventRows: [], commentRows: [], tipRows: [] },
+  productionSuite: {
+    emailTemplates: [], newsletters: [], featureFlags: [], taxSettings: { gstin: "", taxRate: 18, invoicePrefix: "INV" },
+    seoAudit: [], editorialAssignments: [], imports: [], abandonedCheckouts: [], jobs: [], installer: {}, deployment: {}, newsletterLinks: {}, newsletterSuppressions: 0,
+  },
+  featureFlags: {},
+  productionForms: {
+    newsletter: { title: "", subject: "", contentHtml: "", audience: "all", scheduledAt: "" },
+    emailTemplate: { key: "", subject: "", body: "", enabled: true },
+    featureFlag: { key: "", description: "", enabled: true, rolloutPercent: 100, rolesText: "", startsAt: "", endsAt: "", environment: "all" },
+    assignment: { storySlug: "", assigneeUserId: "", role: "editor", dueAt: "", priority: "Normal", notes: "" },
+    import: { sourceType: "json", content: "", duplicateMode: "skip", defaultStatus: "draft", defaultAuthor: "", defaultTopic: "" },
+    deployment: { branch: "" },
+  },
+  installerStep: "server",
+  importPreview: null,
+  adminModal: { type: "", fields: {} },
+  accountForm: { name: "", email: "", username: "", currentPassword: "", newPassword: "", confirmPassword: "" },
   userSearch: "",
   userMessage: "",
   securitySessions: [],
@@ -1472,6 +1613,9 @@ const state = {
   editingBlogId: "",
   blogForm: emptyBlogForm(),
   blogMessage: "",
+  draftNotes: [],
+  draftNoteBody: "",
+  draftNoteType: "comment",
   editingCategoryId: "",
   categoryForm: emptyCategoryForm(),
   categoryMessage: "",
@@ -1500,6 +1644,7 @@ const state = {
   preferences: initialPreferences,
   aiPanel: "assistant",
   aiResult: "",
+  aiReviewResults: {},
   aiRunning: false,
   recommendationPanel: "",
   serverRecommendations: [],
@@ -1858,7 +2003,7 @@ function searchSuggestions() {
   const writerSuggestions = Object.entries(publicProfiles())
     .filter(([, profile]) => `${profile.name} ${profile.expertise.join(" ")}`.toLowerCase().includes(query))
     .slice(0, 3)
-    .map(([slug, profile]) => ({ type: "Writer", label: profile.name, meta: profile.expertise[0], route: `/@${slug}` }));
+    .map(([slug, profile]) => ({ type: "Writer", label: profile.name, meta: profile.expertise[0], route: `/${slug}` }));
   return [...storySuggestions, ...writerSuggestions].slice(0, 7);
 }
 
@@ -1943,6 +2088,20 @@ function publicCuratedLists() {
 }
 
 function profileForSlug(slug) {
+  if (state.user?.username && state.user.username.toLowerCase() === String(slug || "").toLowerCase()) {
+    return {
+      slug: state.user.username,
+      name: state.user.name,
+      bio: `InkRiver ${state.user.role} profile.`,
+      expertise: state.recommendation.selectedInterests.slice(0, 5),
+      followers: Object.values(state.following).reduce((sum, items) => sum + items.length, 0),
+      badge: state.user.role === "writer" ? "Writer" : "Reader",
+      website: "",
+      social: `@${state.user.username}`,
+      publication: "InkRiver",
+      avatarUrl: state.user.avatarUrl || "",
+    };
+  }
   const profiles = publicProfiles();
   if (profiles[slug]) return { slug, ...profiles[slug] };
   const story = publishedStories().find((item) => slugifyName(item.author) === slug);
@@ -2259,7 +2418,7 @@ async function startGatewayPayment(plan, purchase = {}) {
       await loadScript("https://checkout.razorpay.com/v1/checkout.js");
       const checkout = new window.Razorpay({
         key: order.checkout.key,
-        order_id: order.checkout.orderId,
+        ...(order.checkout.subscriptionId ? { subscription_id: order.checkout.subscriptionId } : { order_id: order.checkout.orderId }),
         name: "InkRiver",
         description: `${plan.name} membership`,
         prefill: { name: state.user.name, email: state.user.email },
@@ -2402,6 +2561,7 @@ async function startTipPayment(story) {
 }
 
 function enabledSocialProviders() {
+  if (!featureEnabled("social_login")) return [];
   return [
     state.gatewaySettings.googleLoginEnabled !== false && { id: "google", name: "Google", appField: "googleClientId" },
     state.gatewaySettings.facebookLoginEnabled !== false && { id: "facebook", name: "Facebook", appField: "facebookAppId" },
@@ -2458,9 +2618,74 @@ async function submitAuthentication() {
   }
 }
 
+async function loginWithPasskey() {
+  if (!window.PublicKeyCredential || !navigator.credentials?.get) {
+    state.loginMessage = "This browser does not support passkey sign-in.";
+    render();
+    return;
+  }
+  const email = (state.authForm.email || document.getElementById("authEmail")?.value || "").trim();
+  if (!email) {
+    state.loginMessage = "Enter your email address before using a passkey.";
+    render();
+    return;
+  }
+  state.authBusy = true;
+  state.loginMessage = "";
+  render();
+  try {
+    const options = await apiRequest("/api/auth/passkeys/challenge", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: urlBase64ToUint8Array(options.challenge),
+        rpId: options.rpId && options.rpId !== "localhost" ? options.rpId : undefined,
+        allowCredentials: (options.allowCredentials || []).map((credential) => ({
+          type: credential.type || "public-key",
+          id: urlBase64ToUint8Array(credential.id),
+          transports: credential.transports?.length ? credential.transports : undefined,
+        })),
+        timeout: options.timeout || 60000,
+        userVerification: options.userVerification || "preferred",
+      },
+    });
+    const payload = await apiRequest("/api/auth/passkeys/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        credentialId: assertion.id,
+        rawId: arrayBufferToBase64Url(assertion.rawId),
+        clientDataJSON: arrayBufferToBase64Url(assertion.response.clientDataJSON),
+        authenticatorData: arrayBufferToBase64Url(assertion.response.authenticatorData),
+        signature: arrayBufferToBase64Url(assertion.response.signature),
+        userHandle: assertion.response.userHandle ? arrayBufferToBase64Url(assertion.response.userHandle) : "",
+      }),
+    });
+    applyAuthenticatedUser(payload.user, false);
+    await hydratePlatformState();
+    await loadRecommendationFeed();
+    if (payload.user.role === "admin") await loadAdminUsers();
+    state.authBusy = false;
+    setRoute(payload.user.role === "admin" ? "/admin" : "/dashboard");
+  } catch (error) {
+    state.loginMessage = error.message;
+    state.loginOpen = true;
+    render();
+  } finally {
+    state.authBusy = false;
+  }
+}
+
 async function requestPasswordReset() {
-  const email = state.authForm.email || window.prompt("Enter your account email address:");
-  if (!email?.trim()) return;
+  const email = state.authForm.email;
+  if (!email?.trim()) {
+    state.loginOpen = true;
+    state.loginMessage = "Enter your email address first, then request the reset link.";
+    render();
+    return;
+  }
   state.authBusy = true;
   state.loginMessage = "";
   render();
@@ -2649,18 +2874,24 @@ function filteredStories(topic = state.activeTopic) {
 function appTemplate() {
   const selectedStory = state.stories.find((story) => story.status === "published" && state.path.includes(`/stories/${story.slug}`));
   const selectedCategory = state.categories.find((category) => state.path === `/category/${category.slug}`);
-  const selectedProfile = state.path.startsWith("/@") ? profileForSlug(state.path.slice(2)) : null;
+  const selectedProfile = cleanProfileRouteSlug(state.path) ? profileForSlug(cleanProfileRouteSlug(state.path)) : null;
   const selectedList = state.path.startsWith("/lists/") ? publicCuratedLists().find((list) => list.id === state.path.split("/").pop()) : null;
+  const selectedPublication = state.path.startsWith("/publications/") ? state.publications.find((publication) => publication.slug === decodeURIComponent(state.path.split("/").pop() || "")) : null;
+  const inviteToken = state.path.startsWith("/publication-invites/") ? decodeURIComponent(state.path.split("/").pop() || "") : "";
   return `
     <div class="app-shell">
       ${headerTemplate()}
       ${
         selectedStory
           ? storyPageTemplate(selectedStory)
+          : inviteToken
+            ? publicationInviteTemplate(inviteToken)
           : selectedProfile
             ? profileTemplate(selectedProfile)
           : selectedList
             ? curatedListTemplate(selectedList)
+          : selectedPublication
+            ? publicationTemplate(selectedPublication)
           : selectedCategory
             ? homeTemplate(selectedCategory)
           : state.path === "/me"
@@ -2673,6 +2904,10 @@ function appTemplate() {
             ? securityCenterTemplate()
           : state.path.startsWith("/support")
             ? supportCenterTemplate()
+          : state.path.startsWith("/about")
+            ? aboutPageTemplate()
+          : state.path.startsWith("/terms")
+            ? termsPageTemplate()
           : state.path.startsWith("/admin")
             ? adminRouteTemplate()
             : state.path.startsWith("/dashboard")
@@ -2687,6 +2922,7 @@ function appTemplate() {
       ${state.checkoutPlan ? checkoutTemplate(state.checkoutPlan) : ""}
       ${state.loginOpen ? loginTemplate() : ""}
       ${state.onboardingOpen ? onboardingTemplate() : ""}
+      ${state.adminModal.type ? adminModalTemplate() : ""}
     </div>
   `;
 }
@@ -2726,6 +2962,7 @@ function adminRouteTemplate() {
   if (state.path.startsWith("/admin/moderation")) return moderationCenterTemplate();
   if (state.path.startsWith("/admin/copyright")) return copyrightCenterTemplate();
   if (state.path.startsWith("/admin/support")) return adminSupportTemplate();
+  if (state.path.startsWith("/admin/production")) return productionSuiteTemplate();
   if (state.path.startsWith("/admin/health")) return platformHealthTemplate();
   if (state.path.startsWith("/admin/security")) return adminSecurityTemplate();
   return adminTemplate();
@@ -2754,10 +2991,24 @@ function headerTemplate() {
           </button>
           <button class="icon-button notification-button" data-action="toggle-push" aria-label="Notifications" title="Notifications">${icon("bell")}</button>
           <button class="member-pill" data-action="${state.user ? "open-account" : "open-login"}">${state.user ? state.user.name.split(" ")[0] : "Join"}</button>
-          <button class="menu-button" data-action="toggle-menu" aria-label="Open menu">${icon(state.mobileOpen ? "close" : "menu", 20)}</button>
+          <button class="menu-button" data-action="toggle-menu" aria-label="${state.mobileOpen ? "Close menu" : "Open menu"}" aria-expanded="${state.mobileOpen ? "true" : "false"}">${icon(state.mobileOpen ? "close" : "menu", 20)}</button>
         </div>
       </div>
-      ${state.mobileOpen ? `<div class="mobile-panel">${links.map(([label, to]) => `<button data-route="${to}">${label}</button>`).join("")}<button data-action="${state.user ? "open-account" : "open-login"}">${state.user ? `Account: ${state.user.name}` : "Sign in / Join"}</button></div>` : ""}
+      ${state.mobileOpen ? `
+        <div class="mobile-menu-scrim" data-action="close-menu" aria-hidden="true"></div>
+        <aside class="mobile-panel" aria-label="Mobile navigation">
+          <div class="mobile-panel-head">
+            <button class="brand compact" data-route="/"><span class="brand-mark">IR</span><span>InkRiver</span></button>
+            <button class="close-button" data-action="close-menu" aria-label="Close menu">${icon("close", 18)}</button>
+          </div>
+          <nav>
+            ${links.map(([label, to]) => `<button class="${state.path === to ? "active" : ""}" data-route="${to}">${label}</button>`).join("")}
+          </nav>
+          <div class="mobile-panel-actions">
+            <button class="primary-button" data-action="${state.user ? "open-account" : "open-login"}">${state.user ? `Account: ${state.user.name}` : "Sign in / Join"}</button>
+          </div>
+        </aside>
+      ` : ""}
     </header>
   `;
 }
@@ -2815,7 +3066,7 @@ function searchPageTemplate() {
             <div class="panel-title">${icon("users")}<h2>Writers to follow</h2></div>
             ${Object.entries(publicProfiles()).slice(0, 4).map(([slug, profile]) => `
               <div class="discovery-follow-row">
-                <button data-route="/@${slug}"><span class="avatar">${profile.name[0]}</span><span><strong>${profile.name}</strong><small>${profile.expertise[0]}</small></span></button>
+                <button data-route="/${slug}"><span class="avatar">${profile.name[0]}</span><span><strong>${profile.name}</strong><small>${profile.expertise[0]}</small></span></button>
                 <button class="compact-follow ${isFollowing("writers", profile.name) ? "active" : ""}" data-follow-type="writers" data-follow-value="${escapeHtml(profile.name)}">${followLabel("writers", profile.name)}</button>
               </div>
             `).join("")}
@@ -2838,7 +3089,7 @@ function profileTemplate(profile) {
   return `
     <main class="profile-page">
       <section class="profile-hero">
-        <div class="profile-avatar">${escapeHtml(profile.name.split(" ").map((part) => part[0]).join("").slice(0, 2))}</div>
+        <div class="profile-avatar">${profile.avatarUrl ? `<img src="${escapeHtml(safeImageUrl(profile.avatarUrl))}" alt="" loading="lazy" decoding="async" />` : escapeHtml(profile.name.split(" ").map((part) => part[0]).join("").slice(0, 2))}</div>
         <div class="profile-intro">
           <div class="profile-title-row"><div><h1>${escapeHtml(profile.name)}</h1><span class="profile-badge">${icon("check", 13)}${escapeHtml(profile.badge)}</span></div><button class="primary-button ${isFollowing("writers", profile.name) ? "following" : ""}" data-follow-type="writers" data-follow-value="${escapeHtml(profile.name)}">${followLabel("writers", profile.name)}</button></div>
           <p>${escapeHtml(profile.bio)}</p>
@@ -2856,6 +3107,33 @@ function profileTemplate(profile) {
           <section class="rail-panel"><div class="panel-title">${icon("pen")}<h2>Publication</h2></div><strong>${escapeHtml(profile.publication)}</strong><p>Stories and notes curated by ${escapeHtml(profile.name)}.</p><button class="secondary-button wide-button ${isFollowing("publications", profile.publication) ? "active" : ""}" data-follow-type="publications" data-follow-value="${escapeHtml(profile.publication)}">${followLabel("publications", profile.publication)} publication</button></section>
           ${publicLists.length ? `<section class="rail-panel"><div class="panel-title">${icon("bookmark")}<h2>Public lists</h2></div>${publicLists.map((list) => `<button class="discovery-list-row" data-route="/lists/${list.id}"><strong>${escapeHtml(list.name)}</strong><span>${list.slugs.length} stories</span></button>`).join("")}</section>` : ""}
           <section class="rail-panel"><div class="panel-title">${icon("trend")}<h2>Recent activity</h2></div><div class="profile-activity"><span>Published ${stories[0] ? escapeHtml(stories[0].title) : "a new note"}</span><span>Added stories to ${publicLists[0] ? escapeHtml(publicLists[0].name) : "a public reading list"}</span><span>Followed ${escapeHtml(profile.expertise[0])}</span></div></section>
+        </aside>
+      </section>
+    </main>
+  `;
+}
+
+function publicationTemplate(publication) {
+  const stories = publishedStories().filter((story) => (story.publication || "").toLowerCase() === publication.name.toLowerCase());
+  const writers = [...new Set(stories.map((story) => story.author))];
+  const followerCount = 1200 + stories.reduce((sum, story) => sum + Math.round(Number(story.reads || 0) / 100), 0) + (isFollowing("publications", publication.name) ? 1 : 0);
+  return `
+    <main class="profile-page">
+      <section class="profile-hero">
+        <div class="profile-avatar">${publication.logoUrl ? `<img src="${escapeHtml(safeImageUrl(publication.logoUrl))}" alt="" loading="lazy" decoding="async" />` : escapeHtml(publication.name.split(" ").map((part) => part[0]).join("").slice(0, 2))}</div>
+        <div class="profile-intro">
+          <div class="profile-title-row"><div><h1>${escapeHtml(publication.name)}</h1><span class="profile-badge">${icon("pen", 13)}Publication</span></div><button class="primary-button ${isFollowing("publications", publication.name) ? "following" : ""}" data-follow-type="publications" data-follow-value="${escapeHtml(publication.name)}">${followLabel("publications", publication.name)}</button></div>
+          <p>${escapeHtml(publication.description || "Independent stories and analysis from this publication.")}</p>
+          <div class="profile-meta"><strong>${followerCount.toLocaleString("en-IN")} followers</strong><span>${stories.length} stories</span><span>${writers.length} writer${writers.length === 1 ? "" : "s"}</span></div>
+        </div>
+      </section>
+      <section class="profile-content-grid">
+        <div>
+          <section class="profile-stories"><div class="section-heading"><h2>Latest from ${escapeHtml(publication.name)}</h2><span>${stories.length} published</span></div>${stories.map((story) => storyCardTemplate(story, false)).join("") || `<div class="empty-state">No published stories are assigned to this publication yet.</div>`}</section>
+        </div>
+        <aside class="profile-sidebar">
+          <section class="rail-panel"><div class="panel-title">${icon("users")}<h2>Writers</h2></div>${writers.map((writer) => `<button class="discovery-list-row" data-route="/${slugifyName(writer)}"><strong>${escapeHtml(writer)}</strong><span>${stories.filter((story) => story.author === writer).length} stories</span></button>`).join("") || `<div class="empty-state">Members will appear after stories are published.</div>`}</section>
+          <section class="rail-panel"><div class="panel-title">${icon("filter")}<h2>Topics</h2></div><div class="profile-expertise">${[...new Set(stories.map((story) => story.topic))].map((topic) => `<button class="${isFollowing("topics", topic) ? "active" : ""}" data-follow-type="topics" data-follow-value="${escapeHtml(topic)}">${escapeHtml(topic)}</button>`).join("")}</div></section>
         </aside>
       </section>
     </main>
@@ -2882,7 +3160,7 @@ function readerProfileTemplate() {
   return `
     <main class="profile-page">
       <section class="profile-hero reader-profile-hero">
-        <div class="profile-avatar">${escapeHtml(name.split(" ").map((part) => part[0]).join("").slice(0, 2))}</div>
+        ${userAvatarTemplate(state.user, "profile-avatar")}
         <div class="profile-intro">
           <div class="profile-title-row"><div><h1>${escapeHtml(name)}</h1><span class="profile-badge">${icon("bookmark", 13)}Reader profile</span></div><button class="secondary-button" data-route="/dashboard">Edit interests</button></div>
           <p>Curious reader following ${state.following.topics.slice(0, 3).map(escapeHtml).join(", ") || "new ideas across InkRiver"}.</p>
@@ -2976,7 +3254,7 @@ function storyCardTemplate(story, personalized = false, index = 0) {
         <span>${escapeHtml(story.topic)}</span>
       </button>
       <div class="story-body">
-        <div class="author-row"><button class="author-link" data-route="/@${slugifyName(story.author)}"><span class="avatar">${escapeHtml(story.author[0] || "I")}</span><span>${escapeHtml(story.author)}</span></button><span class="muted">in ${escapeHtml(story.publication)}</span></div>
+        <div class="author-row"><button class="author-link" data-route="/${slugifyName(story.author)}"><span class="avatar">${escapeHtml(story.author[0] || "I")}</span><span>${escapeHtml(story.author)}</span></button><span class="muted">in ${escapeHtml(story.publication)}</span></div>
         ${personalized ? `<div class="recommendation-reason">${icon("spark", 13)}<span>${index === 0 ? "Top match: " : ""}${escapeHtml(recommendationReason(story))}</span></div>` : ""}
         <button class="story-title" data-route="/stories/${escapeHtml(story.slug)}">${escapeHtml(displayStory.title)}</button>
         <p>${escapeHtml(displayStory.dek)}</p>
@@ -3089,7 +3367,7 @@ function storyPageTemplate(story) {
         <h1>${escapeHtml(displayStory.title)}</h1>
         <p class="article-dek">${escapeHtml(displayStory.dek)}</p>
         <div class="article-author-row">
-          <button class="article-author" data-route="/@${slugifyName(story.author)}"><span class="avatar large">${escapeHtml(story.author[0] || "I")}</span><div><strong>${escapeHtml(story.author)}</strong><span>${escapeHtml(story.publication)} · ${escapeHtml(story.readTime)}</span></div></button>
+          <button class="article-author" data-route="/${slugifyName(story.author)}"><span class="avatar large">${escapeHtml(story.author[0] || "I")}</span><div><strong>${escapeHtml(story.author)}</strong><span>${escapeHtml(story.publication)} · ${escapeHtml(story.readTime)}</span></div></button>
           <div class="article-follow-actions">
             <button class="secondary-button ${isFollowing("writers", story.author) ? "active" : ""}" data-follow-type="writers" data-follow-value="${escapeHtml(story.author)}">${followLabel("writers", story.author)} writer</button>
             <button class="secondary-button ${isFollowing("publications", story.publication) ? "active" : ""}" data-follow-type="publications" data-follow-value="${escapeHtml(story.publication)}">${followLabel("publications", story.publication)} publication</button>
@@ -3127,8 +3405,8 @@ function storyPageTemplate(story) {
             </div>
           </section>
         ` : ""}
-        ${!locked && state.creatorTools.tipsEnabled ? writerTipTemplate(story) : ""}
-        ${commentsTemplate(story)}
+        ${!locked && state.creatorTools.tipsEnabled && featureEnabled("tips") ? writerTipTemplate(story) : ""}
+        ${featureEnabled("comments") ? commentsTemplate(story) : featureDisabledMessage("Comments")}
         ${articleRecommendationsTemplate(story)}
       </article>
     </main>
@@ -3209,6 +3487,7 @@ function interactiveBlockTemplate(story, block) {
 }
 
 function commentsTemplate(story) {
+  if (!featureEnabled("comments")) return featureDisabledMessage("Comments");
   const comments = storyComments(story.slug);
   const roots = comments.filter((comment) => !comment.parentId);
   return `
@@ -3451,7 +3730,7 @@ function dashboardTemplate() {
         <nav aria-label="${roleLabel} navigation">${dashboardNavItems(role).map(([iconName, label, id]) => `<button class="admin-nav-item ${section === id ? "active" : ""}" data-dashboard-section="${id}"><span class="admin-nav-icon">${icon(iconName, 18)}</span><span>${label}</span></button>`).join("")}</nav>
         <div class="admin-sidebar-footer">
           <button class="admin-sidebar-site-link" data-route="/">${icon("eye", 17)}<span>Return to feed</span></button>
-          <button class="admin-sidebar-account" data-action="open-account"><span class="admin-sidebar-avatar">${escapeHtml(state.user.name[0] || "U")}</span><span><strong>${escapeHtml(state.user.name)}</strong><small>${escapeHtml(role)} · ${escapeHtml(state.user.subscription)}</small></span></button>
+          <button class="admin-sidebar-account" data-action="open-account">${userAvatarTemplate(state.user, "admin-sidebar-avatar")}<span><strong>${escapeHtml(state.user.name)}</strong><small>${escapeHtml(role)} · ${escapeHtml(state.user.subscription)}</small></span></button>
         </div>
       </aside>
       <section class="admin-main member-main">
@@ -3511,7 +3790,15 @@ function dashboardSectionTemplate(section) {
 function dashboardOverviewTemplate() {
   const readLater = publishedStories().filter((story) => state.saved.has(story.slug));
   const following = Object.values(state.following).reduce((sum, items) => sum + items.length, 0);
-  return `<section class="dashboard-grid member-metrics">${metricTemplate("eye", "Articles opened", String(state.readingHistory.length), "Your history")}${metricTemplate("bookmark", "Read later", String(readLater.length), "Saved")}${metricTemplate("users", "Following", String(following), "People and interests")}${metricTemplate("shield", "Membership", escapeHtml(state.user.subscription), state.isMember ? "Active" : "Free plan")}</section>${continueReadingTemplate("dashboard")}<section class="member-overview-grid"><div class="work-panel"><div class="panel-title">${icon("play")}<h2>Recent reading</h2></div>${dashboardRecentReadingRows(5)}<button class="full-button" data-dashboard-section="reading">Open reading workspace</button></div><div class="work-panel"><div class="panel-title">${icon("spark")}<h2>Personalization</h2></div>${readingProfileCompactTemplate()}<button class="full-button" data-dashboard-section="interests">Tune interests</button></div><div class="work-panel"><div class="panel-title">${icon("card")}<h2>Membership</h2></div><div class="subscription-state"><strong>${escapeHtml(state.user.subscription)}</strong><span>${state.isMember ? "Member access is active" : "Free reader account"}</span></div><button class="full-button" data-dashboard-section="membership">Manage membership</button></div><div class="work-panel member-shortcuts"><div class="panel-title">${icon("trend")}<h2>Quick actions</h2></div><button data-dashboard-section="following">${icon("users", 16)}Manage following</button><button data-dashboard-section="history">${icon("eye", 16)}Search history</button><button data-dashboard-section="security">${icon("lock", 16)}Security settings</button><button data-dashboard-section="profile">${icon("users", 16)}Edit profile</button></div></section>`;
+  return `<section class="dashboard-grid member-metrics">${metricTemplate("eye", "Articles opened", String(state.readingHistory.length), "Your history")}${metricTemplate("bookmark", "Read later", String(readLater.length), "Saved")}${metricTemplate("users", "Following", String(following), "People and interests")}${metricTemplate("shield", "Membership", escapeHtml(state.user.subscription), state.isMember ? "Active" : "Free plan")}</section>${notificationPanelTemplate()}${continueReadingTemplate("dashboard")}<section class="member-overview-grid"><div class="work-panel"><div class="panel-title">${icon("play")}<h2>Recent reading</h2></div>${dashboardRecentReadingRows(5)}<button class="full-button" data-dashboard-section="reading">Open reading workspace</button></div><div class="work-panel"><div class="panel-title">${icon("spark")}<h2>Personalization</h2></div>${readingProfileCompactTemplate()}<button class="full-button" data-dashboard-section="interests">Tune interests</button></div><div class="work-panel"><div class="panel-title">${icon("card")}<h2>Membership</h2></div><div class="subscription-state"><strong>${escapeHtml(state.user.subscription)}</strong><span>${state.isMember ? "Member access is active" : "Free reader account"}</span></div><button class="full-button" data-dashboard-section="membership">Manage membership</button></div><div class="work-panel member-shortcuts"><div class="panel-title">${icon("trend")}<h2>Quick actions</h2></div><button data-dashboard-section="following">${icon("users", 16)}Manage following</button><button data-dashboard-section="history">${icon("eye", 16)}Search history</button><button data-dashboard-section="security">${icon("lock", 16)}Security settings</button><button data-dashboard-section="profile">${icon("users", 16)}Edit profile</button></div></section>`;
+}
+
+function notificationPanelTemplate() {
+  return `<section class="work-panel"><div class="panel-title">${icon("bell")}<h2>Notifications</h2></div><div class="settings-actions"><span>${state.unreadNotifications} unread</span><button class="secondary-button" data-action="mark-notifications-read" ${state.unreadNotifications ? "" : "disabled"}>Mark all read</button></div><div class="promotion-list">${state.notifications.slice(0, 6).map((item) => `<article><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.body || item.type)} · ${new Date(item.created_at).toLocaleString("en-IN")}</small></span><button class="secondary-button" data-route="${escapeHtml(item.url || "/dashboard")}">${item.read_at ? "Open" : "New"}</button></article>`).join("") || `<div class="empty-state">No notifications yet.</div>`}</div></section>`;
+}
+
+function invoicePanelTemplate() {
+  return `<div class="work-panel"><div class="panel-title">${icon("card")}<h2>Invoices</h2></div><div class="promotion-list">${state.invoices.map((invoice) => `<article><span><strong>${escapeHtml(invoice.invoice_number)}</strong><small>${new Date(invoice.issued_at).toLocaleDateString("en-IN")} · ${escapeHtml(invoice.currency)}</small></span><b>${formatINR(Number(invoice.amount || 0) / 100)}</b></article>`).join("") || `<div class="empty-state">Invoices appear here after paid transactions.</div>`}</div></div>`;
 }
 
 function dashboardRecentReadingRows(limit = 6) {
@@ -3528,7 +3815,7 @@ function dashboardReadingTemplate() {
 }
 
 function dashboardMembershipTemplate() {
-  return `<section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("card")}<h2>Current plan</h2></div><div class="subscription-state"><strong>${escapeHtml(state.user.subscription)}</strong><span>${state.isMember ? "Full member access is active." : "You are currently using the free reader plan."}</span></div><button class="primary-button" data-route="/pricing">${state.isMember ? "Review available plans" : "Upgrade membership"}</button></div><div class="work-panel"><div class="panel-title">${icon("check")}<h2>Account access</h2></div><ul class="member-benefit-list">${roleMap[state.user.role].map((permission) => `<li>${icon("check", 14)}${permission}</li>`).join("")}</ul><button class="secondary-button wide-button" data-route="/support">Get billing support</button></div></section>`;
+  return `<section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("card")}<h2>Current plan</h2></div><div class="subscription-state"><strong>${escapeHtml(state.user.subscription)}</strong><span>${state.isMember ? "Full member access is active." : "You are currently using the free reader plan."}</span></div><button class="primary-button" data-route="/pricing">${state.isMember ? "Review available plans" : "Upgrade membership"}</button><button class="secondary-button wide-button" data-action="cancel-subscription" ${state.isMember ? "" : "disabled"}>Cancel subscription</button></div><div class="work-panel"><div class="panel-title">${icon("check")}<h2>Account access</h2></div><ul class="member-benefit-list">${roleMap[state.user.role].map((permission) => `<li>${icon("check", 14)}${permission}</li>`).join("")}</ul><button class="secondary-button wide-button" data-route="/support">Get billing support</button></div>${invoicePanelTemplate()}</section>`;
 }
 
 function userWriterStories() {
@@ -3581,9 +3868,48 @@ function dashboardModeratorReportsTemplate() {
 }
 
 function dashboardProfileTemplate() {
-  return `<section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("users")}<h2>Account identity</h2></div><div class="account-card"><strong>${escapeHtml(state.user.name)}</strong><span>${escapeHtml(state.user.email)}</span><small>User ID: ${escapeHtml(state.user.id)} · Role: ${escapeHtml(state.user.role)}</small></div><button class="secondary-button" data-route="/me">Open public reader profile</button></div><div class="work-panel"><div class="panel-title">${icon("link")}<h2>Account tools</h2></div><button class="dashboard-setting-link" data-route="/privacy">${icon("eye", 15)}Privacy center</button><button class="dashboard-setting-link" data-route="/security">${icon("lock", 15)}Security controls</button><button class="dashboard-setting-link" data-route="/support">${icon("comment", 15)}Help and support</button></div></section>`;
+  const form = {
+    name: state.accountForm.name || state.user.name,
+    email: state.accountForm.email || state.user.email,
+    username: state.accountForm.username || state.user.username || "",
+    currentPassword: state.accountForm.currentPassword || "",
+    newPassword: state.accountForm.newPassword || "",
+    confirmPassword: state.accountForm.confirmPassword || "",
+  };
+  return `<section class="member-two-column profile-settings-grid">
+    ${state.userMessage ? `<div class="payment-message profile-message">${escapeHtml(state.userMessage)}</div>` : ""}
+    <div class="work-panel">
+      <div class="panel-title">${icon("users")}<h2>Account identity</h2></div>
+      <div class="account-photo-editor">
+        ${userAvatarTemplate(state.user, "profile-avatar")}
+        <div><strong>${escapeHtml(state.user.name)}</strong><span>${escapeHtml(state.user.email)}</span><small>${state.user.username ? `@${escapeHtml(state.user.username)} - ` : ""}User ID: ${escapeHtml(state.user.id)} - Role: ${escapeHtml(state.user.role)}</small></div>
+      </div>
+      <label class="file-field"><span>Profile photo</span><input id="profilePhotoInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" /></label>
+      <div class="settings-actions"><button class="secondary-button" data-action="remove-profile-photo" ${state.user.avatarUrl ? "" : "disabled"}>Remove photo</button><button class="secondary-button" data-route="${state.user.username ? `/${state.user.username}` : "/me"}">Open public profile</button></div>
+    </div>
+    <div class="work-panel">
+      <div class="panel-title">${icon("pen")}<h2>Account details</h2></div>
+      <label><span>Display name</span><input data-account-field="name" value="${escapeHtml(form.name)}" /></label>
+      <label><span>Username</span><input data-account-field="username" value="${escapeHtml(form.username)}" placeholder="your_username" /></label>
+      <label><span>Email address</span><input data-account-field="email" type="email" value="${escapeHtml(form.email)}" /></label>
+      <label><span>Current password</span><input data-account-field="currentPassword" type="password" value="${escapeHtml(form.currentPassword)}" autocomplete="current-password" /></label>
+      <button class="primary-button" data-action="save-account-details">Save account details</button>
+    </div>
+    <div class="work-panel">
+      <div class="panel-title">${icon("lock")}<h2>Change password</h2></div>
+      <label><span>Current password</span><input data-account-field="currentPassword" type="password" value="${escapeHtml(form.currentPassword)}" autocomplete="current-password" /></label>
+      <label><span>New password</span><input data-account-field="newPassword" type="password" value="${escapeHtml(form.newPassword)}" autocomplete="new-password" /></label>
+      <label><span>Confirm new password</span><input data-account-field="confirmPassword" type="password" value="${escapeHtml(form.confirmPassword)}" autocomplete="new-password" /></label>
+      <button class="primary-button" data-action="change-account-password">Change password</button>
+    </div>
+    <div class="work-panel">
+      <div class="panel-title">${icon("link")}<h2>Account tools</h2></div>
+      <button class="dashboard-setting-link" data-route="/privacy">${icon("eye", 15)}Privacy center</button>
+      <button class="dashboard-setting-link" data-route="/security">${icon("lock", 15)}Security controls</button>
+      <button class="dashboard-setting-link" data-route="/support">${icon("comment", 15)}Help and support</button>
+    </div>
+  </section>`;
 }
-
 function followingManagerTemplate() {
   const writers = Object.values(publicProfiles()).slice(0, 6);
   const publications = [...new Set(publishedStories().map((story) => story.publication))].slice(0, 6);
@@ -3592,7 +3918,7 @@ function followingManagerTemplate() {
     <section class="following-manager">
       <div class="section-heading"><div><h2>Following</h2><p>Followed writers, publications, topics, tags, and lists receive a strong boost in your personalized feed.</p></div></div>
       <div class="following-columns">
-        <div><h3>Writers</h3>${writers.map((profile) => followManagerRow("writers", profile.name, profile.expertise[0], `/@${slugifyName(profile.name)}`)).join("")}</div>
+        <div><h3>Writers</h3>${writers.map((profile) => followManagerRow("writers", profile.name, profile.expertise[0], `/${slugifyName(profile.name)}`)).join("")}</div>
         <div><h3>Publications</h3>${publications.map((publication) => followManagerRow("publications", publication, "Publication", "")).join("")}</div>
         <div><h3>Topics</h3>${state.categories.map((category) => followManagerRow("topics", category.name, category.description, `/category/${category.slug}`)).join("")}</div>
         <div><h3>Tags</h3><div class="follow-tag-cloud">${tags.map((tag) => `<button class="${isFollowing("tags", tag) ? "active" : ""}" data-follow-type="tags" data-follow-value="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`).join("")}</div></div>
@@ -3839,7 +4165,12 @@ function moderationCenterTemplate() {
 }
 
 function abuseProtectionTemplate() {
-  return `<section class="protection-grid"><div><h2>Automated protection</h2><p>Only controls backed by current server behavior are marked active.</p></div>${[["Login rate limits", "Active", "Five failures trigger a 15-minute block"], ["Origin validation", "Active", "State-changing requests require the application origin"], ["Session protection", "Active", "HTTP-only SameSite cookies"], ["Bot scoring", "Unavailable", "No bot-scoring provider configured"], ["Duplicate checks", "Unavailable", "No similarity service configured"], ["Blocked words", "Unavailable", "No policy dictionary configured"]].map(([name, status, meta]) => `<article><span>${icon(status === "Active" ? "shield" : "gauge", 16)}</span><div><strong>${name}</strong><small>${meta}</small></div><b>${status}</b></article>`).join("")}</section>`;
+  const hasDictionary = state.moderationDictionary.length > 0;
+  return `<section class="protection-grid"><div><h2>Automated protection</h2><p>Only controls backed by current server behavior are marked active.</p></div>${[["Login rate limits", "Active", "Five failures trigger a 15-minute block"], ["Origin validation", "Active", "State-changing requests require the application origin"], ["Session protection", "Active", "HTTP-only SameSite cookies"], ["Bot scoring", "Active", "Built-in link density and repetition scoring queues suspicious comments"], ["Duplicate checks", "Active", "Built-in exact content fingerprints flag repeated comments and stories"], ["Blocked words", hasDictionary ? "Active" : "Needs rules", hasDictionary ? `${state.moderationDictionary.length} dictionary rules scan new content` : "Add dictionary rules to activate keyword scanning"]].map(([name, status, meta]) => `<article><span>${icon(status === "Active" ? "shield" : "gauge", 16)}</span><div><strong>${name}</strong><small>${meta}</small></div><b>${status}</b></article>`).join("")}</section>${moderationDictionaryTemplate()}`;
+}
+
+function moderationDictionaryTemplate() {
+  return `<section class="work-panel"><div class="panel-title">${icon("shield")}<h2>Policy dictionary</h2></div><p class="settings-note">Terms added here are used by the server-side moderation scanner for blocked words, spam phrases, and policy review queues.</p><div class="settings-actions"><button class="primary-button" data-action="add-moderation-term">Add rule</button></div><div class="promotion-list">${state.moderationDictionary.map((term) => `<article><span><strong>${escapeHtml(term.term)}</strong><small>${escapeHtml(term.kind)} - ${escapeHtml(term.action)} - ${Number(term.active ?? 1) ? "active" : "inactive"}</small></span></article>`).join("") || `<div class="empty-state">No dictionary rules have been added yet.</div>`}</div></section>`;
 }
 
 function copyrightCenterTemplate() {
@@ -3877,6 +4208,192 @@ function supportCenterTemplate() {
   return `<main class="account-center"><header><h1>Help and support</h1><p>Find answers or track a request with the InkRiver team.</p></header>${supportWorkspaceTemplate(false)}</main>`;
 }
 
+function publicationInviteTemplate(token) {
+  return `<main class="account-center invite-center">
+    <header><h1>Publication invite</h1><p>Accept this invite to join the publication workspace with the assigned role.</p></header>
+    <section class="work-panel">
+      <div class="panel-title">${icon("mail")}<h2>Join publication</h2></div>
+      <p class="settings-note">${state.user ? `Signed in as ${escapeHtml(state.user.email)}.` : "Sign in with the invited email address before accepting."}</p>
+      <div class="settings-actions">
+        ${state.user ? `<button class="primary-button" data-action="accept-publication-invite" data-invite-token="${escapeHtml(token)}">Accept invite</button>` : `<button class="primary-button" data-action="open-login">Sign in to accept</button>`}
+      </div>
+    </section>
+  </main>`;
+}
+
+function productionSuiteTemplate() {
+  const suite = state.productionSuite;
+  const tax = suite.taxSettings || {};
+  const forms = state.productionForms;
+  const installer = suite.installer || {};
+  const installerRows = [
+    ["PHP", installer.phpVersion || "Unknown"],
+    ["SQLite", installer.sqlite ? "Ready" : "Unavailable"],
+    ["Uploads", installer.uploadsWritable ? "Writable" : "Needs permission"],
+    ["Storage", installer.storageWritable ? "Writable" : "Needs permission"],
+    ["Cron", installer.cronConfigured ? "Configured" : "Needs CRON_SECRET"],
+    ["Admins", String(installer.adminUsers || 0)],
+  ];
+  const installSteps = [
+    ["server", "Server", installer.sqlite && installer.uploadsWritable && installer.storageWritable],
+    ["security", "Secrets", installer.cronConfigured && state.providerCredentials?.length],
+    ["payments", "Payments", Object.values(state.providerStatus.payments || {}).some(Boolean)],
+    ["email", "Email", state.providerStatus.email],
+    ["launch", "Launch", installer.adminUsers > 0],
+  ];
+  const activeStep = installSteps.find((step) => step[0] === state.installerStep) || installSteps[0];
+  const deployment = suite.deployment || {};
+  const deploymentBranch = forms.deployment.branch || deployment.branch || "main";
+  const deploymentFiles = deployment.changedFiles || [];
+  const deploymentRecent = deployment.recent || [];
+  return adminShellTemplate("Production suite", "Operate newsletters, cron jobs, SEO audits, imports, invoices, feature flags, abandoned checkout recovery, and exports from one production control room.", `
+    <section class="production-grid">
+      <article class="work-panel production-panel wide-panel">
+        <div class="panel-title">${icon("spark")}<h2>Production installer</h2></div>
+        <div class="installer-steps">${installSteps.map(([id, label, done]) => `<button class="${state.installerStep === id ? "active" : ""} ${done ? "done" : ""}" data-installer-step="${id}">${done ? icon("check", 14) : icon("gauge", 14)}${label}</button>`).join("")}</div>
+        <div class="installer-grid">${installerRows.map(([label, value]) => `<span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(value)}</small></span>`).join("")}</div>
+        <div class="installer-guide">
+          <strong>${escapeHtml(activeStep[1])} setup</strong>
+          <p>${installerGuideText(activeStep[0])}</p>
+          <div class="settings-actions"><button class="secondary-button" data-action="add-provider-credential">Add encrypted credential</button><button class="secondary-button" data-action="run-production-jobs">Test jobs</button><button class="secondary-button" data-action="export-installer-report">Export launch report</button><button class="secondary-button" data-route="/admin/security">Security center</button></div>
+        </div>
+        <div class="compact-list readiness-list">${(installer.readiness || []).map((item) => `<article><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail || "")}</small></span><b class="status-pill">${item.ready ? "ready" : "needed"}</b></article>`).join("")}</div>
+      </article>
+
+      <article class="work-panel production-panel wide-panel">
+        <div class="panel-title">${icon("download")}<h2>GitHub updates</h2></div>
+        <div class="installer-grid">
+          <span><strong>Status</strong><small>${deployment.enabled ? "Git updater ready" : "Unavailable"}</small></span>
+          <span><strong>Branch</strong><small>${escapeHtml(deployment.branch || deploymentBranch)}</small></span>
+          <span><strong>Current commit</strong><small>${escapeHtml((deployment.currentCommit || "").slice(0, 12) || "Unknown")}</small></span>
+          <span><strong>Remote commit</strong><small>${escapeHtml((deployment.remoteCommit || "").slice(0, 12) || "Not checked")}</small></span>
+          <span><strong>Working tree</strong><small>${deployment.dirty ? "Local changes detected" : "Clean"}</small></span>
+          <span><strong>Remote</strong><small>${escapeHtml(deployment.remote || "origin")}</small></span>
+        </div>
+        ${deployment.error ? `<div class="form-message error">${escapeHtml(deployment.error)}</div>` : ""}
+        ${deployment.dirty ? `<div class="form-message error">Server has local changes. The updater will not pull until the working tree is clean.</div>` : ""}
+        <label><span>Deploy branch</span><input data-production-form="deployment.branch" value="${escapeHtml(deploymentBranch)}" placeholder="main" /></label>
+        <div class="settings-actions"><button class="secondary-button" data-action="check-github-updates">Check remote changes</button><button class="primary-button" data-action="run-github-update" ${!deployment.enabled || deployment.dirty ? "disabled" : ""}>Update from GitHub</button></div>
+        <div class="compact-list">
+          ${deploymentFiles.length ? deploymentFiles.slice(0, 20).map((file) => `<article><span><strong>${escapeHtml(file.path || "")}</strong><small>${escapeHtml(file.status || "")}</small></span></article>`).join("") : `<div class="empty-state">No remote changed files detected yet.</div>`}
+        </div>
+        <div class="compact-list">
+          ${deploymentRecent.map((item) => `<article><span><strong>${escapeHtml(item.status)} - ${escapeHtml(item.branch || "")}</strong><small>${escapeHtml((item.afterCommit || item.beforeCommit || "").slice(0, 12))} - ${item.updatedAt ? new Date(item.updatedAt).toLocaleString("en-IN") : ""}</small>${item.error ? `<small>${escapeHtml(item.error)}</small>` : ""}${item.log ? `<small class="deployment-log">${escapeHtml(String(item.log).slice(-900))}</small>` : ""}</span></article>`).join("") || `<div class="empty-state">No deployment attempts recorded.</div>`}
+        </div>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("mail")}<h2>Newsletters</h2></div>
+        <label><span>Title</span><input data-production-form="newsletter.title" value="${escapeHtml(forms.newsletter.title)}" /></label>
+        <label><span>Subject</span><input data-production-form="newsletter.subject" value="${escapeHtml(forms.newsletter.subject)}" /></label>
+        <label><span>Audience</span><input data-production-form="newsletter.audience" value="${escapeHtml(forms.newsletter.audience)}" placeholder="all, subscribers, topic:ai" /></label>
+        <label><span>Schedule</span><input data-production-form="newsletter.scheduledAt" type="datetime-local" value="${escapeHtml(forms.newsletter.scheduledAt)}" /></label>
+        <label class="wide-field"><span>HTML content</span><textarea data-production-form="newsletter.contentHtml" rows="5">${escapeHtml(forms.newsletter.contentHtml)}</textarea></label>
+        <div class="settings-actions"><button class="primary-button" data-action="save-newsletter">Save newsletter</button><button class="secondary-button" data-action="open-newsletter-suppression">Suppress email</button></div>
+        <p class="settings-note">${Number(suite.newsletterSuppressions || 0)} emails are currently suppressed from newsletter sends.</p>
+        <div class="compact-list">${suite.newsletters.map((item) => {
+          const sent = Number(item.sent_count || 0);
+          const opens = Number(item.open_count || 0);
+          const clicks = Number(item.click_count || 0);
+          const links = suite.newsletterLinks?.[item.id] || [];
+          return `<article><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.status)}${item.scheduled_at ? ` - ${new Date(item.scheduled_at).toLocaleString("en-IN")}` : ""} - sent ${sent} - opens ${opens} (${sent ? Math.round(opens / sent * 100) : 0}%) - clicks ${clicks} (${opens ? Math.round(clicks / opens * 100) : 0}%)</small>${links.length ? `<small>Top links: ${links.slice(0, 2).map((link) => `${escapeHtml(link.url)} (${Number(link.clicks)})`).join(", ")}</small>` : ""}</span><button class="secondary-button" data-send-newsletter="${item.id}">Send</button></article>`;
+        }).join("") || `<div class="empty-state">No newsletters have been created yet.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("mail")}<h2>Email templates</h2></div>
+        <label><span>Template key</span><input data-production-form="emailTemplate.key" value="${escapeHtml(forms.emailTemplate.key)}" placeholder="welcome_email" /></label>
+        <label><span>Subject</span><input data-production-form="emailTemplate.subject" value="${escapeHtml(forms.emailTemplate.subject)}" /></label>
+        <label><span>Status</span><select data-production-form="emailTemplate.enabled"><option value="true" ${forms.emailTemplate.enabled ? "selected" : ""}>Enabled</option><option value="false" ${!forms.emailTemplate.enabled ? "selected" : ""}>Disabled</option></select></label>
+        <label class="wide-field"><span>Body</span><textarea data-production-form="emailTemplate.body" rows="5">${escapeHtml(forms.emailTemplate.body)}</textarea></label>
+        <button class="primary-button" data-action="save-email-template">Save template</button>
+        <div class="compact-list">${suite.emailTemplates.map((item) => `<article><span><strong>${escapeHtml(item.key)}</strong><small>${escapeHtml(item.subject || "No subject")} - ${Number(item.enabled) ? "enabled" : "disabled"}</small></span></article>`).join("") || `<div class="empty-state">No templates stored.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("flag")}<h2>Feature flags</h2></div>
+        <div class="feature-flag-presets">${["ads", "comments", "ai", "discounts", "tips", "social_login", "newsletters"].map((key) => `<button class="secondary-button" data-feature-preset="${key}">${key}</button>`).join("")}</div>
+        <label><span>Flag key</span><input data-production-form="featureFlag.key" value="${escapeHtml(forms.featureFlag.key)}" placeholder="new_reader_home" /></label>
+        <label><span>Description</span><input data-production-form="featureFlag.description" value="${escapeHtml(forms.featureFlag.description)}" /></label>
+        <label><span>Status</span><select data-production-form="featureFlag.enabled"><option value="true" ${forms.featureFlag.enabled ? "selected" : ""}>Enabled</option><option value="false" ${!forms.featureFlag.enabled ? "selected" : ""}>Disabled</option></select></label>
+        <label><span>Rollout %</span><input data-production-form="featureFlag.rolloutPercent" type="number" min="0" max="100" value="${escapeHtml(forms.featureFlag.rolloutPercent)}" /></label>
+        <label><span>Roles</span><input data-production-form="featureFlag.rolesText" value="${escapeHtml(forms.featureFlag.rolesText)}" placeholder="reader,subscriber,writer" /></label>
+        <label><span>Environment</span><select data-production-form="featureFlag.environment">${["all", "production", "staging", "development", "local"].map((env) => `<option value="${env}" ${forms.featureFlag.environment === env ? "selected" : ""}>${env}</option>`).join("")}</select></label>
+        <label><span>Starts</span><input data-production-form="featureFlag.startsAt" type="datetime-local" value="${escapeHtml(forms.featureFlag.startsAt)}" /></label>
+        <label><span>Ends</span><input data-production-form="featureFlag.endsAt" type="datetime-local" value="${escapeHtml(forms.featureFlag.endsAt)}" /></label>
+        <button class="primary-button" data-action="save-feature-flag">Save flag</button>
+        <div class="compact-list">${suite.featureFlags.map((item) => `<article><span><strong>${escapeHtml(item.key)}</strong><small>${escapeHtml(item.description || "")}</small><small>${Number(item.rollout_percent ?? 100)}% rollout${item.roles_json && item.roles_json !== "[]" ? ` - roles ${escapeHtml(item.roles_json)}` : ""}</small></span><b class="status-pill">${Number(item.enabled) ? "on" : "off"}</b></article>`).join("") || `<div class="empty-state">No feature flags configured.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("card")}<h2>GST and invoices</h2></div>
+        <label><span>GSTIN</span><input data-tax-setting="gstin" value="${escapeHtml(tax.gstin || "")}" /></label>
+        <label><span>Invoice prefix</span><input data-tax-setting="invoicePrefix" value="${escapeHtml(tax.invoicePrefix || "INV")}" /></label>
+        <label><span>Tax rate %</span><input data-tax-setting="taxRate" type="number" min="0" max="50" value="${escapeHtml(tax.taxRate ?? 18)}" /></label>
+        <button class="primary-button" data-action="save-tax-settings">Save invoice settings</button>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("calendar")}<h2>Editorial assignments</h2></div>
+        <label><span>Story slug</span><input data-production-form="assignment.storySlug" value="${escapeHtml(forms.assignment.storySlug)}" /></label>
+        <label><span>Assignee user ID</span><input data-production-form="assignment.assigneeUserId" value="${escapeHtml(forms.assignment.assigneeUserId)}" /></label>
+        <label><span>Role</span><input data-production-form="assignment.role" value="${escapeHtml(forms.assignment.role)}" /></label>
+        <label><span>Due date</span><input data-production-form="assignment.dueAt" type="datetime-local" value="${escapeHtml(forms.assignment.dueAt)}" /></label>
+        <label><span>Priority</span><input data-production-form="assignment.priority" value="${escapeHtml(forms.assignment.priority)}" /></label>
+        <label class="wide-field"><span>Notes</span><textarea data-production-form="assignment.notes" rows="3">${escapeHtml(forms.assignment.notes)}</textarea></label>
+        <button class="primary-button" data-action="save-editorial-assignment">Assign work</button>
+        <div class="compact-list">${suite.editorialAssignments.map((item) => `<article><span><strong>${escapeHtml(item.story_slug)} - ${escapeHtml(item.role)}</strong><small>${escapeHtml(item.priority || "Normal")} ${item.due_at ? `- due ${new Date(item.due_at).toLocaleString("en-IN")}` : ""}</small></span><b class="status-pill">${escapeHtml(item.status)}</b></article>`).join("") || `<div class="empty-state">No assignments yet.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("upload")}<h2>Content importer</h2></div>
+        <label><span>Source type</span><select data-production-form="import.sourceType">${["json", "csv", "wordpress", "medium"].map((type) => `<option value="${type}" ${forms.import.sourceType === type ? "selected" : ""}>${type}</option>`).join("")}</select></label>
+        <label><span>Duplicates</span><select data-production-form="import.duplicateMode">${["skip", "replace", "unique"].map((mode) => `<option value="${mode}" ${forms.import.duplicateMode === mode ? "selected" : ""}>${mode}</option>`).join("")}</select></label>
+        <label><span>Default status</span><select data-production-form="import.defaultStatus">${["draft", "published", "scheduled"].map((status) => `<option value="${status}" ${forms.import.defaultStatus === status ? "selected" : ""}>${status}</option>`).join("")}</select></label>
+        <label><span>Default author</span><input data-production-form="import.defaultAuthor" value="${escapeHtml(forms.import.defaultAuthor)}" /></label>
+        <label><span>Default topic</span><input data-production-form="import.defaultTopic" value="${escapeHtml(forms.import.defaultTopic)}" /></label>
+        <label class="file-field"><span>Upload export file</span><input id="contentImportFile" type="file" accept=".json,.csv,.xml,.rss,.txt,text/csv,application/json,text/xml" /></label>
+        <label class="wide-field"><span>Import content</span><textarea data-production-form="import.content" rows="8" placeholder='JSON array, CSV with title/contentHtml columns, or WordPress/Medium RSS XML'>${escapeHtml(forms.import.content)}</textarea></label>
+        <div class="settings-actions"><button class="secondary-button" data-action="preview-content-import">Preview import</button><button class="primary-button" data-action="run-content-import">Import stories</button></div>
+        ${state.importPreview ? `<div class="installer-guide"><strong>${Number(state.importPreview.count || 0)} stories detected</strong><p>${Number(state.importPreview.duplicates || 0)} duplicate slugs found. Duplicate mode: ${escapeHtml(state.importPreview.duplicateMode || forms.import.duplicateMode)}. ${(state.importPreview.sample || []).map((item) => escapeHtml(item.title || "Untitled")).join(", ")}</p></div>` : ""}
+        <div class="compact-list">${suite.imports.map((item) => { const meta = safeJson(item.metadata_json, {}); return `<article><span><strong>${escapeHtml(item.source_type)}</strong><small>${meta.rolledBackAt ? "rolled back" : escapeHtml(item.status)} - ${Number(item.imported_count || 0)} imported${meta.skippedDuplicates ? ` - ${Number(meta.skippedDuplicates)} skipped` : ""}</small></span>${item.status === "processed" && !meta.rolledBackAt ? `<button class="secondary-button danger-button" data-rollback-import="${item.id}">Rollback</button>` : ""}</article>`; }).join("") || `<div class="empty-state">No import jobs yet.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel wide-panel">
+        <div class="panel-title">${icon("search")}<h2>SEO audit</h2></div>
+        <div class="ops-table compact-ops"><div class="ops-table-head"><span>Story</span><span>Issues</span><span>Score</span></div>${suite.seoAudit.map((row) => `<div class="ops-table-row"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml((row.issues || []).join(", ") || "Clean")}</span><b>${Number(row.score || 0)}</b></div>`).join("") || `<div class="empty-state">No published stories found for audit.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("gauge")}<h2>Cron dashboard</h2></div>
+        <div class="settings-actions"><button class="primary-button" data-action="run-production-jobs">Run due jobs</button><button class="secondary-button" data-action="queue-payout-job">Queue payouts</button></div>
+        <div class="compact-list">${suite.jobs.map((job) => `<article><span><strong>${escapeHtml(job.type)}</strong><small>${escapeHtml(job.status)}${job.run_at ? ` - ${new Date(job.run_at).toLocaleString("en-IN")}` : ""}</small></span></article>`).join("") || `<div class="empty-state">No background jobs queued.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel">
+        <div class="panel-title">${icon("card")}<h2>Abandoned checkout recovery</h2></div>
+        <div class="compact-list">${suite.abandonedCheckouts.map((item) => `<article><span><strong>${escapeHtml(item.payment_id)}</strong><small>${escapeHtml(item.event_type)} - ${new Date(item.created_at).toLocaleString("en-IN")}</small></span></article>`).join("") || `<div class="empty-state">No checkout recovery events yet.</div>`}</div>
+      </article>
+
+      <article class="work-panel production-panel wide-panel">
+        <div class="panel-title">${icon("download")}<h2>Analytics export</h2></div>
+        <div class="export-grid">${["users", "payments", "subscriptions", "stories", "comments", "ads", "payouts"].map((type) => `<button class="secondary-button" data-export-type="${type}">${icon("download", 14)}Export ${type}</button>`).join("")}</div>
+      </article>
+    </section>
+  `);
+}
+
+function installerGuideText(step) {
+  const text = {
+    server: "Confirm SQLite, uploads, and storage are writable on Hostinger before opening traffic.",
+    security: "Set APP_SECRET and CRON_SECRET, then store provider API keys in the encrypted credential vault.",
+    payments: "Configure Razorpay, PayU, Cashfree, and PayPal only for supported countries, then run live gateway tests.",
+    email: "Add EMAIL_API_URL and EMAIL_API_KEY so verification, recovery, newsletters, and alerts can be delivered.",
+    launch: "Create at least one admin, publish core pages, run background jobs, rebuild search, and verify backups.",
+  };
+  return text[step] || text.server;
+}
+
 function platformHealthTemplate() {
   const configuredPayments = Object.values(state.providerStatus.payments).filter(Boolean).length;
   const eventTotal = state.adminAnalytics.eventCounts.reduce((sum, item) => sum + Number(item.count || 0), 0);
@@ -3901,6 +4418,12 @@ function sessionDeviceLabel(userAgent = "") {
   return `${device} · ${browser}`;
 }
 
+function userAvatarTemplate(user = state.user, className = "profile-avatar") {
+  const avatar = safeImageUrl(user?.avatarUrl || "");
+  const initials = (user?.name || "User").split(" ").map((part) => part[0]).join("").slice(0, 2);
+  return `<span class="${className}">${avatar ? `<img src="${escapeHtml(avatar)}" alt="" loading="lazy" decoding="async" />` : escapeHtml(initials || "U")}</span>`;
+}
+
 function securityWorkspaceTemplate(admin = false) {
   const emailVerified = Boolean(state.securitySettings.emailVerified || state.user?.emailVerified);
   const twoFactorEnabled = Boolean(state.securitySettings.twoFactorEnabled);
@@ -3917,16 +4440,42 @@ function securityWorkspaceTemplate(admin = false) {
           <article><span>${icon("lock", 16)}</span><div><strong>Login alerts</strong><small>${state.providerStatus.email ? "Email provider available for alerts" : "Email API key required for delivery"}</small></div><button class="secondary-button" disabled>${state.providerStatus.email ? "Ready" : "Needs email API"}</button></article>
           <article><span>${icon(emailVerified ? "check" : "lock", 16)}</span><div><strong>Account recovery</strong><small>${emailVerified ? "Verified email can receive recovery links" : "Verify email first"}</small></div><button class="secondary-button" disabled>${emailVerified ? "Enabled" : "Unavailable"}</button></article>
         </section>
-        <section class="session-panel"><header><h2>Passkeys</h2><button class="secondary-button" data-action="enable-passkey" ${emailVerified ? "" : "disabled"}>Add passkey</button></header>${passkeys.map((passkey) => `<article><span>${icon("lock", 16)}</span><div><strong>${escapeHtml(passkey.credentialId || passkey.id)}</strong><small>Created ${new Date(passkey.createdAt).toLocaleString()}${passkey.lastUsedAt ? ` - Last used ${new Date(passkey.lastUsedAt).toLocaleString()}` : ""}</small></div><button class="text-button" data-passkey-delete="${passkey.id}">Remove</button></article>`).join("") || `<div class="empty-state">No passkeys are registered yet.</div>`}</section>
+        <section class="session-panel"><header><h2>Passkeys</h2><button class="secondary-button" data-action="enable-passkey" ${emailVerified ? "" : "disabled"}>Add passkey</button></header>${passkeys.map((passkey) => `<article><span>${icon(passkey.needsReRegistration ? "gauge" : "lock", 16)}</span><div><strong>${escapeHtml(passkey.credentialId || passkey.id)}</strong><small>${passkey.needsReRegistration ? "Legacy passkey - remove and add it again to enable login" : `Created ${new Date(passkey.createdAt).toLocaleString()}${passkey.lastUsedAt ? ` - Last used ${new Date(passkey.lastUsedAt).toLocaleString()}` : ""}`}</small></div><button class="text-button" data-passkey-delete="${passkey.id}">Remove</button></article>`).join("") || `<div class="empty-state">No passkeys are registered yet.</div>`}</section>
         <section class="session-panel"><header><h2>Sessions and devices</h2><button class="secondary-button" data-action="signout-other-sessions" ${sessions.length > 1 ? "" : "disabled"}>Sign out others</button></header>${sessions.map((session) => `<article><span>${icon("gauge", 16)}</span><div><strong>${escapeHtml(sessionDeviceLabel(session.user_agent))}</strong><small>${escapeHtml(session.ip_address || "Unknown network")} · Last active ${new Date(session.last_seen_at).toLocaleString()}</small></div>${session.id === state.currentSessionId ? `<b>Current</b>` : `<button class="text-button" data-session-revoke="${session.id}">Revoke</button>`}</article>`).join("") || `<div class="empty-state">No active sessions could be loaded.</div>`}</section>
       </div>
+      ${admin ? permissionMatrixTemplate() : ""}
       <aside class="audit-panel"><h2>${admin ? "Security status" : "Recent security activity"}</h2><article><span></span><div><strong>${sessions.length} active session${sessions.length === 1 ? "" : "s"}</strong><small>Loaded from the session database</small><time>${new Date().toLocaleString()}</time></div></article><article><span></span><div><strong>Email ${emailVerified ? "verified" : "not verified"}</strong><small>${escapeHtml(state.user?.email || "")}</small><time>Account status</time></div></article>${admin ? `<div class="backup-state"><strong>Backup verification</strong><span>Creates a SQLite backup copy and verifies it can be opened.</span><button class="secondary-button" data-action="verify-backup">Run verification</button><small>${escapeHtml(state.securityMessage || "No recent backup verification in this session.")}</small></div>` : ""}</aside>
     </section>
   `;
 }
 
+function permissionMatrixTemplate() {
+  return `<section class="session-panel"><header><h2>Role permissions</h2><button class="secondary-button" data-action="create-permission-rule">Add permission</button></header>${state.adminPermissions.map((item) => `<article><span>${icon(Number(item.allowed) ? "check" : "lock", 16)}</span><div><strong>${escapeHtml(item.role)} - ${escapeHtml(item.permission)}</strong><small>${Number(item.allowed) ? "Allowed" : "Denied"}${item.updated_at ? ` - Updated ${new Date(item.updated_at).toLocaleString("en-IN")}` : ""}</small></div><button class="text-button" data-action="create-permission-rule" data-role="${escapeHtml(item.role)}" data-permission="${escapeHtml(item.permission)}">${Number(item.allowed) ? "Edit" : "Enable"}</button></article>`).join("") || `<div class="empty-state">No custom role permissions have been stored yet.</div>`}</section>`;
+}
+
 function securityCenterTemplate() {
   return `<main class="account-center"><header><h1>Security</h1><p>Protect your account, review devices, and manage recovery methods.</p></header>${state.securityMessage ? `<div class="payment-message">${escapeHtml(state.securityMessage)}</div>` : ""}${securityWorkspaceTemplate(false)}</main>`;
+}
+
+function aboutPageTemplate() {
+  return `<main class="account-center"><header><h1>About InkRiver</h1><p>InkRiver is a publishing and membership platform for thoughtful stories, independent writers, publications, and reader-first communities.</p></header>
+    <section class="privacy-layout"><div class="privacy-controls">
+      <section><h2>What we do</h2><p>We help readers discover useful writing, save and continue articles, follow writers and topics, and support creators through memberships, tips, and paid publications.</p></section>
+      <section><h2>For writers</h2><p>Writers get publishing tools, editorial workflows, analytics, newsletters, scheduled posts, reader engagement, and payout records from one workspace.</p></section>
+      <section><h2>For members</h2><p>Members get personalized reading, privacy controls, saved articles, reading history, subscriptions, and account security tools.</p></section>
+    </div><aside class="privacy-actions"><h2>Public links</h2><button data-route="/terms">${icon("link", 16)}<span><strong>Terms</strong><small>Platform rules and account conditions</small></span></button><button data-route="/privacy">${icon("shield", 16)}<span><strong>Privacy</strong><small>Data controls and preferences</small></span></button><button data-route="/support">${icon("comment", 16)}<span><strong>Support</strong><small>Help and contact options</small></span></button></aside></section>
+  </main>`;
+}
+
+function termsPageTemplate() {
+  return `<main class="account-center"><header><h1>Terms</h1><p>These terms describe the basic rules for using InkRiver, publishing content, memberships, payments, and community features.</p></header>
+    <section class="privacy-layout"><div class="privacy-controls">
+      <section><h2>Accounts</h2><p>Users are responsible for keeping login details secure, maintaining accurate account information, and following role-specific permissions.</p></section>
+      <section><h2>Publishing</h2><p>Authors and publications are responsible for the content they submit, including rights, citations, disclosures, corrections, and compliance with moderation rules.</p></section>
+      <section><h2>Payments</h2><p>Subscriptions, tips, gifts, discounts, taxes, refunds, and payout handling depend on the enabled payment providers and their live processing rules.</p></section>
+      <section><h2>Community</h2><p>Comments, profiles, reports, and reader activity must not be used for spam, abuse, harassment, plagiarism, misinformation, or attempts to bypass security controls.</p></section>
+    </div><aside class="privacy-actions"><h2>Related</h2><button data-route="/privacy">${icon("shield", 16)}<span><strong>Privacy</strong><small>Manage data and tracking preferences</small></span></button><button data-route="/security">${icon("lock", 16)}<span><strong>Security</strong><small>Protect your account</small></span></button><button data-route="/support">${icon("comment", 16)}<span><strong>Support</strong><small>Get help with account or payment issues</small></span></button></aside></section>
+  </main>`;
 }
 
 function privacyCenterTemplate() {
@@ -3942,6 +4491,7 @@ function privacyCenterTemplate() {
       ${privacyToggleTemplate("Activity tracking", "tracking", "Store reading progress, history, and engagement signals.", state.preferences.tracking)}
       <section><h2>Cookie preferences</h2><p>Essential cookies remain enabled for security and account access.</p>${Object.entries(state.preferences.cookies).map(([key, value]) => `<label><span><strong>${key[0].toUpperCase()+key.slice(1)}</strong><small>${key === "essential" ? "Required for sign-in and payments" : "Optional measurement and personalization"}</small></span><input type="checkbox" data-cookie="${key}" ${value ? "checked" : ""} ${key === "essential" ? "disabled" : ""}></label>`).join("")}</section>
       <section><h2>Connected accounts</h2>${connectedAccounts.map(({ provider, name, account }) => `<article><span>${name[0]}</span><div><strong>${name}</strong><small>${account ? `Connected · ${escapeHtml(account.email || "")}` : state.providerStatus.social[provider] ? "Available to connect" : "Provider not configured"}</small></div><button class="secondary-button" ${account ? `data-social-disconnect="${provider}"` : `data-social-login="${provider}"`} ${!account && !state.providerStatus.social[provider] ? "disabled" : ""}>${account ? "Disconnect" : "Connect"}</button></article>`).join("")}</section>
+      <section><h2>Mobile app preferences</h2>${[["offlineSavedArticles", "Offline saved articles", "Cache saved stories for the PWA reader"], ["backgroundSync", "Background sync", "Queue reading events while offline"], ["pushDigest", "Push digest", "Receive configured publication and membership alerts"]].map(([key, label, help]) => `<label><span><strong>${label}</strong><small>${help}</small></span><input type="checkbox" data-pwa-setting="${key}" ${state.pwaSettings[key] ? "checked" : ""}></label>`).join("")}<button class="secondary-button wide-button" data-action="save-pwa-settings">Save mobile preferences</button></section>
     </div><aside class="privacy-actions"><h2>Your data</h2><button data-action="download-data">${icon("link", 16)}<span><strong>Download your data</strong><small>Articles, comments, history, follows, and account details</small></span></button><button data-action="clear-history">${icon("eye", 16)}<span><strong>Clear reading history</strong><small>Remove opened stories and saved reading positions</small></span></button><button class="danger-zone" data-action="request-account-deletion">${icon("close", 16)}<span><strong>Delete account</strong><small>Start the verified account deletion process</small></span></button><div class="privacy-note">Privacy changes are recorded in your security activity log.</div></aside></section>
   </main>`;
 }
@@ -3994,6 +4544,7 @@ function adminShellTemplate(title, description, content, actions = "") {
     ["shield", "Moderation", "/admin/moderation"],
     ["link", "Copyright", "/admin/copyright"],
     ["comment", "Support", "/admin/support"],
+    ["spark", "Production", "/admin/production"],
     ["gauge", "Platform health", "/admin/health"],
     ["lock", "Security", "/admin/security"],
     ["gauge", "Site SEO", "/admin/seo"],
@@ -4066,8 +4617,42 @@ function adminSettingsTemplate() {
   return adminShellTemplate(
     "Platform settings",
     "Manage subscription packages, payment credentials, currency conversion, and social login.",
-    `<section class="admin-settings-stack">${subscriptionManagerTemplate()}${gatewaySettingsTemplate()}</section>`,
+    `<section class="admin-settings-stack">${subscriptionManagerTemplate()}${publicationManagerTemplate()}${gatewaySettingsTemplate()}</section>`,
   );
+}
+
+function publicationManagerTemplate() {
+  const form = state.publicationForm;
+  return `
+    <div class="work-panel">
+      <div class="panel-title">${icon("pen")}<h2>Publications</h2></div>
+      <p class="settings-note">Create publication hubs that writers can publish under and readers can follow.</p>
+      <div class="gateway-settings-grid">
+        <label><span>Name</span><input data-publication-field="name" value="${escapeHtml(form.name)}" placeholder="Publication name" /></label>
+        <label><span>Slug</span><input data-publication-field="slug" value="${escapeHtml(form.slug)}" placeholder="publication-slug" /></label>
+        <label><span>Status</span><select data-publication-field="status">${["active", "paused", "archived"].map((status) => `<option value="${status}" ${form.status === status ? "selected" : ""}>${status}</option>`).join("")}</select></label>
+        <label><span>Logo URL</span><input data-publication-field="logoUrl" value="${escapeHtml(form.logoUrl)}" placeholder="https://example.com/logo.png" /></label>
+        <label class="wide-field"><span>Description</span><textarea data-publication-field="description" placeholder="Describe the publication">${escapeHtml(form.description)}</textarea></label>
+      </div>
+      <div class="settings-actions"><button class="primary-button" data-action="save-publication">${state.editingPublicationId ? "Update publication" : "Create publication"}</button><button class="secondary-button" data-action="reset-publication-form">Clear form</button></div>
+      <div class="promotion-list publication-admin-list">
+        ${state.publications.map((pub) => {
+          const assignedStories = state.stories.filter((story) => (story.publication || "").toLowerCase() === pub.name.toLowerCase());
+          const publishedCount = assignedStories.filter((story) => story.status === "published").length;
+          const draftCount = assignedStories.filter((story) => story.status !== "published").length;
+          return `
+          <article>
+            <span><strong>${escapeHtml(pub.name)}</strong><small>/publications/${escapeHtml(pub.slug)} · ${escapeHtml(pub.status || "active")} · ${publishedCount} published · ${draftCount} draft/review</small></span>
+            <button class="secondary-button" data-route="/publications/${escapeHtml(pub.slug)}">View</button>
+            <button class="secondary-button" data-edit-publication="${escapeHtml(pub.slug)}">Edit</button>
+            <button class="secondary-button" data-publication-members="${escapeHtml(pub.slug)}">Members</button>
+            <button class="danger-text" data-delete-publication="${escapeHtml(pub.slug)}">Archive</button>
+          </article>
+        `;
+        }).join("") || `<div class="empty-state">No publications have been created yet.</div>`}
+      </div>
+    </div>
+  `;
 }
 
 function adminBlogsTemplate() {
@@ -4187,12 +4772,16 @@ function userManagementTemplate() {
 
 function blogListTemplate() {
   const publishedCount = state.stories.filter((story) => story.status === "published").length;
-  const draftCount = state.stories.length - publishedCount;
+  const reviewCount = state.stories.filter((story) => ["review", "approved"].includes(story.status)).length;
+  const scheduledCount = state.stories.filter((story) => story.status === "scheduled").length;
+  const draftCount = state.stories.filter((story) => !["published", "review", "approved", "scheduled"].includes(story.status)).length;
   return `
     <section class="blog-list-page">
       <div class="list-summary">
         <span><strong>${state.stories.length}</strong>Total</span>
         <span><strong>${publishedCount}</strong>Published</span>
+        <span><strong>${reviewCount}</strong>In review</span>
+        <span><strong>${scheduledCount}</strong>Scheduled</span>
         <span><strong>${draftCount}</strong>Drafts</span>
       </div>
       ${state.blogMessage ? `<div class="payment-message">${escapeHtml(state.blogMessage)}</div>` : ""}
@@ -4205,6 +4794,13 @@ function blogListTemplate() {
 
 function blogAdminRowTemplate(story) {
   const imageUrl = safeImageUrl(story.imageUrl);
+  const workflow = {
+    draft: [["review", "Submit review"], ["published", "Publish"]],
+    review: [["approved", "Approve"], ["draft", "Return draft"]],
+    approved: [["scheduled", "Schedule"], ["published", "Publish"]],
+    scheduled: [["published", "Publish now"], ["draft", "Unschedule"]],
+    published: [["draft", "Unpublish"]],
+  };
   return `
     <article class="blog-admin-row">
       <div class="blog-admin-media ${story.color} ${imageUrl ? "has-image" : ""}">
@@ -4215,10 +4811,11 @@ function blogAdminRowTemplate(story) {
         <span>/${escapeHtml(story.slug)} - ${escapeHtml(story.topic)} - ${escapeHtml(story.readTime)}</span>
         <small>${escapeHtml(story.dek)}</small>
       </div>
-      <span class="status-pill ${story.status === "draft" ? "draft" : ""}">${escapeHtml(story.status)}</span>
+      <span class="status-pill ${story.status === "draft" ? "draft" : ""}">${escapeHtml(story.status)}${story.scheduledAt ? `<small>${escapeHtml(story.scheduledAt)}</small>` : ""}</span>
       <div class="blog-admin-actions">
         <button class="secondary-button" data-edit-blog="${story.id}">Edit</button>
-        <button class="secondary-button" data-blog-status="${story.id}" data-next-status="${story.status === "published" ? "draft" : "published"}">${story.status === "published" ? "Draft" : "Publish"}</button>
+        <button class="secondary-button" data-action="view-story-revisions" data-story-slug="${escapeHtml(story.slug)}">Revisions</button>
+        ${(workflow[story.status] || workflow.draft).map(([status, label]) => `<button class="secondary-button" data-blog-status="${story.id}" data-next-status="${status}">${label}</button>`).join("")}
         <button class="secondary-button danger-button" data-delete-blog="${story.id}">Delete</button>
       </div>
     </article>
@@ -4267,6 +4864,9 @@ function blogEditorPageTemplate() {
             <div class="panel-title">${icon("play")}<h2>Publish</h2></div>
             <div class="publish-status"><span>Status</span><strong>${isEditing ? escapeHtml(state.stories.find((story) => story.id === state.editingBlogId)?.status || "draft") : "New draft"}</strong></div>
             <button class="primary-button wide-button" data-action="save-blog-published">${isEditing ? "Update and publish" : "Publish blog"}</button>
+            <button class="secondary-button wide-button" data-action="save-blog-review">Submit for review</button>
+            <button class="secondary-button wide-button" data-action="save-blog-approved">Save as approved</button>
+            <button class="secondary-button wide-button" data-action="save-blog-scheduled">Schedule</button>
             <button class="secondary-button wide-button" data-action="save-blog-draft">Save as draft</button>
             <button class="text-button wide-button" data-route="/admin/blogs">Cancel</button>
             ${state.blogMessage ? `<div class="payment-message">${escapeHtml(state.blogMessage)}</div>` : ""}
@@ -4275,17 +4875,31 @@ function blogEditorPageTemplate() {
             <div class="panel-title">${icon("filter")}<h2>Post settings</h2></div>
             <label><span>Author</span><input id="blogAuthor" value="${escapeHtml(state.blogForm.author)}" placeholder="Author name" /></label>
             <label><span>Author role</span><input id="blogRole" value="${escapeHtml(state.blogForm.role)}" placeholder="Publication or role" /></label>
-            <label><span>Publication</span><input id="blogPublication" value="${escapeHtml(state.blogForm.publication)}" placeholder="Publication name" /></label>
+            <label><span>Publication</span><input id="blogPublication" list="publicationOptions" value="${escapeHtml(state.blogForm.publication)}" placeholder="Publication name" /></label>
+            <datalist id="publicationOptions">${state.publications.map((publication) => `<option value="${escapeHtml(publication.name)}"></option>`).join("")}</datalist>
             <label><span>Topic</span><select id="blogTopic">${categoryNames().map((topic) => `<option value="${escapeHtml(topic)}" ${state.blogForm.topic === topic ? "selected" : ""}>${escapeHtml(topic)}</option>`).join("")}</select></label>
             <label><span>Tags</span><input id="blogTags" value="${escapeHtml(state.blogForm.tagsText)}" placeholder="AI, workflow, research" /></label>
             <label><span>Read time</span><input id="blogReadTime" value="${escapeHtml(state.blogForm.readTime)}" placeholder="6 min read" /></label>
             <label><span>Visual tone</span><select id="blogColor">${["mint", "blue", "rose", "amber"].map((color) => `<option value="${color}" ${state.blogForm.color === color ? "selected" : ""}>${color}</option>`).join("")}</select></label>
             <label class="checkbox-field"><input id="blogPremium" type="checkbox" ${state.blogForm.premium ? "checked" : ""} /><span>Member-only paywall</span></label>
           </section>
+          ${draftCollaborationTemplate()}
         </aside>
       </section>
     `,
   );
+}
+
+function draftCollaborationTemplate() {
+  const slug = state.blogForm.slug || "";
+  if (!state.editingBlogId) return `<section class="editor-panel"><div class="panel-title">${icon("comment")}<h2>Collaboration</h2></div><p class="settings-note">Save the draft once to start threaded editorial notes.</p></section>`;
+  return `<section class="editor-panel collaboration-panel">
+    <div class="panel-title">${icon("comment")}<h2>Draft collaboration</h2></div>
+    <label><span>Note type</span><select id="draftNoteType">${["comment", "suggestion", "approval", "blocker"].map((type) => `<option value="${type}" ${state.draftNoteType === type ? "selected" : ""}>${type}</option>`).join("")}</select></label>
+    <label><span>Note</span><textarea id="draftNoteBody" rows="4" placeholder="Add editorial feedback, source requests, or approval notes">${escapeHtml(state.draftNoteBody)}</textarea></label>
+    <button class="primary-button wide-button" data-action="add-draft-note" data-story-slug="${escapeHtml(slug)}">Add note</button>
+    <div class="compact-list">${state.draftNotes.map((note) => `<article><span><strong>${escapeHtml(note.note_type || "comment")} - ${escapeHtml(note.user_name || "Team")}</strong><small>${escapeHtml(note.body || "")}</small><small>${escapeHtml(note.status || "open")} - ${note.created_at ? new Date(note.created_at).toLocaleString("en-IN") : ""}</small></span><div>${note.status === "open" ? `<button class="secondary-button" data-draft-note-status="${note.id}" data-story-slug="${escapeHtml(slug)}" data-next-status="resolved">Resolve</button><button class="secondary-button" data-draft-note-status="${note.id}" data-story-slug="${escapeHtml(slug)}" data-next-status="dismissed">Dismiss</button>` : ""}</div></article>`).join("") || `<div class="empty-state">No collaboration notes yet.</div>`}</div>
+  </section>`;
 }
 
 function interactiveEditorTemplate() {
@@ -4317,6 +4931,7 @@ function interactiveEditorTemplate() {
 }
 
 function aiCreatorPanelTemplate() {
+  if (!featureEnabled("ai")) return featureDisabledMessage("AI editorial tools");
   const assistantTools = [
     ["outline", "Brainstorm outline"], ["headline", "Improve headline"], ["summary", "Summarize draft"],
     ["tone", "Change tone"], ["simplify", "Simplify text"], ["excerpt", "Generate excerpt"], ["weakness", "Find weak sections"],
@@ -4325,7 +4940,11 @@ function aiCreatorPanelTemplate() {
   return `<section class="editor-panel ai-creator-panel">
     <div class="ai-panel-header"><div class="panel-title">${icon("spark")}<div><h2>AI editorial studio</h2><p>${state.providerStatus.ai ? "Suggestions remain optional and visible until you choose to apply them." : "Configure the server AI provider to run editorial tools."}</p></div></div><div class="segmented-control"><button class="${state.aiPanel === "assistant" ? "active" : ""}" data-ai-panel="assistant">Writing assistant</button><button class="${state.aiPanel === "review" ? "active" : ""}" data-ai-panel="review">Quality review</button><button class="${state.aiPanel === "metadata" ? "active" : ""}" data-ai-panel="metadata">Smart metadata</button></div></div>
     ${state.aiPanel === "assistant" ? `<div class="ai-tools">${assistantTools.map(([id,label]) => `<button data-ai-tool="${id}" ${state.providerStatus.ai ? "" : "disabled"}>${icon("spark", 14)}${label}</button>`).join("")}</div>` : ""}
-    ${state.aiPanel === "review" ? `<div class="quality-review-grid">${reviewChecks.map((label) => `<article><span>${icon("gauge", 15)}</span><div><strong>${label}</strong><small>Not run</small></div><button data-ai-tool="review-${label.toLowerCase().replace(" ","-")}" ${state.providerStatus.ai ? "" : "disabled"}>Run check</button></article>`).join("")}</div>` : ""}
+    ${state.aiPanel === "review" ? `<div class="quality-review-grid">${reviewChecks.map((label) => {
+      const task = `review-${label.toLowerCase().replace(" ", "-")}`;
+      const review = state.aiReviewResults[task];
+      return `<article class="${review?.status === "passed" ? "passed" : review ? "needs-review" : ""}"><span>${icon(review?.status === "passed" ? "check" : "gauge", 15)}</span><div><strong>${label}</strong><small>${review ? `${review.status === "passed" ? "Passed" : "Needs review"} - ${new Date(review.createdAt).toLocaleString("en-IN")}` : "Not run"}</small></div><button data-ai-tool="${task}" ${state.providerStatus.ai ? "" : "disabled"}>${review ? "Run again" : "Run check"}</button></article>`;
+    }).join("")}</div>` : ""}
     ${state.aiPanel === "metadata" ? `<div class="metadata-suggestions"><section><strong>Related internal links</strong>${publishedStories().filter((story) => story.topic === state.blogForm.topic).slice(0,3).map((story) => `<button data-smart-value="link:${story.slug}">${icon("link",14)}${escapeHtml(story.title)}</button>`).join("") || `<span>No related published stories found.</span>`}</section><button class="primary-button" data-ai-tool="generate-seo" ${state.providerStatus.ai ? "" : "disabled"}>Generate metadata suggestions</button></div>` : ""}
     ${state.aiRunning ? `<div class="ai-result loading"><span></span>Reviewing the draft…</div>` : state.aiResult ? `<div class="ai-result"><header><strong>AI suggestion</strong><span>Nothing changes until you apply it.</span></header><p>${escapeHtml(state.aiResult)}</p><div><button class="primary-button" data-action="apply-ai-result">Apply suggestion</button><button class="secondary-button" data-action="dismiss-ai-result">Dismiss</button></div></div>` : ""}
   </section>`;
@@ -4514,9 +5133,19 @@ function adminSeoTemplate() {
             ${siteSeoCheckbox("Generate llms.txt", "enableLlmsTxt", seo.enableLlmsTxt)}
           </div>
         </fieldset>
+        <fieldset class="seo-settings-section">
+          <legend>Production SEO artifacts</legend>
+          <p class="settings-note">These records are served from the database for crawler files such as robots.txt and sitemap.xml.</p>
+          <div class="settings-actions">
+            <button class="secondary-button" type="button" data-action="open-seo-artifact" data-url="/sitemap.xml">Open sitemap</button>
+            <button class="secondary-button" type="button" data-action="open-seo-artifact" data-url="/robots.txt">Open robots.txt</button>
+            <button class="primary-button" type="button" data-action="save-custom-robots">Publish robots.txt</button>
+          </div>
+          <div class="promotion-list">${state.seoArtifacts.map((artifact) => `<article><span><strong>${escapeHtml(artifact.key)}</strong><small>${escapeHtml(artifact.mime_type || "text/plain")} - ${artifact.updated_at ? new Date(artifact.updated_at).toLocaleString("en-IN") : "not published"}</small></span></article>`).join("") || `<div class="empty-state">No SEO artifacts have been published yet.</div>`}</div>
+        </fieldset>
         <div class="sticky-settings-actions">
           <button class="primary-button" type="button" data-action="save-site-seo">Save SEO settings</button>
-          <span>${escapeHtml(state.siteSeoMessage || "Settings are stored locally in this prototype.")}</span>
+          <span>${escapeHtml(state.siteSeoMessage || "Settings save locally; robots.txt and sitemap artifacts publish to the production database.")}</span>
         </div>
       </form>
     `,
@@ -4617,6 +5246,7 @@ function gatewaySettingsTemplate() {
             <legend>${gateway.name}</legend>
             <small>${gateway.serverNote}</small>
             <div class="gateway-status ${state.providerStatus.payments[gateway.id] ? "ready" : "needs-key"}"><strong>${state.providerStatus.payments[gateway.id] ? "Server configured" : "Credentials missing"}</strong><span>${gateway.fields.map(([key]) => key.replace(/([A-Z])/g, "_$1").toUpperCase()).join(" and ")}</span></div>
+            <small>Recurring memberships also require ${gateway.id.toUpperCase()}_PLAN_ID or per-package keys like ${gateway.id.toUpperCase()}_PLAN_ID_PLUS in the provider vault.</small>
           </fieldset>
         `).join("")}
         <fieldset class="gateway-fieldset">
@@ -4660,11 +5290,13 @@ function gatewaySettingsTemplate() {
 }
 
 function adCampaignManagerTemplate() {
+  if (!featureEnabled("ads")) return `<div class="work-panel">${featureDisabledMessage("Advertisement campaigns")}</div>`;
   const placementLabel = { leaderboard: "Leaderboard", square: "Square", native: "Native story" };
   return `<div class="work-panel"><div class="panel-title">${icon("spark")}<h2>Advertisement campaigns</h2></div><p class="settings-note">Campaigns shown here are served into live ad placements and record impressions and clicks.</p><div class="settings-actions"><button class="primary-button" data-action="create-ad-campaign">Create ad campaign</button><button class="secondary-button" data-action="refresh-commerce">Refresh ad stats</button></div><div class="promotion-list">${state.adCampaigns.length ? state.adCampaigns.map((campaign) => `<article><span><strong>${escapeHtml(campaign.name)}</strong><small>${escapeHtml(placementLabel[campaign.placement] || campaign.placement)} · ${escapeHtml(campaign.sponsor)} · ${Number(campaign.impressions || 0).toLocaleString("en-IN")} views · ${Number(campaign.clicks || 0).toLocaleString("en-IN")} clicks</small></span><b>${escapeHtml(campaign.status)}</b><button class="toggle ${campaign.status === "active" ? "active" : ""}" data-toggle-ad="${campaign.id}" aria-label="Toggle ${escapeHtml(campaign.name)}"><span></span></button></article>`).join("") : `<div class="empty-state">No ad campaigns have been created yet.</div>`}</div></div>`;
 }
 
 function discountManagerTemplate() {
+  if (!featureEnabled("discounts")) return `<div class="work-panel">${featureDisabledMessage("Discounts and promotions")}</div>`;
   return `<div class="work-panel"><div class="panel-title">${icon("card")}<h2>Discounts and promotions</h2></div><p class="settings-note">Active discount codes are validated by checkout before the payment order is created.</p><div class="settings-actions"><button class="primary-button" data-action="create-discount">Create discount code</button></div><div class="promotion-list">${state.discounts.length ? state.discounts.map((discount) => `<article><span><strong>${escapeHtml(discount.code)}</strong><small>${escapeHtml(discount.audience || "All readers")} · ${discount.discountType === "amount" ? formatINR(Number(discount.discountValue || 0) / 100) : `${discount.discountValue}%`} · ${Number(discount.redeemedCount || 0).toLocaleString("en-IN")} used</small></span><b>${discount.active ? "Active" : "Inactive"}</b><button class="toggle ${discount.active ? "active" : ""}" data-toggle-discount="${discount.id}" aria-label="Toggle ${escapeHtml(discount.code)}"><span></span></button></article>`).join("") : `<div class="empty-state">No discount codes have been created yet.</div>`}</div></div>`;
 }
 
@@ -4695,6 +5327,7 @@ function toggleTemplate(label, key, checked) {
 }
 
 function adTemplate(size, label) {
+  if (!featureEnabled("ads")) return "";
   const campaign = state.adCampaigns.find((item) => item.placement === size && item.status === "active");
   if (!campaign) return `<aside class="ad-block ${size}" aria-label="${label}"><span>Ad slot</span><strong>No active campaign</strong></aside>`;
   const impressionKey = `${campaign.id}:${size}:${state.path}`;
@@ -4736,7 +5369,7 @@ function checkoutTemplate(plan) {
           <small>${gateway.serverNote}</small>
         </div>
         ${state.paymentMessage ? `<div class="payment-message">${state.paymentMessage}</div>` : ""}
-        <label class="discount-field"><span>Discount code</span><div><input id="discountCode" value="${escapeHtml(state.checkoutDiscountCode)}" placeholder="STUDENT50" /><button class="secondary-button" data-action="apply-discount" ${state.checkoutDiscountCode.trim() ? "" : "disabled"}>Apply</button></div></label>
+        ${featureEnabled("discounts") ? `<label class="discount-field"><span>Discount code</span><div><input id="discountCode" value="${escapeHtml(state.checkoutDiscountCode)}" placeholder="STUDENT50" /><button class="secondary-button" data-action="apply-discount" ${state.checkoutDiscountCode.trim() ? "" : "disabled"}>Apply</button></div></label>` : ""}
         <div class="checkout-summary">
           <span>Subtotal</span><strong>${formatMoneyFromINR(plan.price)}</strong>
           ${state.checkoutDiscount ? `<span>Discount ${escapeHtml(state.checkoutDiscount.code)}</span><strong>- ${formatMoneyFromINR(state.checkoutDiscount.discountAmount / 100)}</strong>` : ""}
@@ -4806,6 +5439,7 @@ function loginTemplate() {
           ${state.authMode === "register" ? `<small>Use at least 10 characters with uppercase, lowercase, and a number.</small>` : ""}
           <button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait…" : state.authMode === "register" ? "Create secure account" : "Sign in"}</button>
         </form>
+        ${state.authMode === "login" ? `<button class="secondary-button wide-button" data-action="login-passkey" ${state.authBusy ? "disabled" : ""}>${icon("lock", 15)}Sign in with passkey</button>` : ""}
         ${state.authMode === "login" ? `<button class="text-button auth-forgot" data-action="forgot-password">Forgot password?</button>` : ""}
         <div class="auth-divider"><span>or</span></div>
         <div class="social-login-list">
@@ -4826,6 +5460,50 @@ function loginTemplate() {
       </section>
     </div>
   `;
+}
+
+function openAdminModal(type, fields = {}) {
+  state.adminModal = { type, fields };
+  render();
+}
+
+function adminModalTemplate() {
+  const { type, fields } = state.adminModal;
+  const configs = {
+    ad: { title: "Create ad campaign", action: "submit-admin-modal-ad", fields: [["name", "Campaign name"], ["sponsor", "Sponsor"], ["headline", "Headline"], ["targetUrl", "Target URL"], ["placement", "Placement"]] },
+    discount: { title: "Create discount", action: "submit-admin-modal-discount", fields: [["code", "Code"], ["discountType", "Type percent or amount"], ["discountValue", "Value"], ["audience", "Audience"]] },
+    credential: { title: "Add provider credential", action: "submit-admin-modal-credential", fields: [["provider", "Provider"], ["key", "Credential key"], ["value", "Secret value"], ["environment", "Environment"]] },
+    geoip: { title: "Configure IP intelligence", action: "submit-admin-modal-geoip", fields: [["apiUrl", "API URL with {ip}"], ["apiKey", "API key"]] },
+    translationLanguage: { title: "Add translation language", action: "submit-admin-modal-language", fields: [["language", "Language name"], ["locale", "Locale code"]] },
+    payout: { title: "Create writer payout", action: "submit-admin-modal-payout", fields: [["writerUserId", "Writer user ID"]] },
+    segment: { title: "Create audience segment", action: "submit-admin-modal-segment", fields: [["name", "Segment name"], ["rules", "Audience rule"]] },
+    moderationTerm: { title: "Add moderation rule", action: "submit-admin-modal-moderation-term", fields: [["term", "Word or phrase"], ["kind", "Rule type"], ["action", "Action"]] },
+    permissionRule: { title: "Role permission", action: "submit-admin-modal-permission", fields: [["role", "Role"], ["permission", "Permission key"], ["allowed", "Allowed yes/no"]] },
+    evidence: { title: "Add moderation evidence", action: "submit-admin-modal-evidence", fields: [["reference", "URL, hash, license, or storage reference"]] },
+    scheduleBlog: { title: "Schedule blog", action: "submit-admin-modal-schedule-blog", fields: [["scheduledAt", "Publish date/time"]] },
+    scheduleStatus: { title: "Schedule status change", action: "submit-admin-modal-schedule-status", fields: [["blogId", "Blog ID"], ["scheduledAt", "Publish date/time"]] },
+    payoutAccount: { title: "Payout account", action: "submit-admin-modal-payout-account", fields: [["accountHolder", "Account holder"], ["bankName", "Bank/provider"], ["payoutMethod", "Method"], ["accountReference", "Account/UPI/reference"], ["taxIdReference", "Tax reference"]] },
+    gift: { title: "Gift membership", action: "submit-admin-modal-gift", fields: [["recipientEmail", "Recipient email"], ["months", "Months"], ["message", "Message"], ["deliverAt", "Delivery date"]] },
+    copyright: { title: "Create copyright case", action: "submit-admin-modal-copyright", fields: [["subject", "Subject"], ["targetId", "Article slug, URL, or content identifier"]] },
+    newsletterSuppression: { title: "Suppress newsletter email", action: "submit-admin-modal-newsletter-suppression", fields: [["email", "Email"], ["reason", "Reason"]] },
+    editorLink: { title: "Insert link", action: "submit-admin-modal-editor-link", fields: [["url", "URL"], ["text", "Link text"]] },
+    editorImage: { title: "Insert image", action: "submit-admin-modal-editor-image", fields: [["url", "Image URL"], ["alt", "Alt text"]] },
+    segmentRule: { title: "Add segment rule", action: "submit-admin-modal-segment-rule", fields: [["kind", "Rule kind"], ["criterion", "Condition"]] },
+    publicationMember: { title: "Publication member", action: "submit-admin-modal-publication-member", fields: [["publicationId", "Publication ID"], ["operation", "Operation add/invite/remove"], ["identifier", "Email or user ID"], ["role", "Role"]] },
+    revisionRestore: { title: "Restore revision", action: "submit-admin-modal-revision-restore", fields: [["storySlug", "Story slug"], ["revisionId", "Revision ID"]] },
+    totpEnable: { title: "Enable authenticator app", action: "submit-admin-modal-totp-enable", fields: [["secret", "Authenticator secret"], ["code", "6-digit code"]] },
+  };
+  const config = configs[type];
+  if (!config) return "";
+  return `<div class="modal-backdrop" role="dialog" aria-modal="true">
+    <section class="checkout-modal admin-form-modal">
+      <button class="close-button" data-action="close-admin-modal" aria-label="Close">${icon("close")}</button>
+      <h2>${escapeHtml(config.title)}</h2>
+      ${fields._summary ? `<p class="settings-note">${escapeHtml(fields._summary)}</p>` : ""}
+      <div class="settings-form-grid">${config.fields.map(([key, label]) => `<label><span>${escapeHtml(label)}</span><input data-modal-field="${key}" value="${escapeHtml(fields[key] || "")}" /></label>`).join("")}</div>
+      <div class="settings-actions"><button class="primary-button" data-action="${config.action}">Save</button><button class="secondary-button" data-action="close-admin-modal">Cancel</button></div>
+    </section>
+  </div>`;
 }
 
 function onboardingTemplate() {
@@ -4867,16 +5545,18 @@ function onboardingTemplate() {
 }
 
 function footerTemplate() {
+  const links = [
+    ["About us", "/about"],
+    ["Terms", "/terms"],
+    ["Privacy", "/privacy"],
+    ["Security", "/security"],
+    ["Support", "/support"],
+  ];
   return `
     <footer class="site-footer">
       <button class="brand compact" data-route="/"><span class="brand-mark">IR</span><span>InkRiver</span></button>
       <div>
-        <button data-route="/pricing">Membership</button>
-        <button data-route="/dashboard">Dashboard</button>
-        <button data-route="/admin">Admin</button>
-        <button data-route="/privacy">Privacy</button>
-        <button data-route="/security">Security</button>
-        <button data-route="/support">Support</button>
+        ${links.map(([label, route]) => `<button data-route="${route}">${label}</button>`).join("")}
       </div>
     </footer>
   `;
@@ -4955,12 +5635,14 @@ async function runAiTool(tool) {
       method: "POST",
       body: JSON.stringify({
         task: tool,
+        slug: state.blogForm.slug || slugifyBlogSlug(state.blogForm.title || state.draft.title || "draft"),
         title: state.blogForm.title || state.draft.title,
         excerpt: state.blogForm.dek || state.draft.subtitle,
         content: state.blogForm.contentHtml || "",
       }),
     });
     state.aiResult = payload.result || "The AI provider returned an empty response.";
+    if (payload.review) state.aiReviewResults[payload.review.task] = payload.review;
   } catch (error) {
     state.aiResult = `AI unavailable: ${error.message}`;
   } finally {
@@ -5102,6 +5784,9 @@ function bindInputs() {
     persistProductState("preferences", state.preferences);
     render();
   }));
+  document.querySelectorAll("[data-pwa-setting]").forEach((field) => field.addEventListener("change", (event) => {
+    state.pwaSettings[event.target.dataset.pwaSetting] = event.target.checked;
+  }));
   document.querySelector("[data-locale]")?.addEventListener("change", (event) => {
     state.preferences.locale = event.target.value;
     persistProductState("preferences", state.preferences);
@@ -5191,6 +5876,12 @@ function bindInputs() {
   document.getElementById("blogPremium")?.addEventListener("change", (event) => {
     state.blogForm.premium = event.target.checked;
   });
+  document.getElementById("draftNoteType")?.addEventListener("change", (event) => {
+    state.draftNoteType = event.target.value;
+  });
+  document.getElementById("draftNoteBody")?.addEventListener("input", (event) => {
+    state.draftNoteBody = event.target.value;
+  });
   document.querySelectorAll("[data-interactive-field]").forEach((field) => {
     const update = (event) => {
       const [indexText, key] = event.target.dataset.interactiveField.split(":");
@@ -5225,13 +5916,10 @@ function bindInputs() {
       richEditor?.focus();
       const type = button.dataset.editorInsert;
       if (type === "link") {
-        const url = window.prompt("Enter the link URL");
-        if (url && /^(https?:|mailto:|\/|#)/i.test(url)) document.execCommand("createLink", false, url);
+        return openAdminModal("editorLink", { url: "https://", text: window.getSelection()?.toString() || "" });
       }
       if (type === "image") {
-        const url = window.prompt("Enter the image URL");
-        const safeUrl = safeImageUrl(url);
-        if (safeUrl) document.execCommand("insertHTML", false, `<img src="${escapeHtml(safeUrl)}" alt="" loading="lazy" decoding="async" />`);
+        return openAdminModal("editorImage", {});
       }
       if (type === "table") {
         document.execCommand("insertHTML", false, "<table><thead><tr><th>Heading 1</th><th>Heading 2</th></tr></thead><tbody><tr><td>Cell</td><td>Cell</td></tr><tr><td>Cell</td><td>Cell</td></tr></tbody></table><p><br></p>");
@@ -5295,6 +5983,69 @@ function bindInputs() {
     const update = (event) => {
       state.gatewaySettings[event.target.dataset.setting] = event.target.value;
       state.gatewaySettingsSaved = false;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-production-form]").forEach((field) => {
+    const update = (event) => {
+      const [group, key] = event.target.dataset.productionForm.split(".");
+      if (!state.productionForms[group]) return;
+      state.productionForms[group][key] = event.target.value === "true" ? true : event.target.value === "false" ? false : event.target.value;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-account-field]").forEach((field) => {
+    const update = (event) => {
+      state.accountForm[event.target.dataset.accountField] = event.target.value;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-tax-setting]").forEach((field) => {
+    const update = (event) => {
+      const key = event.target.dataset.taxSetting;
+      state.productionSuite.taxSettings[key] = key === "taxRate" ? Number(event.target.value || 0) : event.target.value;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-modal-field]").forEach((field) => {
+    const update = (event) => {
+      state.adminModal.fields[event.target.dataset.modalField] = event.target.value;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.getElementById("contentImportFile")?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    state.productionForms.import.content = await file.text();
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".csv")) state.productionForms.import.sourceType = "csv";
+    else if (name.endsWith(".xml") || name.endsWith(".rss")) state.productionForms.import.sourceType = name.includes("medium") ? "medium" : "wordpress";
+    else state.productionForms.import.sourceType = "json";
+    state.importPreview = null;
+    render();
+  });
+  document.getElementById("profilePhotoInput")?.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const payload = await apiRequest("/api/me/avatar", { method: "POST", body: formData });
+      if (payload.user) state.user = payload.user;
+      state.userMessage = "Profile photo updated.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  });
+  document.querySelectorAll("[data-publication-field]").forEach((field) => {
+    const update = (event) => {
+      state.publicationForm[event.target.dataset.publicationField] = event.target.value;
     };
     field.addEventListener("input", update);
     field.addEventListener("change", update);
@@ -5371,6 +6122,9 @@ document.addEventListener("click", async (event) => {
   const booleanSetting = target.dataset.booleanSetting;
   const editPlan = target.dataset.editPlan;
   const deletePlanId = target.dataset.deletePlan;
+  const editPublication = target.dataset.editPublication;
+  const publicationMembers = target.dataset.publicationMembers;
+  const deletePublication = target.dataset.deletePublication;
   const editBlog = target.dataset.editBlog;
   const deleteBlogId = target.dataset.deleteBlog;
   const blogStatus = target.dataset.blogStatus;
@@ -5415,11 +6169,264 @@ document.addEventListener("click", async (event) => {
   const adClick = target.dataset.adClick;
   const adUrl = target.dataset.adUrl;
   const testProvider = target.dataset.testProvider;
+  const sendNewsletter = target.dataset.sendNewsletter;
+  const exportType = target.dataset.exportType;
+  const inviteToken = target.dataset.inviteToken;
+  const draftNoteStatus = target.dataset.draftNoteStatus;
+  const installerStep = target.dataset.installerStep;
+  const featurePreset = target.dataset.featurePreset;
+  const rollbackImport = target.dataset.rollbackImport;
 
   if (dashboardSection) {
     const allowed = new Set(dashboardNavItems(state.user?.role || "reader").map((item) => item[2]));
     state.dashboardSection = allowed.has(dashboardSection) ? dashboardSection : "overview";
     render();
+  }
+
+  if (installerStep) {
+    state.installerStep = installerStep;
+    render();
+  }
+
+  if (featurePreset) {
+    const existing = state.productionSuite.featureFlags.find((flag) => flag.key === featurePreset);
+    let roleText = "";
+    try { roleText = existing?.roles_json && existing.roles_json !== "[]" ? JSON.parse(existing.roles_json).join(",") : ""; } catch { roleText = ""; }
+    state.productionForms.featureFlag = {
+      key: featurePreset,
+      description: existing?.description || `Controls the ${featurePreset.replaceAll("_", " ")} feature.`,
+      enabled: existing ? Boolean(Number(existing.enabled)) : true,
+      rolloutPercent: Number(existing?.rollout_percent ?? 100),
+      rolesText: roleText,
+      startsAt: existing?.starts_at || "",
+      endsAt: existing?.ends_at || "",
+      environment: existing?.environment || "all",
+    };
+    render();
+    return;
+  }
+
+  if (action === "close-admin-modal") {
+    state.adminModal = { type: "", fields: {} };
+    render();
+    return;
+  }
+  if (action === "create-ad-campaign") return openAdminModal("ad", { placement: "leaderboard" });
+  if (action === "create-discount") return openAdminModal("discount", { discountType: "percent", discountValue: "10", audience: "All readers" });
+  if (action === "add-provider-credential") return openAdminModal("credential", { environment: "production" });
+  if (action === "configure-ip-intelligence") return openAdminModal("geoip", {});
+  if (action === "add-translation-language") return openAdminModal("translationLanguage", {});
+  if (action === "create-payout") return openAdminModal("payout", {});
+  if (action === "create-segment") return openAdminModal("segment", {});
+  if (action === "add-moderation-term") return openAdminModal("moderationTerm", { kind: "blocked_word", action: "review" });
+  if (action === "create-permission-rule") return openAdminModal("permissionRule", { role: target.dataset.role || "moderator", permission: target.dataset.permission || "moderation.resolve", allowed: "yes" });
+  if (uploadEvidence) return openAdminModal("evidence", { caseId: uploadEvidence });
+  if (action === "save-blog-scheduled") return openAdminModal("scheduleBlog", { scheduledAt: new Date().toISOString().slice(0, 16) });
+  if (action === "setup-payout-account") return openAdminModal("payoutAccount", {
+    accountHolder: state.payoutAccount?.account_holder || state.user?.name || "",
+    bankName: state.payoutAccount?.bank_name || "",
+    payoutMethod: state.payoutAccount?.payout_method || "bank",
+  });
+  if (action === "gift-preview") return openAdminModal("gift", { months: "3", deliverAt: new Date().toISOString().slice(0, 10) });
+  if (action === "create-copyright-case") return openAdminModal("copyright", {});
+  if (action === "open-newsletter-suppression") return openAdminModal("newsletterSuppression", { reason: "admin" });
+  if (addRule) return openAdminModal("segmentRule", { kind: addRule, criterion: "" });
+
+  if (action?.startsWith("submit-admin-modal-")) {
+    const fields = state.adminModal.fields || {};
+    try {
+      if (action === "submit-admin-modal-ad") {
+        await apiRequest("/api/admin/ads", {
+          method: "POST",
+          body: JSON.stringify(fields),
+        });
+        await loadAdminCommerceData();
+        state.userMessage = "Ad campaign created.";
+      }
+      if (action === "submit-admin-modal-discount") {
+        await apiRequest("/api/admin/discounts", {
+          method: "POST",
+          body: JSON.stringify({ ...fields, discountValue: Number(fields.discountValue || 0) }),
+        });
+        await loadAdminCommerceData();
+        state.userMessage = "Discount code created.";
+      }
+      if (action === "submit-admin-modal-credential") {
+        const payload = await apiRequest("/api/admin/provider-credentials", {
+          method: "PUT",
+          body: JSON.stringify({ ...fields, enabled: true }),
+        });
+        state.providerCredentials = payload.credentials || state.providerCredentials;
+        state.providerStatus = payload.providers || state.providerStatus;
+        state.providerTestMessage = `${fields.provider || "Provider"} credential saved in the encrypted vault.`;
+      }
+      if (action === "submit-admin-modal-language") {
+        const cleanLocale = String(fields.locale || "").trim();
+        if (!fields.language?.trim() || !/^[a-z]{2,3}(-[A-Z]{2})?$/.test(cleanLocale) || cleanLocale === "en-IN") throw new Error("Use a valid new locale such as fr-FR, ta-IN, or de-DE.");
+        const exists = state.translationLanguages.some((item) => item.locale === cleanLocale);
+        if (!exists) state.translationLanguages.push({ locale: cleanLocale, language: fields.language.trim() });
+        persistGatewaySettings();
+        state.userMessage = exists ? "That language is already configured." : "Translation language added.";
+      }
+      if (action === "submit-admin-modal-geoip") {
+        let payload = await apiRequest("/api/admin/provider-credentials", {
+          method: "PUT",
+          body: JSON.stringify({ provider: "geoip", key: "api_url", value: fields.apiUrl, environment: "production", enabled: true }),
+        });
+        payload = await apiRequest("/api/admin/provider-credentials", {
+          method: "PUT",
+          body: JSON.stringify({ provider: "geoip", key: "api_key", value: fields.apiKey, environment: "production", enabled: true }),
+        });
+        state.providerCredentials = payload.credentials || state.providerCredentials;
+        state.providerStatus = payload.providers || state.providerStatus;
+        state.providerTestMessage = "IP intelligence credentials saved.";
+      }
+      if (action === "submit-admin-modal-payout") {
+        await apiRequest("/api/admin/payouts", {
+          method: "POST",
+          body: JSON.stringify({ writerUserId: fields.writerUserId }),
+        });
+        await loadAdminCommerceData();
+        state.userMessage = "Payout batch created from unpaid writer tips.";
+      }
+      if (action === "submit-admin-modal-segment") {
+        state.creatorTools.segments.push({ id: `seg-${Date.now()}`, name: fields.name || "New segment", rules: fields.rules || "", size: 0, channel: "Draft" });
+        persistProductState("creator-tools", state.creatorTools);
+        state.calendarMessage = "Audience segment saved.";
+      }
+      if (action === "submit-admin-modal-moderation-term") {
+        const payload = await apiRequest("/api/admin/moderation/dictionary", {
+          method: "POST",
+          body: JSON.stringify({ term: fields.term, kind: fields.kind || "blocked_word", action: fields.action || "review" }),
+        });
+        state.moderationDictionary = payload.terms || state.moderationDictionary;
+        state.userMessage = "Moderation rule saved.";
+      }
+      if (action === "submit-admin-modal-permission") {
+        await apiRequest("/api/admin/security/policies", {
+          method: "PUT",
+          body: JSON.stringify({ permissions: [{ role: fields.role, permission: fields.permission, allowed: String(fields.allowed || "yes").toLowerCase() !== "no" }] }),
+        });
+        const payload = await apiRequest("/api/admin/permissions");
+        state.adminPermissions = payload.permissions || state.adminPermissions;
+        state.securityMessage = "Permission rule saved.";
+      }
+      if (action === "submit-admin-modal-evidence") {
+        await apiRequest(`/api/admin/moderation/${encodeURIComponent(fields.caseId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ evidence: { type: "reference", value: fields.reference } }),
+        });
+        await loadAdminOperationalData();
+        state.userMessage = "Evidence added.";
+      }
+      if (action === "submit-admin-modal-schedule-blog") {
+        state.blogForm.scheduledAt = fields.scheduledAt || "";
+        saveBlogFromForm("scheduled");
+      }
+      if (action === "submit-admin-modal-schedule-status") {
+        const blog = state.stories.find((story) => story.id === fields.blogId);
+        state.stories = state.stories.map((story) => (story.id === fields.blogId ? { ...story, status: "scheduled", scheduledAt: fields.scheduledAt || story.scheduledAt || "" } : story));
+        state.blogMessage = `${blog?.title || "Blog"} moved to scheduled.`;
+        persistBlogs();
+      }
+      if (action === "submit-admin-modal-payout-account") {
+        await apiRequest("/api/me/payout-account", {
+          method: "PUT",
+          body: JSON.stringify(fields),
+        });
+        await loadWriterPayouts();
+        state.userMessage = "Payout account saved for admin review.";
+      }
+      if (action === "submit-admin-modal-gift") {
+        const monthlyPlan = state.plans.find((plan) => plan.period === "month") || state.plans[0];
+        await startGatewayPayment(monthlyPlan, {
+          kind: "gift",
+          recipientEmail: fields.recipientEmail,
+          months: Number(fields.months || 1),
+          message: fields.message || "",
+          deliverAt: fields.deliverAt || new Date().toISOString().slice(0, 10),
+        });
+      }
+      if (action === "submit-admin-modal-copyright") {
+        await apiRequest("/api/admin/moderation", {
+          method: "POST",
+          body: JSON.stringify({ targetType: "post", targetId: fields.targetId, kind: "copyright", subject: fields.subject, risk: "High" }),
+        });
+        await loadAdminOperationalData();
+        state.userMessage = "Copyright case created.";
+      }
+      if (action === "submit-admin-modal-newsletter-suppression") {
+        await apiRequest("/api/admin/newsletters/suppressions", {
+          method: "POST",
+          body: JSON.stringify({ email: fields.email, reason: fields.reason || "admin" }),
+        });
+        await loadProductionSuite();
+        state.userMessage = "Newsletter email suppressed.";
+      }
+      if (action === "submit-admin-modal-editor-link") {
+        const url = String(fields.url || "").trim();
+        if (!/^(https?:|mailto:|\/|#)/i.test(url)) throw new Error("Use a valid URL, mailto link, path, or anchor.");
+        state.blogForm.contentHtml += `<p><a href="${escapeHtml(url)}">${escapeHtml(fields.text || url)}</a></p>`;
+        state.userMessage = "Link inserted.";
+      }
+      if (action === "submit-admin-modal-editor-image") {
+        const safeUrl = safeImageUrl(fields.url);
+        if (!safeUrl) throw new Error("Use a valid image URL.");
+        state.blogForm.contentHtml += `<figure><img src="${escapeHtml(safeUrl)}" alt="${escapeHtml(fields.alt || "")}" loading="lazy" decoding="async" /></figure>`;
+        state.userMessage = "Image inserted.";
+      }
+      if (action === "submit-admin-modal-segment-rule") {
+        const criterion = String(fields.criterion || "").trim();
+        if (!criterion) throw new Error("Rule condition is required.");
+        state.creatorTools.segments.push({
+          id: `seg-${Date.now()}`,
+          name: `${fields.kind || "Rule"}: ${criterion}`,
+          rules: `${fields.kind || "Rule"} is ${criterion}`,
+          size: 0,
+          channel: "Draft",
+        });
+        persistProductState("creator-tools", state.creatorTools);
+        state.calendarMessage = "Audience rule saved as a draft segment.";
+      }
+      if (action === "submit-admin-modal-publication-member") {
+        const operation = String(fields.operation || "add").toLowerCase();
+        if (operation === "invite") {
+          await apiRequest(`/api/admin/publications/${encodeURIComponent(fields.publicationId)}/invites`, {
+            method: "POST",
+            body: JSON.stringify({ email: fields.identifier, role: fields.role || "writer" }),
+          });
+        } else {
+          const memberPath = operation === "remove" ? `/api/admin/publications/${encodeURIComponent(fields.publicationId)}/members/${encodeURIComponent(fields.identifier)}` : `/api/admin/publications/${encodeURIComponent(fields.publicationId)}/members`;
+          await apiRequest(memberPath, {
+            method: operation === "remove" ? "DELETE" : "POST",
+            body: JSON.stringify({ userId: fields.identifier, email: fields.identifier, role: fields.role || "writer" }),
+          });
+        }
+        await loadPlatformAddons();
+        state.userMessage = "Publication membership updated.";
+      }
+      if (action === "submit-admin-modal-revision-restore") {
+        const payload = await apiRequest(`/api/admin/stories/${encodeURIComponent(fields.storySlug)}/revisions/${encodeURIComponent(fields.revisionId)}/restore`, {
+          method: "POST",
+          body: "{}",
+        });
+        await hydratePlatformState();
+        state.blogMessage = "Revision restored.";
+      }
+      if (action === "submit-admin-modal-totp-enable") {
+        const enabled = await apiRequest("/api/me/security/totp/enable", {
+          method: "POST",
+          body: JSON.stringify({ code: String(fields.code || "").trim() }),
+        });
+        state.securityMessage = `Two-factor authentication enabled. Recovery codes: ${(enabled.recoveryCodes || []).join(", ")}`;
+        await loadSecuritySettings();
+      }
+      state.adminModal = { type: "", fields: {} };
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+    return;
   }
 
   if (adClick) {
@@ -5470,6 +6477,246 @@ document.addEventListener("click", async (event) => {
     render();
   }
 
+  if (exportType) {
+    window.open(`/api/admin/exports/${encodeURIComponent(exportType)}`, "_blank", "noopener,noreferrer");
+  }
+
+  if (action === "accept-publication-invite" && inviteToken) {
+    try {
+      const payload = await apiRequest("/api/publication-invites/accept", {
+        method: "POST",
+        body: JSON.stringify({ token: inviteToken }),
+      });
+      await loadPlatformAddons();
+      state.userMessage = `Invite accepted${payload.publication ? ` for ${payload.publication}` : ""}.`;
+      setRoute("/dashboard");
+    } catch (error) {
+      state.userMessage = error.message;
+      render();
+    }
+  }
+
+  if (sendNewsletter) {
+    try {
+      await apiRequest(`/api/admin/newsletters/${encodeURIComponent(sendNewsletter)}/send`, { method: "POST", body: "{}" });
+      await loadProductionSuite();
+      state.userMessage = "Newsletter send job queued.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "save-newsletter") {
+    try {
+      await apiRequest("/api/admin/newsletters", {
+        method: "POST",
+        body: JSON.stringify(state.productionForms.newsletter),
+      });
+      state.productionForms.newsletter = { title: "", subject: "", contentHtml: "", audience: "all", scheduledAt: "" };
+      await loadProductionSuite();
+      state.userMessage = "Newsletter saved.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "run-production-jobs") {
+    try {
+      const payload = await apiRequest("/api/admin/jobs/run", {
+        method: "POST",
+        body: JSON.stringify({ limit: 20 }),
+      });
+      await loadProductionSuite();
+      state.userMessage = `${payload.processed || 0} production jobs processed.`;
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "check-github-updates") {
+    try {
+      const payload = await apiRequest("/api/admin/deployment/check", {
+        method: "POST",
+        body: JSON.stringify(state.productionForms.deployment),
+      });
+      state.productionSuite.deployment = payload.deployment || {};
+      state.productionForms.deployment.branch = state.productionSuite.deployment.branch || state.productionForms.deployment.branch;
+      state.userMessage = `${(state.productionSuite.deployment.changedFiles || []).length} remote file changes detected.`;
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "run-github-update") {
+    if (!window.confirm("Update this server from GitHub, run migrations, and roll back code if the update fails?")) return;
+    try {
+      const payload = await apiRequest("/api/admin/deployment/update", {
+        method: "POST",
+        body: JSON.stringify(state.productionForms.deployment),
+      });
+      await loadProductionSuite();
+      state.productionSuite.deployment = payload.deployment || state.productionSuite.deployment;
+      state.userMessage = payload.update?.status === "success" ? "GitHub update completed and migrations ran." : "GitHub update finished.";
+    } catch (error) {
+      await loadProductionSuite().catch(() => {});
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "queue-payout-job") {
+    try {
+      await apiRequest("/api/admin/jobs", {
+        method: "POST",
+        body: JSON.stringify({ type: "payouts.execute", payload: { limit: 25 } }),
+      });
+      await loadProductionSuite();
+      state.userMessage = "Payout execution job queued.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "export-installer-report") {
+    window.open("/api/admin/installer/report", "_blank", "noopener,noreferrer");
+  }
+
+  if (action === "save-email-template") {
+    try {
+      await apiRequest("/api/admin/email-templates", {
+        method: "PUT",
+        body: JSON.stringify(state.productionForms.emailTemplate),
+      });
+      state.productionForms.emailTemplate = { key: "", subject: "", body: "", enabled: true };
+      await loadProductionSuite();
+      state.userMessage = "Email template saved.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "save-feature-flag") {
+    try {
+      await apiRequest("/api/admin/feature-flags", {
+        method: "PUT",
+        body: JSON.stringify(state.productionForms.featureFlag),
+      });
+      state.productionForms.featureFlag = { key: "", description: "", enabled: true, rolloutPercent: 100, rolesText: "", startsAt: "", endsAt: "", environment: "all" };
+      await loadProductionSuite();
+      state.userMessage = "Feature flag saved.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "save-tax-settings") {
+    try {
+      await apiRequest("/api/admin/tax-settings", {
+        method: "PUT",
+        body: JSON.stringify(state.productionSuite.taxSettings),
+      });
+      await loadProductionSuite();
+      state.userMessage = "Tax and invoice settings saved.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "save-editorial-assignment") {
+    try {
+      await apiRequest("/api/admin/editorial-assignments", {
+        method: "POST",
+        body: JSON.stringify(state.productionForms.assignment),
+      });
+      state.productionForms.assignment = { storySlug: "", assigneeUserId: "", role: "editor", dueAt: "", priority: "Normal", notes: "" };
+      await loadProductionSuite();
+      state.userMessage = "Editorial assignment saved.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "preview-content-import") {
+    try {
+      state.importPreview = await apiRequest("/api/admin/imports/preview", {
+        method: "POST",
+        body: JSON.stringify(state.productionForms.import),
+      });
+      state.userMessage = "Import preview generated.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "run-content-import") {
+    try {
+      await apiRequest("/api/admin/imports", {
+        method: "POST",
+        body: JSON.stringify(state.productionForms.import),
+      });
+      state.productionForms.import = { sourceType: "json", content: "", duplicateMode: "skip", defaultStatus: "draft", defaultAuthor: "", defaultTopic: "" };
+      state.importPreview = null;
+      await hydratePlatformState();
+      await loadProductionSuite();
+      state.userMessage = "Content import completed and search index rebuilt.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (rollbackImport) {
+    if (!window.confirm("Rollback this import and restore the story snapshot from before it ran?")) return;
+    try {
+      await apiRequest(`/api/admin/imports/${encodeURIComponent(rollbackImport)}/rollback`, { method: "POST", body: "{}" });
+      await hydratePlatformState();
+      await loadProductionSuite();
+      state.userMessage = "Import rolled back and search index rebuilt.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "add-draft-note" && storySlug) {
+    try {
+      await apiRequest(`/api/stories/${encodeURIComponent(storySlug)}/collaboration-notes`, {
+        method: "POST",
+        body: JSON.stringify({ noteType: state.draftNoteType, body: state.draftNoteBody }),
+      });
+      state.draftNoteBody = "";
+      await loadDraftNotes(storySlug);
+      state.blogMessage = "Collaboration note added.";
+    } catch (error) {
+      state.blogMessage = error.message;
+    }
+    render();
+  }
+
+  if (draftNoteStatus && storySlug) {
+    try {
+      await apiRequest(`/api/stories/${encodeURIComponent(storySlug)}/collaboration-notes/${encodeURIComponent(draftNoteStatus)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: target.dataset.nextStatus || "resolved" }),
+      });
+      await loadDraftNotes(storySlug);
+      state.blogMessage = "Collaboration note updated.";
+    } catch (error) {
+      state.blogMessage = error.message;
+    }
+    render();
+  }
+
   if (authMode) {
     state.authMode = authMode;
     state.loginMessage = "";
@@ -5494,21 +6741,6 @@ document.addEventListener("click", async (event) => {
     persistProductState("creator-tools", state.creatorTools);
     render();
   }
-  if (addRule) {
-    const criterion = window.prompt(`Enter the ${addRule.toLowerCase()} condition for this segment:`);
-    if (criterion?.trim()) {
-      state.creatorTools.segments.push({
-        id: `seg-${Date.now()}`,
-        name: `${addRule}: ${criterion.trim()}`,
-        rules: `${addRule} is ${criterion.trim()}`,
-        size: 0,
-        channel: "Draft",
-      });
-      state.calendarMessage = "Audience rule saved. The segment starts at zero until matching reader profiles are recorded.";
-      persistProductState("creator-tools", state.creatorTools);
-      render();
-    }
-  }
   if (previewSegment) {
     const segment = state.creatorTools.segments.find((item) => item.id === previewSegment);
     if (segment) {
@@ -5532,22 +6764,6 @@ document.addEventListener("click", async (event) => {
       segment.channel = "Active";
       state.calendarMessage = `${segment.name} is now available to campaigns and newsletter targeting.`;
       persistProductState("creator-tools", state.creatorTools);
-      render();
-    }
-  }
-  if (uploadEvidence) {
-    const reference = window.prompt("Evidence URL, content hash, license reference, or storage location:");
-    if (reference?.trim()) {
-      try {
-        await apiRequest(`/api/admin/moderation/${encodeURIComponent(uploadEvidence)}`, {
-          method: "PATCH",
-          body: JSON.stringify({ evidence: { type: "reference", value: reference.trim() } }),
-        });
-        await loadAdminOperationalData();
-        state.userMessage = "Evidence reference attached to the case.";
-      } catch (error) {
-        state.userMessage = error.message;
-      }
       render();
     }
   }
@@ -5899,6 +7115,10 @@ document.addEventListener("click", async (event) => {
     state.mobileOpen = !state.mobileOpen;
     render();
   }
+  if (action === "close-menu") {
+    state.mobileOpen = false;
+    render();
+  }
   if (action === "toggle-theme") {
     state.theme = state.theme === "day" ? "night" : "day";
     localStorage.setItem("inkriver-theme", state.theme);
@@ -5907,8 +7127,201 @@ document.addEventListener("click", async (event) => {
   if (action === "toggle-push") {
     await enablePushNotifications();
   }
+  if (action === "mark-notifications-read") {
+    try {
+      await apiRequest("/api/me/notifications/read", { method: "PATCH", body: "{}" });
+      await loadPlatformAddons();
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+  if (action === "cancel-subscription") {
+    if (!window.confirm("Cancel the current subscription at the end of the billing period?")) return;
+    try {
+      const payload = await apiRequest("/api/me/subscription/cancel", { method: "POST", body: "{}" });
+      if (payload.user) applyAuthenticatedUser(payload.user, false);
+      await loadPlatformAddons();
+      state.userMessage = "Subscription cancellation recorded.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+  if (action === "save-pwa-settings") {
+    try {
+      const payload = await apiRequest("/api/me/pwa/settings", {
+        method: "PUT",
+        body: JSON.stringify({ settings: state.pwaSettings }),
+      });
+      state.pwaSettings = { ...state.pwaSettings, ...(payload.settings || {}) };
+      state.privacyMessage = "Mobile app preferences saved.";
+    } catch (error) {
+      state.privacyMessage = error.message;
+    }
+    render();
+  }
+  if (action === "save-publication") {
+    const form = state.publicationForm;
+    if (!form.name.trim()) {
+      state.userMessage = "Publication name is required.";
+      render();
+      return;
+    }
+    const body = JSON.stringify({
+      name: form.name.trim(),
+      slug: (form.slug || slugifyBlogSlug(form.name)).trim(),
+      description: form.description || "",
+      logoUrl: form.logoUrl || "",
+      status: form.status || "active",
+    });
+    try {
+      if (state.editingPublicationId) {
+        await apiRequest(`/api/admin/publications/${encodeURIComponent(state.editingPublicationId)}`, { method: "PATCH", body });
+        state.userMessage = "Publication updated.";
+      } else {
+        await apiRequest("/api/admin/publications", { method: "POST", body });
+        state.userMessage = "Publication created.";
+      }
+      state.editingPublicationId = "";
+      state.publicationForm = emptyPublicationForm();
+      await loadPlatformAddons();
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+  if (action === "reset-publication-form") {
+    state.editingPublicationId = "";
+    state.publicationForm = emptyPublicationForm();
+    render();
+  }
+  if (editPublication) {
+    const publication = state.publications.find((item) => item.slug === editPublication || item.id === editPublication);
+    if (!publication) return;
+    populatePublicationForm(publication);
+  }
+  if (publicationMembers) {
+    const publication = state.publications.find((item) => item.slug === publicationMembers || item.id === publicationMembers);
+    if (!publication) return;
+    try {
+      const payload = await apiRequest(`/api/admin/publications/${encodeURIComponent(publication.id || publication.slug)}/members`);
+      const members = payload.members || [];
+      const summary = members.length
+        ? members.map((member) => `${member.userId} · ${member.name} · ${member.email} · ${member.role}`).join("\n")
+        : "No members yet.";
+      openAdminModal("publicationMember", {
+        publicationId: publication.id || publication.slug,
+        operation: "add",
+        role: "writer",
+        _summary: `Current members for ${publication.name}: ${summary}`,
+      });
+      return;
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+  if (deletePublication) {
+    const publication = state.publications.find((item) => item.slug === deletePublication || item.id === deletePublication);
+    if (!publication || !window.confirm(`Archive ${publication.name}? Existing stories will remain published.`)) return;
+    try {
+      await apiRequest(`/api/admin/publications/${encodeURIComponent(publication.id || publication.slug)}`, { method: "DELETE" });
+      await loadPlatformAddons();
+      state.userMessage = "Publication archived.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+  if (action === "view-story-revisions" && storySlug) {
+    try {
+      const payload = await apiRequest(`/api/admin/stories/${encodeURIComponent(storySlug)}/revisions`);
+      const revisions = payload.revisions || [];
+      if (!revisions.length) {
+        state.blogMessage = "No revisions are stored for this story yet.";
+      } else {
+        const summary = revisions.map((revision) => `${revision.id}: v${revision.revision_number} - ${revision.note || "Revision"} - ${new Date(revision.created_at).toLocaleString("en-IN")}`).join("\n");
+        openAdminModal("revisionRestore", { storySlug, revisionId: revisions[0].id, _summary: summary });
+        return;
+      }
+    } catch (error) {
+      state.blogMessage = error.message;
+    }
+    render();
+  }
+  if (action === "save-custom-robots") {
+    try {
+      persistSiteSeo();
+      const content = state.siteSeo.robotsTxt || `User-agent: *\nAllow: /\nSitemap: ${window.location.origin}/sitemap.xml\n`;
+      const payload = await apiRequest("/api/admin/seo/artifacts", {
+        method: "PUT",
+        body: JSON.stringify({ key: "robots.txt", content, mimeType: "text/plain; charset=utf-8" }),
+      });
+      state.seoArtifacts = payload.artifacts || state.seoArtifacts;
+      state.siteSeoMessage = "robots.txt published to the database.";
+    } catch (error) {
+      state.siteSeoMessage = error.message;
+    }
+    render();
+  }
+  if (action === "open-seo-artifact") {
+    window.open(target.dataset.url || "/sitemap.xml", "_blank", "noopener,noreferrer");
+  }
+  if (action === "save-account-details") {
+    try {
+      const payload = await apiRequest("/api/me/account", {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: state.accountForm.name || state.user.name,
+          email: state.accountForm.email || state.user.email,
+          username: state.accountForm.username || state.user.username || "",
+          currentPassword: state.accountForm.currentPassword || "",
+        }),
+      });
+      if (payload.user) state.user = payload.user;
+      state.accountForm.currentPassword = "";
+      state.userMessage = payload.emailVerificationRequired ? "Account updated. Please verify your new email address." : "Account details updated.";
+      await loadSecuritySettings();
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+  if (action === "change-account-password") {
+    try {
+      if ((state.accountForm.newPassword || "") !== (state.accountForm.confirmPassword || "")) throw new Error("New password and confirmation do not match.");
+      await apiRequest("/api/me/password", {
+        method: "POST",
+        body: JSON.stringify({
+          currentPassword: state.accountForm.currentPassword || "",
+          newPassword: state.accountForm.newPassword || "",
+        }),
+      });
+      state.accountForm.currentPassword = "";
+      state.accountForm.newPassword = "";
+      state.accountForm.confirmPassword = "";
+      state.userMessage = "Password changed. Other sessions were signed out.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+  if (action === "remove-profile-photo") {
+    try {
+      const payload = await apiRequest("/api/me/avatar", { method: "DELETE" });
+      if (payload.user) state.user = payload.user;
+      state.userMessage = "Profile photo removed.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
   if (action === "save-writer-draft") {
     await saveWriterStory("draft");
+  }
+  if (action === "login-passkey") {
+    await loginWithPasskey();
   }
   if (action === "forgot-password") {
     await requestPasswordReset();
@@ -5945,6 +7358,7 @@ document.addEventListener("click", async (event) => {
     await saveWriterStory("published");
   }
   if (action === "open-login" || action === "open-account") {
+    state.mobileOpen = false;
     state.loginOpen = true;
     render();
   }
@@ -6008,16 +7422,6 @@ document.addEventListener("click", async (event) => {
     persistProductState("creator-tools", state.creatorTools);
     render();
   }
-  if (action === "create-segment") {
-    const name = window.prompt("Segment name:");
-    const rules = name?.trim() ? window.prompt("Describe the audience rule:") : "";
-    if (name?.trim() && rules?.trim()) {
-      state.creatorTools.segments.push({ id: `seg-${Date.now()}`, name: name.trim(), rules: rules.trim(), size: 0, channel: "Draft" });
-      state.calendarMessage = "Segment saved. Its count will grow as matching reader data is collected.";
-      persistProductState("creator-tools", state.creatorTools);
-      render();
-    }
-  }
   if (action === "create-promotion") {
     state.creatorTools.promotions.push({ id: `LAUNCH${state.creatorTools.promotions.length + 1}`, kind: "Campaign", value: "15% off", audience: "Selected segment", uses: 0, active: true });
     persistProductState("creator-tools", state.creatorTools);
@@ -6027,26 +7431,6 @@ document.addEventListener("click", async (event) => {
     await loadAdminCommerceData();
     state.userMessage = "Commerce data refreshed.";
     render();
-  }
-  if (action === "create-ad-campaign") {
-    const name = window.prompt("Campaign name:");
-    const sponsor = name?.trim() ? window.prompt("Sponsor name:") : "";
-    const headline = sponsor?.trim() ? window.prompt("Ad headline:") : "";
-    const targetUrl = headline?.trim() ? window.prompt("Target URL:", "https://") : "";
-    const placement = targetUrl?.trim() ? window.prompt("Placement: leaderboard, square, or native", "leaderboard") : "";
-    if (name?.trim() && sponsor?.trim() && headline?.trim() && targetUrl?.trim()) {
-      try {
-        await apiRequest("/api/admin/ads", {
-          method: "POST",
-          body: JSON.stringify({ name, sponsor, headline, targetUrl, placement }),
-        });
-        await loadAdminCommerceData();
-        state.userMessage = "Ad campaign created and connected to live placements.";
-      } catch (error) {
-        state.userMessage = error.message;
-      }
-      render();
-    }
   }
   if (toggleAd) {
     const campaign = state.adCampaigns.find((item) => item.id === toggleAd);
@@ -6058,25 +7442,6 @@ document.addEventListener("click", async (event) => {
         });
         await loadAdminCommerceData();
         state.userMessage = "Ad campaign status updated.";
-      } catch (error) {
-        state.userMessage = error.message;
-      }
-      render();
-    }
-  }
-  if (action === "create-discount") {
-    const code = window.prompt("Discount code:");
-    const discountType = code?.trim() ? window.prompt("Type percent or amount:", "percent") : "";
-    const discountValue = discountType ? Number(window.prompt(discountType === "amount" ? "Amount in paise:" : "Percentage discount:", "10")) : 0;
-    const audience = discountValue ? window.prompt("Audience label:", "All readers") : "";
-    if (code?.trim() && discountValue > 0) {
-      try {
-        await apiRequest("/api/admin/discounts", {
-          method: "POST",
-          body: JSON.stringify({ code, discountType, discountValue, audience }),
-        });
-        await loadAdminCommerceData();
-        state.userMessage = "Discount code created and available during checkout.";
       } catch (error) {
         state.userMessage = error.message;
       }
@@ -6099,26 +7464,6 @@ document.addEventListener("click", async (event) => {
       render();
     }
   }
-  if (action === "setup-payout-account") {
-    const accountHolder = window.prompt("Account holder name:", state.payoutAccount?.account_holder || state.user?.name || "");
-    const bankName = accountHolder?.trim() ? window.prompt("Bank or payout provider:", state.payoutAccount?.bank_name || "") : "";
-    const payoutMethod = bankName?.trim() ? window.prompt("Payout method: bank, upi, paypal, or manual", state.payoutAccount?.payout_method || "bank") : "";
-    const accountReference = payoutMethod?.trim() ? window.prompt("Account, UPI, or payout reference:") : "";
-    const taxIdReference = accountReference?.trim() ? window.prompt("Tax reference, PAN, GST, or declaration ID:") : "";
-    if (accountHolder?.trim() && bankName?.trim() && payoutMethod?.trim() && accountReference?.trim()) {
-      try {
-        await apiRequest("/api/me/payout-account", {
-          method: "PUT",
-          body: JSON.stringify({ accountHolder, bankName, payoutMethod, accountReference, taxIdReference }),
-        });
-        await loadWriterPayouts();
-        state.userMessage = "Payout account saved for admin review.";
-      } catch (error) {
-        state.userMessage = error.message;
-      }
-      render();
-    }
-  }
   if (verifyPayoutAccount) {
     try {
       await apiRequest(`/api/admin/payout-accounts/${encodeURIComponent(verifyPayoutAccount)}`, {
@@ -6132,85 +7477,12 @@ document.addEventListener("click", async (event) => {
     }
     render();
   }
-  if (action === "create-payout") {
-    const writerUserId = window.prompt("Writer user ID:");
-    if (writerUserId?.trim()) {
-      try {
-        await apiRequest("/api/admin/payouts", {
-          method: "POST",
-          body: JSON.stringify({ writerUserId: writerUserId.trim() }),
-        });
-        await loadAdminCommerceData();
-        state.userMessage = "Payout batch created from unpaid writer tips.";
-      } catch (error) {
-        state.userMessage = error.message;
-      }
-      render();
-    }
-  }
   if (action === "run-translation-backfill") {
     try {
       const payload = await apiRequest("/api/admin/translations/run", { method: "POST", body: "{}" });
       state.userMessage = `Translation job queued: ${payload.jobId || "pending"}. Run background jobs or wait for cron processing.`;
     } catch (error) {
       state.userMessage = error.message;
-    }
-    render();
-  }
-  if (action === "add-provider-credential") {
-    const provider = window.prompt("Provider id, for example razorpay, paypal, cashfree, payu, openai, email, push, geoip, google, facebook, payouts, cron:");
-    const key = provider?.trim() ? window.prompt("Credential key, for example key_id, key_secret, client_id, api_key, api_url, webhook_secret, secret:") : "";
-    const value = key?.trim() ? window.prompt("Secret value. It will be encrypted on the server and never shown again:") : "";
-    const environment = value?.trim() ? window.prompt("Environment label:", "production") || "production" : "production";
-    if (provider?.trim() && key?.trim() && value?.trim()) {
-      try {
-        const payload = await apiRequest("/api/admin/provider-credentials", {
-          method: "PUT",
-          body: JSON.stringify({ provider: provider.trim(), key: key.trim(), value, environment, enabled: true }),
-        });
-        state.providerCredentials = payload.credentials || state.providerCredentials;
-        state.providerStatus = payload.providers || state.providerStatus;
-        state.providerTestMessage = `${provider.trim()} · ${key.trim()} saved in the encrypted vault.`;
-      } catch (error) {
-        state.providerTestMessage = error.message;
-      }
-      render();
-    }
-  }
-  if (action === "configure-ip-intelligence") {
-    const apiUrl = window.prompt("IP intelligence API URL. Use {ip} where the visitor IP should be inserted:");
-    const apiKey = apiUrl?.trim() ? window.prompt("IP intelligence API key. It will be encrypted on the server:") : "";
-    if (apiUrl?.trim() && apiKey?.trim()) {
-      try {
-        let payload = await apiRequest("/api/admin/provider-credentials", {
-          method: "PUT",
-          body: JSON.stringify({ provider: "geoip", key: "api_url", value: apiUrl.trim(), environment: "production", enabled: true }),
-        });
-        payload = await apiRequest("/api/admin/provider-credentials", {
-          method: "PUT",
-          body: JSON.stringify({ provider: "geoip", key: "api_key", value: apiKey.trim(), environment: "production", enabled: true }),
-        });
-        state.providerCredentials = payload.credentials || state.providerCredentials;
-        state.providerStatus = payload.providers || state.providerStatus;
-        state.providerTestMessage = "IP intelligence credentials saved. PayPal India restriction will use this provider on the next payment-policy check.";
-      } catch (error) {
-        state.providerTestMessage = error.message;
-      }
-      render();
-    }
-  }
-  if (action === "add-translation-language") {
-    const language = window.prompt("Language name, for example French:");
-    const locale = language?.trim() ? window.prompt("Locale code, for example fr-FR:") : "";
-    const cleanLocale = String(locale || "").trim();
-    if (language?.trim() && /^[a-z]{2,3}(-[A-Z]{2})?$/.test(cleanLocale) && cleanLocale !== "en-IN") {
-      const exists = state.translationLanguages.some((item) => item.locale === cleanLocale);
-      if (!exists) state.translationLanguages.push({ locale: cleanLocale, language: language.trim() });
-      persistGatewaySettings();
-      state.gatewaySettingsSaved = true;
-      state.userMessage = exists ? "That language is already configured." : "Translation language added. Run backfill to translate existing articles.";
-    } else if (language) {
-      state.userMessage = "Use a valid locale such as fr-FR, ta-IN, or de-DE.";
     }
     render();
   }
@@ -6238,21 +7510,12 @@ document.addEventListener("click", async (event) => {
   if (action === "setup-totp") {
     try {
       const payload = await apiRequest("/api/me/security/totp/setup", { method: "POST", body: "{}" });
-      const code = window.prompt(`Add this secret to your authenticator app, then enter the 6-digit code:\n${payload.secret}`);
-      if (code?.trim()) {
-        const enabled = await apiRequest("/api/me/security/totp/enable", {
-          method: "POST",
-          body: JSON.stringify({ code: code.trim() }),
-        });
-        state.securityMessage = `Two-factor authentication enabled. Recovery codes: ${(enabled.recoveryCodes || []).join(", ")}`;
-        await loadSecuritySettings();
-      } else {
-        state.securityMessage = `Authenticator secret generated: ${payload.secret}`;
-      }
+      openAdminModal("totpEnable", { secret: payload.secret || "", code: "" });
+      state.securityMessage = "Add the secret to your authenticator app, then enter the 6-digit code.";
     } catch (error) {
       state.securityMessage = error.message;
+      render();
     }
-    render();
   }
   if (action === "disable-totp") {
     if (window.confirm("Disable two-factor authentication for this account?")) {
@@ -6262,49 +7525,6 @@ document.addEventListener("click", async (event) => {
         state.securityMessage = "Two-factor authentication disabled.";
       } catch (error) {
         state.securityMessage = error.message;
-      }
-      render();
-    }
-  }
-  if (action === "gift-preview") {
-    if (!state.user) {
-      state.loginOpen = true;
-      state.loginMessage = "Sign in before purchasing a gift membership.";
-      render();
-    } else {
-      const recipientEmail = window.prompt("Recipient email address:");
-      const months = recipientEmail?.includes("@") ? Number(window.prompt("Gift duration in months (1, 3, 6, or 12):", "3")) : 0;
-      const validMonths = [1, 3, 6, 12].includes(months);
-      const message = validMonths ? window.prompt("Personal message (optional):", "") || "" : "";
-      const deliverAt = validMonths ? window.prompt("Delivery date (YYYY-MM-DD):", new Date().toISOString().slice(0, 10)) : "";
-      if (recipientEmail?.includes("@") && validMonths && /^\d{4}-\d{2}-\d{2}$/.test(deliverAt || "")) {
-        const monthlyPlan = state.plans.find((plan) => plan.period === "month") || state.plans[0];
-        await startGatewayPayment(
-          { ...monthlyPlan, id: `gift-${monthlyPlan.id}-${months}`, name: `${months}-month gift`, price: monthlyPlan.price * months, period: "month" },
-          {
-            purpose: `${months}-month gift membership`,
-            metadata: { kind: "gift", recipientEmail: recipientEmail.trim().toLowerCase(), months, message, deliverAt: new Date(`${deliverAt}T09:00:00`).toISOString(), planId: monthlyPlan.id },
-          },
-        );
-      } else if (recipientEmail) {
-        state.calendarMessage = "Enter a valid recipient, supported duration, and delivery date.";
-        render();
-      }
-    }
-  }
-  if (action === "create-copyright-case") {
-    const subject = window.prompt("Describe the work and the copyright concern:");
-    const targetId = subject?.trim() ? window.prompt("Article slug, URL, or content identifier:") : "";
-    if (subject?.trim() && targetId?.trim()) {
-      try {
-        await apiRequest("/api/admin/moderation", {
-          method: "POST",
-          body: JSON.stringify({ subject: subject.trim(), targetId: targetId.trim(), targetType: "post", kind: "Copyright", risk: "Medium" }),
-        });
-        await loadAdminOperationalData();
-        state.userMessage = "Copyright case created and assigned.";
-      } catch (error) {
-        state.userMessage = error.message;
       }
       render();
     }
@@ -6381,7 +7601,7 @@ document.addEventListener("click", async (event) => {
             name: options.user.name,
             displayName: options.user.displayName,
           },
-          pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
           authenticatorSelection: { userVerification: "preferred", residentKey: "preferred" },
           timeout: 60000,
           attestation: "none",
@@ -6504,6 +7724,12 @@ document.addEventListener("click", async (event) => {
   if (action === "save-blog-published") {
     saveBlogFromForm("published");
   }
+  if (action === "save-blog-review") {
+    saveBlogFromForm("review");
+  }
+  if (action === "save-blog-approved") {
+    saveBlogFromForm("approved");
+  }
   if (action === "save-blog-draft") {
     saveBlogFromForm("draft");
   }
@@ -6558,7 +7784,13 @@ window.addEventListener("popstate", () => {
 window.addEventListener("scroll", trackArticleDepth, { passive: true });
 window.addEventListener("beforeunload", finalizeArticleSession);
 window.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || !state.preferences.focusMode || !state.path.startsWith("/stories/")) return;
+  if (event.key !== "Escape") return;
+  if (state.mobileOpen) {
+    state.mobileOpen = false;
+    render();
+    return;
+  }
+  if (!state.preferences.focusMode || !state.path.startsWith("/stories/")) return;
   state.preferences.focusMode = false;
   persistProductState("preferences", state.preferences);
   render();

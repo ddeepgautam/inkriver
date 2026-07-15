@@ -27,12 +27,73 @@ function provider_status(): array
     ];
 }
 
+function clean_username_value(string $value): string
+{
+    return strtolower(trim($value));
+}
+
+function username_error(string $username): ?string
+{
+    if ($username === '') return null;
+    if (strlen($username) < 3 || strlen($username) > 30) return 'Username must be 3 to 30 characters.';
+    if (!preg_match('/^[a-z0-9_]+$/', $username)) return 'Username can use lowercase letters, numbers, and underscores only.';
+    $reserved = ['about', 'admin', 'administrator', 'api', 'auth', 'billing', 'blog', 'category', 'dashboard', 'help', 'lists', 'login', 'logout', 'me', 'moderator', 'pricing', 'privacy', 'publications', 'publication-invites', 'root', 'search', 'security', 'settings', 'signup', 'stories', 'support', 'terms', 'write'];
+    if (in_array($username, $reserved, true)) return 'That username is reserved.';
+    return null;
+}
+
+function feature_flag_active_for_row(array $row, ?array $session = null): bool
+{
+    if (empty($row['enabled'])) return false;
+    $environment = strtolower(trim((string) ($row['environment'] ?? 'all')));
+    $currentEnvironment = strtolower(trim((string) (env_value('APP_ENV') ?: provider_config_value('APP_ENV', 'platform', 'environment', 'production') ?: 'production')));
+    if ($environment !== '' && $environment !== 'all' && $environment !== $currentEnvironment) return false;
+    $now = time();
+    if (!empty($row['starts_at']) && strtotime((string) $row['starts_at']) > $now) return false;
+    if (!empty($row['ends_at']) && strtotime((string) $row['ends_at']) < $now) return false;
+    $roles = parse_json_field($row['roles_json'] ?? '[]', []);
+    if (is_array($roles) && $roles && !in_array((string) ($session['user']['role'] ?? 'guest'), $roles, true)) return false;
+    $percent = max(0, min(100, (int) ($row['rollout_percent'] ?? 100)));
+    if ($percent >= 100) return true;
+    if ($percent <= 0) return false;
+    $basis = (string) ($session['user']['id'] ?? ($_COOKIE['inkriver_anon'] ?? ($_SERVER['REMOTE_ADDR'] ?? 'guest')));
+    $bucket = hexdec(substr(hash('sha256', ($row['key'] ?? '') . ':' . $basis), 0, 8)) % 100;
+    return $bucket < $percent;
+}
+
+function public_feature_flags(?array $session = null): array
+{
+    try {
+        $rows = Database::pdo()->query('SELECT * FROM feature_flags')->fetchAll();
+        $flags = [];
+        foreach ($rows as $row) $flags[$row['key']] = feature_flag_active_for_row($row, $session);
+        return $flags;
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+function feature_flag_enabled(string $key, bool $fallback = true): bool
+{
+    $flags = public_feature_flags(current_session());
+    return array_key_exists($key, $flags) ? (bool) $flags[$key] : $fallback;
+}
+
 function document_value(string $key, mixed $fallback): mixed
 {
     $stmt = Database::pdo()->prepare('SELECT value_json FROM platform_documents WHERE key = ?');
     $stmt->execute([$key]);
     $row = $stmt->fetch();
     return $row ? parse_json_field($row['value_json'], $fallback) : $fallback;
+}
+
+function app_url(string $path = '/'): string
+{
+    $configured = rtrim((string) (env_value('APP_URL') ?? ''), '/');
+    if ($configured !== '') return $configured . '/' . ltrim($path, '/');
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    return $scheme . '://' . $host . '/' . ltrim($path, '/');
 }
 
 function credential_crypto_key(): string
@@ -242,6 +303,110 @@ function base64url_decode_value(string $value): string
     return is_string($decoded) ? $decoded : '';
 }
 
+function webauthn_expected_origin(): string
+{
+    $origin = parse_url(app_origin());
+    $scheme = $origin['scheme'] ?? (is_production() ? 'https' : 'http');
+    $host = $origin['host'] ?? ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    $port = isset($origin['port']) ? ':' . $origin['port'] : '';
+    return $scheme . '://' . $host . $port;
+}
+
+function webauthn_rp_id(): string
+{
+    $host = parse_url(app_origin(), PHP_URL_HOST) ?: ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    return preg_replace('/:\d+$/', '', (string) $host) ?: 'localhost';
+}
+
+function cbor_read_length(string $data, int &$offset, int $additional): int
+{
+    if ($additional < 24) return $additional;
+    $sizes = [24 => 1, 25 => 2, 26 => 4, 27 => 8];
+    $size = $sizes[$additional] ?? 0;
+    if (!$size || $offset + $size > strlen($data)) throw new RuntimeException('Invalid CBOR length.');
+    $bytes = substr($data, $offset, $size);
+    $offset += $size;
+    $value = 0;
+    for ($i = 0; $i < strlen($bytes); $i++) $value = ($value << 8) | ord($bytes[$i]);
+    return $value;
+}
+
+function cbor_decode_value(string $data, int &$offset): mixed
+{
+    if ($offset >= strlen($data)) throw new RuntimeException('Invalid CBOR data.');
+    $initial = ord($data[$offset++]);
+    $major = $initial >> 5;
+    $additional = $initial & 0x1f;
+    return match ($major) {
+        0 => cbor_read_length($data, $offset, $additional),
+        1 => -1 - cbor_read_length($data, $offset, $additional),
+        2 => (function () use ($data, &$offset, $additional) {
+            $length = cbor_read_length($data, $offset, $additional);
+            $value = substr($data, $offset, $length);
+            $offset += $length;
+            return $value;
+        })(),
+        3 => (function () use ($data, &$offset, $additional) {
+            $length = cbor_read_length($data, $offset, $additional);
+            $value = substr($data, $offset, $length);
+            $offset += $length;
+            return $value;
+        })(),
+        4 => (function () use ($data, &$offset, $additional) {
+            $length = cbor_read_length($data, $offset, $additional);
+            $items = [];
+            for ($i = 0; $i < $length; $i++) $items[] = cbor_decode_value($data, $offset);
+            return $items;
+        })(),
+        5 => (function () use ($data, &$offset, $additional) {
+            $length = cbor_read_length($data, $offset, $additional);
+            $map = [];
+            for ($i = 0; $i < $length; $i++) $map[cbor_decode_value($data, $offset)] = cbor_decode_value($data, $offset);
+            return $map;
+        })(),
+        7 => $additional === 20 ? false : ($additional === 21 ? true : null),
+        default => throw new RuntimeException('Unsupported CBOR value.'),
+    };
+}
+
+function extract_webauthn_public_key(string $attestationObject): array
+{
+    $offset = 0;
+    $attestation = cbor_decode_value($attestationObject, $offset);
+    $authData = is_array($attestation) ? (string) ($attestation['authData'] ?? '') : '';
+    if (strlen($authData) < 55) throw new RuntimeException('Passkey attestation is missing authenticator data.');
+    $flags = ord($authData[32]);
+    if (($flags & 0x40) === 0) throw new RuntimeException('Passkey attestation does not include credential data.');
+    $credentialIdLength = unpack('n', substr($authData, 53, 2))[1];
+    $credentialOffset = 55;
+    $credentialId = substr($authData, $credentialOffset, $credentialIdLength);
+    $coseOffset = $credentialOffset + $credentialIdLength;
+    $coseData = substr($authData, $coseOffset);
+    $nestedOffset = 0;
+    $cose = cbor_decode_value($coseData, $nestedOffset);
+    if (!is_array($cose) || ($cose[1] ?? null) !== 2 || ($cose[3] ?? null) !== -7 || ($cose[-1] ?? null) !== 1) {
+        throw new RuntimeException('Only ES256 platform passkeys are supported.');
+    }
+    if (strlen((string) ($cose[-2] ?? '')) !== 32 || strlen((string) ($cose[-3] ?? '')) !== 32) {
+        throw new RuntimeException('Passkey public key is invalid.');
+    }
+    return [
+        'alg' => -7,
+        'credentialId' => base64url_encode_value($credentialId),
+        'x' => base64url_encode_value((string) $cose[-2]),
+        'y' => base64url_encode_value((string) $cose[-3]),
+    ];
+}
+
+function webauthn_public_key_pem(array $publicKey): string
+{
+    $x = base64url_decode_value((string) ($publicKey['x'] ?? ''));
+    $y = base64url_decode_value((string) ($publicKey['y'] ?? ''));
+    if (strlen($x) !== 32 || strlen($y) !== 32) throw new RuntimeException('Stored passkey public key is invalid.');
+    $spki = hex2bin('3059301306072a8648ce3d020106082a8648ce3d03010703420004') . $x . $y;
+    return "-----BEGIN PUBLIC KEY-----\n" . chunk_split(base64_encode($spki), 64, "\n") . "-----END PUBLIC KEY-----\n";
+}
+
 function security_policy_value(string $key, mixed $fallback): mixed
 {
     try {
@@ -366,6 +531,23 @@ function verify_totp_value(string $secret, string $code): bool
 function send_email_message(string $to, string $subject, array $payload): bool
 {
     if (!provider_status()['email']) return false;
+    $templateKey = (string) ($payload['templateKey'] ?? $payload['type'] ?? '');
+    if ($templateKey !== '') {
+        try {
+            $stmt = Database::pdo()->prepare('SELECT subject, body FROM email_templates WHERE key = ? AND enabled = 1 LIMIT 1');
+            $stmt->execute([$templateKey]);
+            if ($template = $stmt->fetch()) {
+                $replacements = [];
+                foreach ($payload as $key => $value) {
+                    if (is_scalar($value) || $value === null) $replacements['{{' . $key . '}}'] = (string) $value;
+                }
+                $subject = strtr($template['subject'] ?: $subject, $replacements);
+                $payload['html'] = strtr($template['body'], $replacements);
+                $payload['templateApplied'] = $templateKey;
+            }
+        } catch (Throwable) {
+        }
+    }
     http_request_json((string) provider_config_value('EMAIL_API_URL', 'email', 'api_url'), [
         'method' => 'POST',
         'headers' => [
@@ -401,6 +583,127 @@ function public_media_asset(array $row): array
     ];
 }
 
+function create_notification(?string $userId, string $type, string $title, string $body = '', string $url = '/'): void
+{
+    if (!$userId) return;
+    try {
+        Database::pdo()->prepare('INSERT INTO notifications (id, user_id, type, title, body, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            ->execute([uuid_value('NTF-'), $userId, substr($type, 0, 80), substr($title, 0, 180), substr($body, 0, 500), substr($url, 0, 500), now_iso()]);
+    } catch (Throwable) {
+    }
+}
+
+function create_invoice_for_payment(array $payment, array $user, array $metadata = []): ?array
+{
+    try {
+        $pdo = Database::pdo();
+        $exists = $pdo->prepare('SELECT * FROM billing_invoices WHERE payment_id = ?');
+        $exists->execute([$payment['id']]);
+        if ($row = $exists->fetch()) return $row;
+        $issuedAt = now_iso();
+        $taxSettings = document_value('tax-settings', ['gstin' => '', 'taxRate' => provider_config_value('INVOICE_TAX_RATE', 'billing', 'tax_rate', '0'), 'invoicePrefix' => 'INV']);
+        $invoicePrefix = preg_replace('/[^A-Za-z0-9-]/', '', (string) ($taxSettings['invoicePrefix'] ?? 'INV')) ?: 'INV';
+        $invoiceNumber = $invoicePrefix . '-' . gmdate('Ymd') . '-' . substr(preg_replace('/[^A-Za-z0-9]/', '', (string) $payment['id']), -8);
+        $taxRate = max(0, min(100, (float) ($taxSettings['taxRate'] ?? 0)));
+        $taxAmount = (int) round((int) $payment['amount'] * $taxRate / 100);
+        $metadata = array_merge(['taxRate' => $taxRate, 'gstin' => (string) ($taxSettings['gstin'] ?? '')], $metadata);
+        $pdo->prepare('INSERT INTO billing_invoices (id, invoice_number, payment_id, user_id, amount, currency, tax_amount, billing_name, billing_email, status, issued_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([uuid_value('INV-'), $invoiceNumber, $payment['id'], $payment['user_id'] ?? $user['id'], (int) $payment['amount'], (string) $payment['currency'], $taxAmount, (string) ($metadata['billingName'] ?? $user['name'] ?? ''), (string) ($metadata['billingEmail'] ?? $user['email'] ?? ''), 'issued', $issuedAt, json_encode($metadata, JSON_UNESCAPED_SLASHES)]);
+        $stmt = $pdo->prepare('SELECT * FROM billing_invoices WHERE invoice_number = ?');
+        $stmt->execute([$invoiceNumber]);
+        return $stmt->fetch() ?: null;
+    } catch (Throwable) {
+        return null;
+    }
+}
+
+function record_story_revision(array $story, ?string $authorUserId, string $note = ''): void
+{
+    try {
+        $pdo = Database::pdo();
+        $slug = (string) ($story['slug'] ?? '');
+        if ($slug === '') return;
+        $stmt = $pdo->prepare('SELECT COALESCE(MAX(revision_number), 0) + 1 AS next_revision FROM post_revisions WHERE story_slug = ?');
+        $stmt->execute([$slug]);
+        $revision = (int) ($stmt->fetch()['next_revision'] ?? 1);
+        $pdo->prepare('INSERT INTO post_revisions (id, story_id, story_slug, revision_number, author_user_id, snapshot_json, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([uuid_value('REV-'), (string) ($story['id'] ?? $slug), $slug, $revision, $authorUserId, json_encode($story, JSON_UNESCAPED_SLASHES), substr($note, 0, 500), now_iso()]);
+    } catch (Throwable) {
+    }
+}
+
+function current_publication_rows(): array
+{
+    $rows = Database::pdo()->query("SELECT * FROM publications WHERE status != 'archived' ORDER BY name")->fetchAll();
+    if ($rows) return $rows;
+    $seen = [];
+    foreach (document_value('stories', []) as $story) {
+        $name = trim((string) ($story['publication'] ?? ''));
+        if ($name === '' || isset($seen[$name])) continue;
+        $seen[$name] = [
+            'id' => 'derived-' . strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', $name), '-')),
+            'slug' => strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', $name), '-')),
+            'name' => $name,
+            'description' => 'Publication derived from published stories.',
+            'logo_url' => '',
+            'status' => 'active',
+            'owner_user_id' => null,
+            'created_at' => $story['createdAt'] ?? now_iso(),
+            'updated_at' => $story['updatedAt'] ?? now_iso(),
+        ];
+    }
+    return array_values($seen);
+}
+
+function publication_member_role(string $publicationNameOrSlug, string $userId): ?string
+{
+    if ($publicationNameOrSlug === '' || $userId === '') return null;
+    $stmt = Database::pdo()->prepare('SELECT publication_members.role FROM publication_members JOIN publications ON publications.id = publication_members.publication_id WHERE publication_members.user_id = ? AND (publications.slug = ? OR publications.name = ?) AND publications.status != ? LIMIT 1');
+    $stmt->execute([$userId, $publicationNameOrSlug, $publicationNameOrSlug, 'archived']);
+    $row = $stmt->fetch();
+    return $row ? (string) $row['role'] : null;
+}
+
+function can_manage_publication_content(array $session, string $publication): bool
+{
+    if (($session['user']['role'] ?? '') === 'admin') return true;
+    return in_array(publication_member_role($publication, (string) ($session['user']['id'] ?? '')), ['owner', 'editor'], true);
+}
+
+function sitemap_xml(): string
+{
+    $origin = rtrim(app_origin(), '/');
+    $urls = [['loc' => $origin . '/', 'lastmod' => now_iso()], ['loc' => $origin . '/pricing', 'lastmod' => now_iso()]];
+    foreach (document_value('stories', []) as $story) {
+        if (($story['status'] ?? '') !== 'published') continue;
+        $urls[] = ['loc' => $origin . '/stories/' . rawurlencode((string) $story['slug']), 'lastmod' => (string) ($story['updatedAt'] ?? $story['publishedAt'] ?? now_iso())];
+    }
+    foreach (document_value('categories', []) as $category) {
+        $urls[] = ['loc' => $origin . '/category/' . rawurlencode((string) $category['slug']), 'lastmod' => (string) ($category['updatedAt'] ?? now_iso())];
+    }
+    foreach (current_publication_rows() as $publication) {
+        if (($publication['status'] ?? '') === 'active') {
+            $urls[] = ['loc' => $origin . '/publications/' . rawurlencode((string) $publication['slug']), 'lastmod' => (string) ($publication['updated_at'] ?? now_iso())];
+        }
+    }
+    $xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+    foreach ($urls as $url) $xml .= "  <url><loc>" . htmlspecialchars($url['loc'], ENT_XML1) . "</loc><lastmod>" . htmlspecialchars($url['lastmod'], ENT_XML1) . "</lastmod></url>\n";
+    return $xml . "</urlset>\n";
+}
+
+function seo_artifact_content(string $key): ?array
+{
+    try {
+        $stmt = Database::pdo()->prepare('SELECT content, mime_type FROM seo_artifacts WHERE key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch();
+        if (!$row || trim((string) ($row['content'] ?? '')) === '') return null;
+        return ['content' => (string) $row['content'], 'mimeType' => (string) ($row['mime_type'] ?? 'text/plain; charset=utf-8')];
+    } catch (Throwable) {
+        return null;
+    }
+}
+
 function create_password_reset_token(array $user): array
 {
     $pdo = Database::pdo();
@@ -424,6 +727,51 @@ function process_paid_provider_event(string $provider, string $paymentId, string
     }
     if ($paymentId === '') return false;
     return activate_paid_payment($paymentId, $providerPaymentId) !== null;
+}
+
+function process_subscription_provider_event(string $provider, string $eventType, string $providerSubscriptionId, array $payload): bool
+{
+    if ($providerSubscriptionId === '') return false;
+    $pdo = Database::pdo();
+    $stmt = $pdo->prepare('SELECT * FROM subscriptions WHERE provider = ? AND provider_subscription_id = ? ORDER BY created_at DESC LIMIT 1');
+    $stmt->execute([$provider, $providerSubscriptionId]);
+    $subscription = $stmt->fetch();
+    if (!$subscription) {
+        $paymentStmt = $pdo->prepare('SELECT * FROM payments WHERE provider = ? AND provider_order_id = ? ORDER BY created_at DESC LIMIT 1');
+        $paymentStmt->execute([$provider, $providerSubscriptionId]);
+        $payment = $paymentStmt->fetch();
+        if ($payment && preg_match('/active|authenticated|charged|paid|completed|success/i', $eventType . ' ' . json_encode($payload))) {
+            activate_paid_payment($payment['id'], $providerSubscriptionId);
+            return true;
+        }
+        return false;
+    }
+
+    $nextStatus = null;
+    $text = strtolower($eventType . ' ' . json_encode($payload));
+    if (preg_match('/cancel|cancelled|canceled|expired/', $text)) $nextStatus = 'cancelled';
+    elseif (preg_match('/past_due|payment_failed|failed|halted|suspended/', $text)) $nextStatus = 'past_due';
+    elseif (preg_match('/active|authenticated|charged|paid|renewed|completed|success/', $text)) $nextStatus = 'active';
+    if (!$nextStatus) return false;
+
+    $now = now_iso();
+    $endsAt = $subscription['ends_at'];
+    if ($nextStatus === 'active' && preg_match('/charged|renewed|paid|completed|success/', $text)) {
+        $endsAt = gmdate('Y-m-d\TH:i:s.v\Z', time() + 30 * 86400);
+    }
+    $pdo->prepare('UPDATE subscriptions SET status = ?, ends_at = ?, updated_at = ? WHERE id = ?')->execute([$nextStatus, $endsAt, $now, $subscription['id']]);
+    $pdo->prepare('INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        ->execute([uuid_value('SEV-'), $subscription['id'], $subscription['user_id'], $provider, substr($eventType, 0, 120), $subscription['status'], $nextStatus, json_encode($payload, JSON_UNESCAPED_SLASHES), $now]);
+    if ($nextStatus === 'active') {
+        $planName = (string) ($payload['planName'] ?? $subscription['plan_id']);
+        $pdo->prepare('UPDATE users SET subscription = CASE WHEN subscription = ? THEN ? ELSE subscription END, updated_at = ? WHERE id = ?')
+            ->execute(['Free', $planName ?: 'Premium', $now, $subscription['user_id']]);
+        create_notification($subscription['user_id'], 'subscription_renewed', 'Membership renewed', 'Your membership renewal was confirmed.', '/dashboard');
+    } elseif (in_array($nextStatus, ['cancelled', 'past_due'], true)) {
+        if ($nextStatus === 'cancelled') $pdo->prepare("UPDATE users SET subscription = 'Free', updated_at = ? WHERE id = ?")->execute([$now, $subscription['user_id']]);
+        create_notification($subscription['user_id'], 'subscription_' . $nextStatus, $nextStatus === 'cancelled' ? 'Membership cancelled' : 'Payment issue needs attention', $nextStatus === 'cancelled' ? 'Your recurring membership was cancelled by the payment provider.' : 'Your membership renewal failed. Please update your payment method.', $nextStatus === 'cancelled' ? '/dashboard' : '/pricing');
+    }
+    return true;
 }
 
 function store_payment_webhook(string $provider, string $eventType, string $paymentId, string $providerPaymentId, bool $valid, array $payload, string $status): void
@@ -1278,6 +1626,157 @@ function create_provider_order(string $provider, array $payment, array $user): a
     throw new RuntimeException('Unsupported payment provider.');
 }
 
+function provider_plan_config_key(string $prefix, string $planId): string
+{
+    return strtoupper($prefix . '_' . preg_replace('/[^A-Za-z0-9]+/', '_', $planId));
+}
+
+function create_provider_subscription_checkout(string $provider, array $payment, array $user, array $metadata): array
+{
+    $origin = app_origin();
+    $planId = (string) ($metadata['planId'] ?? 'premium');
+    $period = strtolower((string) ($metadata['period'] ?? 'monthly'));
+    $totalCount = str_contains($period, 'year') ? 10 : 120;
+
+    if ($provider === 'razorpay') {
+        $keyId = (string) provider_config_value('RAZORPAY_KEY_ID', 'razorpay', 'key_id');
+        $keySecret = (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret');
+        $razorpayPlanId = (string) (provider_config_value(provider_plan_config_key('RAZORPAY_PLAN_ID', $planId), 'razorpay', 'plan_' . strtolower($planId), '') ?: provider_config_value('RAZORPAY_PLAN_ID', 'razorpay', 'plan_id', ''));
+        if ($razorpayPlanId === '') throw new RuntimeException('Razorpay recurring plan ID is not configured for this package.');
+        $subscription = http_request_json('https://api.razorpay.com/v1/subscriptions', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Basic ' . base64_encode($keyId . ':' . $keySecret), 'Content-Type' => 'application/json'],
+            'body' => json_encode([
+                'plan_id' => $razorpayPlanId,
+                'total_count' => $totalCount,
+                'customer_notify' => 1,
+                'notes' => ['paymentId' => $payment['id'], 'localPlanId' => $planId, 'userId' => $user['id']],
+            ], JSON_UNESCAPED_SLASHES),
+        ]);
+        return ['providerOrderId' => (string) ($subscription['id'] ?? ''), 'providerSubscriptionId' => (string) ($subscription['id'] ?? ''), 'checkout' => ['key' => $keyId, 'subscriptionId' => (string) ($subscription['id'] ?? '')]];
+    }
+
+    if ($provider === 'paypal') {
+        $paypalPlanId = (string) (provider_config_value(provider_plan_config_key('PAYPAL_PLAN_ID', $planId), 'paypal', 'plan_' . strtolower($planId), '') ?: provider_config_value('PAYPAL_PLAN_ID', 'paypal', 'plan_id', ''));
+        if ($paypalPlanId === '') throw new RuntimeException('PayPal recurring plan ID is not configured for this package.');
+        $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+        $token = http_request_json($base . '/v1/oauth2/token', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') . ':' . provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')), 'Content-Type' => 'application/x-www-form-urlencoded'],
+            'body' => ['grant_type' => 'client_credentials'],
+        ]);
+        $subscription = http_request_json($base . '/v1/billing/subscriptions', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
+            'body' => json_encode([
+                'plan_id' => $paypalPlanId,
+                'custom_id' => $payment['id'],
+                'application_context' => [
+                    'brand_name' => 'InkRiver',
+                    'user_action' => 'SUBSCRIBE_NOW',
+                    'return_url' => $origin . '/api/payments/paypal/return?paymentId=' . rawurlencode($payment['id']) . '&mode=subscription',
+                    'cancel_url' => $origin . '/pricing?payment=cancelled',
+                ],
+            ], JSON_UNESCAPED_SLASHES),
+        ]);
+        $approve = '';
+        foreach (($subscription['links'] ?? []) as $link) if (($link['rel'] ?? '') === 'approve') $approve = (string) $link['href'];
+        return ['providerOrderId' => (string) ($subscription['id'] ?? ''), 'providerSubscriptionId' => (string) ($subscription['id'] ?? ''), 'checkout' => ['approveUrl' => $approve, 'subscriptionId' => (string) ($subscription['id'] ?? '')]];
+    }
+
+    if ($provider === 'cashfree') {
+        $base = provider_config_value('CASHFREE_SUBSCRIPTIONS_API_URL', 'cashfree', 'subscriptions_api_url', '');
+        $planReference = (string) (provider_config_value(provider_plan_config_key('CASHFREE_PLAN_ID', $planId), 'cashfree', 'plan_' . strtolower($planId), '') ?: provider_config_value('CASHFREE_PLAN_ID', 'cashfree', 'plan_id', ''));
+        if ($base === '' || $planReference === '') throw new RuntimeException('Cashfree recurring subscription API URL and plan ID are required.');
+        $subscription = http_request_json(rtrim($base, '/'), [
+            'method' => 'POST',
+            'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret'), 'Content-Type' => 'application/json'],
+            'body' => json_encode([
+                'subscription_id' => $payment['id'],
+                'plan_id' => $planReference,
+                'customer_details' => ['customer_id' => $user['id'], 'customer_name' => $user['name'], 'customer_email' => $user['email']],
+                'subscription_meta' => ['return_url' => $origin . '/api/payments/cashfree/return?paymentId=' . rawurlencode($payment['id'])],
+            ], JSON_UNESCAPED_SLASHES),
+        ]);
+        return ['providerOrderId' => (string) ($subscription['subscription_id'] ?? $payment['id']), 'providerSubscriptionId' => (string) ($subscription['subscription_id'] ?? $payment['id']), 'checkout' => ['paymentSessionId' => (string) ($subscription['payment_session_id'] ?? ''), 'subscriptionId' => (string) ($subscription['subscription_id'] ?? $payment['id'])]];
+    }
+
+    if ($provider === 'payu') {
+        $action = provider_config_value('PAYU_SUBSCRIPTION_CREATE_URL', 'payu', 'subscription_create_url', '');
+        $planReference = (string) (provider_config_value(provider_plan_config_key('PAYU_PLAN_ID', $planId), 'payu', 'plan_' . strtolower($planId), '') ?: provider_config_value('PAYU_PLAN_ID', 'payu', 'plan_id', ''));
+        if ($action === '' || $planReference === '') throw new RuntimeException('PayU recurring subscription create URL and plan ID are required.');
+        $fields = [
+            'key' => provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key'),
+            'txnid' => $payment['id'],
+            'amount' => number_format(((int) $payment['amount']) / 100, 2, '.', ''),
+            'productinfo' => preg_replace('/[^A-Za-z0-9 _.-]/', '', (string) ($payment['purpose'] ?? 'InkRiver membership')),
+            'firstname' => $user['name'],
+            'email' => $user['email'],
+            'plan_id' => $planReference,
+            'surl' => $origin . '/api/payments/payu/return',
+            'furl' => $origin . '/api/payments/payu/return',
+            'udf1' => $payment['id'],
+            'udf2' => 'subscription',
+        ];
+        $fields['hash'] = hash('sha512', implode('|', [$fields['key'], $fields['txnid'], $fields['amount'], $fields['productinfo'], $fields['firstname'], $fields['email'], $fields['udf1'], $fields['udf2'], '', '', '', '', '', '', '', '', provider_config_value('PAYU_SALT', 'payu', 'salt')]));
+        return ['providerOrderId' => $payment['id'], 'providerSubscriptionId' => $payment['id'], 'checkout' => ['action' => $action, 'fields' => $fields, 'subscriptionId' => $payment['id']]];
+    }
+
+    throw new RuntimeException('Unsupported recurring subscription provider.');
+}
+
+function cancel_provider_subscription(array $subscription): array
+{
+    $provider = strtolower((string) ($subscription['provider'] ?? ''));
+    $providerSubscriptionId = trim((string) ($subscription['provider_subscription_id'] ?? ''));
+    if ($providerSubscriptionId === '') {
+        return ['remote' => false, 'status' => 'not_provider_managed', 'message' => 'No provider subscription reference is stored.'];
+    }
+    if ($provider === 'razorpay') {
+        $keyId = (string) provider_config_value('RAZORPAY_KEY_ID', 'razorpay', 'key_id');
+        $keySecret = (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret');
+        $response = http_request_json('https://api.razorpay.com/v1/subscriptions/' . rawurlencode($providerSubscriptionId) . '/cancel', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Basic ' . base64_encode($keyId . ':' . $keySecret), 'Content-Type' => 'application/json'],
+            'body' => json_encode(['cancel_at_cycle_end' => 1], JSON_UNESCAPED_SLASHES),
+        ]);
+        return ['remote' => true, 'status' => (string) ($response['status'] ?? 'cancel_requested'), 'response' => $response];
+    }
+    if ($provider === 'paypal') {
+        $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+        $token = http_request_json($base . '/v1/oauth2/token', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') . ':' . provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')), 'Content-Type' => 'application/x-www-form-urlencoded'],
+            'body' => ['grant_type' => 'client_credentials'],
+        ]);
+        http_request_json($base . '/v1/billing/subscriptions/' . rawurlencode($providerSubscriptionId) . '/cancel', [
+            'method' => 'POST',
+            'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
+            'body' => json_encode(['reason' => 'Customer requested cancellation from InkRiver.'], JSON_UNESCAPED_SLASHES),
+        ]);
+        return ['remote' => true, 'status' => 'cancelled'];
+    }
+    if ($provider === 'cashfree') {
+        $base = provider_config_value('CASHFREE_SUBSCRIPTIONS_API_URL', 'cashfree', 'subscriptions_api_url', '');
+        if ($base === '') throw new RuntimeException('Cashfree subscription cancellation API URL is not configured.');
+        $response = http_request_json(rtrim($base, '/') . '/' . rawurlencode($providerSubscriptionId) . '/cancel', [
+            'method' => 'POST',
+            'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret'), 'Content-Type' => 'application/json'],
+            'body' => json_encode(['cancel_at_cycle_end' => true], JSON_UNESCAPED_SLASHES),
+        ]);
+        return ['remote' => true, 'status' => (string) ($response['status'] ?? 'cancel_requested'), 'response' => $response];
+    }
+    if ($provider === 'payu') {
+        $url = provider_config_value('PAYU_SUBSCRIPTION_CANCEL_URL', 'payu', 'subscription_cancel_url', '');
+        if ($url === '') throw new RuntimeException('PayU subscription cancellation URL is not configured.');
+        $body = ['subscriptionId' => $providerSubscriptionId, 'merchantKey' => provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key')];
+        $body['hash'] = hash('sha512', implode('|', [$body['merchantKey'], $providerSubscriptionId, provider_config_value('PAYU_SALT', 'payu', 'salt')]));
+        $response = http_request_json($url, ['method' => 'POST', 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode($body, JSON_UNESCAPED_SLASHES)]);
+        return ['remote' => true, 'status' => (string) ($response['status'] ?? 'cancel_requested'), 'response' => $response];
+    }
+    throw new RuntimeException('Unsupported subscription provider: ' . $provider);
+}
+
 function activate_paid_payment(string $paymentId, string $providerPaymentId = ''): ?array
 {
     $pdo = Database::pdo();
@@ -1288,7 +1787,10 @@ function activate_paid_payment(string $paymentId, string $providerPaymentId = ''
     if ($payment['status'] === 'paid') return public_user($payment);
     $metadata = parse_json_field($payment['metadata'] ?? '{}', []);
     $now = now_iso();
+    $providerSubscriptionId = (string) ($metadata['providerSubscriptionId'] ?? '');
     $pdo->prepare("UPDATE payments SET status = 'paid', provider_payment_id = COALESCE(NULLIF(?, ''), provider_payment_id), updated_at = ? WHERE id = ?")->execute([$providerPaymentId, $now, $paymentId]);
+    create_invoice_for_payment($payment, $payment, $metadata);
+    create_notification($payment['user_id'] ?? null, 'payment_paid', 'Payment received', 'Your payment has been captured and your receipt is ready.', '/dashboard');
     $discount = active_discount_for_payment($payment, $metadata);
     if ($discount && $discount['amount'] > 0) {
         $pdo->prepare('INSERT INTO discount_redemptions (id, discount_id, user_id, payment_id, amount_discounted, created_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -1315,9 +1817,12 @@ function activate_paid_payment(string $paymentId, string $providerPaymentId = ''
     $subId = uuid_value('SUB-');
     $ends = gmdate('Y-m-d\TH:i:s.v\Z', time() + $months * 30 * 86400);
     $pdo->prepare("INSERT INTO subscriptions (id, user_id, plan_id, provider, provider_subscription_id, currency, amount, status, starts_at, ends_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)")
-        ->execute([$subId, $payment['user_id'], $planId, $payment['provider'], $providerPaymentId, $payment['currency'], (int) $payment['amount'], $now, $ends, $now, $now]);
+        ->execute([$subId, $payment['user_id'], $planId, $payment['provider'], $providerSubscriptionId ?: $providerPaymentId, $payment['currency'], (int) $payment['amount'], $now, $ends, $now, $now]);
     $pdo->prepare('UPDATE payments SET subscription_id = ? WHERE id = ?')->execute([$subId, $paymentId]);
     $pdo->prepare('UPDATE users SET subscription = ?, updated_at = ? WHERE id = ?')->execute([$metadata['planName'] ?? 'Premium', $now, $payment['user_id']]);
+    $pdo->prepare('INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        ->execute([uuid_value('SEV-'), $subId, $payment['user_id'], $payment['provider'], 'activated', null, 'active', json_encode($metadata, JSON_UNESCAPED_SLASHES), $now]);
+    create_notification($payment['user_id'] ?? null, 'subscription_active', 'Membership activated', 'Your subscription is active until ' . $ends, '/dashboard');
     $payment['subscription'] = $metadata['planName'] ?? 'Premium';
     $payment['updated_at'] = $now;
     return public_user($payment);
@@ -1381,6 +1886,7 @@ function sync_subscription_lifecycle(): array
         $pdo->prepare("UPDATE subscriptions SET status = 'expired', updated_at = ? WHERE id = ?")->execute([$now, $row['id']]);
         $pdo->prepare("INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, 'expired', 'active', 'expired', '{}', ?)")
             ->execute([uuid_value('SEV-'), $row['id'], $row['user_id'], $row['provider'], $now]);
+        create_notification($row['user_id'], 'subscription_expired', 'Membership expired', 'Your membership period ended. Update payment to continue premium access.', '/pricing');
     }
     $pastDue = $pdo->query("SELECT * FROM subscriptions WHERE status IN ('past_due', 'failed')")->fetchAll();
     foreach ($pastDue as $row) {
@@ -1445,6 +1951,531 @@ function execute_payout_transfer(array $payout): array
     ]);
 }
 
+function execute_payout_by_id(string $payoutId): array
+{
+    $pdo = Database::pdo();
+    $stmt = $pdo->prepare('SELECT * FROM writer_payouts WHERE id = ?');
+    $stmt->execute([$payoutId]);
+    $payout = $stmt->fetch();
+    if (!$payout) throw new RuntimeException('Payout not found.');
+    if (in_array((string) $payout['status'], ['paid', 'processing'], true)) {
+        return ['payoutId' => $payoutId, 'status' => (string) $payout['status']];
+    }
+    $transferId = uuid_value('PTR-');
+    $provider = provider_config_value('PAYOUT_PROVIDER', 'payouts', 'provider', 'manual') ?: 'manual';
+    $now = now_iso();
+    $pdo->prepare("INSERT INTO payout_transfers (id, payout_id, provider, status, request_json, created_at, updated_at) VALUES (?, ?, ?, 'processing', ?, ?, ?)")
+        ->execute([$transferId, $payoutId, $provider, json_encode(['payoutId' => $payoutId], JSON_UNESCAPED_SLASHES), $now, $now]);
+    $pdo->prepare("UPDATE writer_payouts SET status = 'processing', updated_at = ? WHERE id = ?")->execute([$now, $payoutId]);
+    try {
+        $response = execute_payout_transfer($payout);
+        $providerTransferId = (string) ($response['batch_header']['payout_batch_id'] ?? $response['id'] ?? $response['transferId'] ?? '');
+        $pdo->prepare("UPDATE payout_transfers SET status = 'paid', provider_transfer_id = ?, response_json = ?, updated_at = ? WHERE id = ?")
+            ->execute([$providerTransferId, json_encode($response, JSON_UNESCAPED_SLASHES), now_iso(), $transferId]);
+        $pdo->prepare("UPDATE writer_payouts SET status = 'paid', paid_at = ?, updated_at = ? WHERE id = ?")->execute([now_iso(), now_iso(), $payoutId]);
+        return ['transferId' => $transferId, 'providerTransferId' => $providerTransferId, 'status' => 'paid'];
+    } catch (Throwable $error) {
+        $pdo->prepare("UPDATE payout_transfers SET status = 'failed', error = ?, updated_at = ? WHERE id = ?")->execute([$error->getMessage(), now_iso(), $transferId]);
+        $pdo->prepare("UPDATE writer_payouts SET status = 'failed', updated_at = ? WHERE id = ?")->execute([now_iso(), $payoutId]);
+        throw $error;
+    }
+}
+
+function execute_due_payouts(int $limit = 20): array
+{
+    $pdo = Database::pdo();
+    $stmt = $pdo->prepare("SELECT id FROM writer_payouts WHERE status IN ('pending', 'failed') ORDER BY created_at ASC LIMIT ?");
+    $stmt->execute([max(1, min(100, $limit))]);
+    $rows = $stmt->fetchAll();
+    $summary = ['processed' => 0, 'paid' => 0, 'failed' => 0, 'results' => []];
+    foreach ($rows as $row) {
+        $summary['processed']++;
+        try {
+            $result = execute_payout_by_id((string) $row['id']);
+            $summary['paid'] += ($result['status'] ?? '') === 'paid' ? 1 : 0;
+            $summary['results'][] = ['payoutId' => $row['id'], 'status' => $result['status'] ?? 'processing'];
+        } catch (Throwable $error) {
+            $summary['failed']++;
+            $summary['results'][] = ['payoutId' => $row['id'], 'status' => 'failed', 'error' => $error->getMessage()];
+        }
+    }
+    return $summary;
+}
+
+function publish_scheduled_stories(): array
+{
+    $stories = document_value('stories', []);
+    if (!is_array($stories)) return ['published' => 0];
+    $now = time();
+    $changed = false;
+    $published = 0;
+    foreach ($stories as &$story) {
+        if (!is_array($story) || ($story['status'] ?? '') !== 'scheduled') continue;
+        $scheduledAt = trim((string) ($story['scheduledAt'] ?? $story['scheduled_at'] ?? ''));
+        if ($scheduledAt === '') continue;
+        $due = strtotime($scheduledAt);
+        if ($due !== false && $due <= $now) {
+            $story['status'] = 'published';
+            $story['publishedAt'] = now_iso();
+            $story['updatedAt'] = now_iso();
+            $story['scheduledAt'] = '';
+            record_story_revision($story, null, 'Scheduled publishing job');
+            ensure_story_translations($story);
+            $published++;
+            $changed = true;
+        }
+    }
+    unset($story);
+    if ($changed) {
+        Database::pdo()->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, NULL, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+            ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), now_iso()]);
+        rebuild_story_search_index($stories);
+    }
+    return ['published' => $published];
+}
+
+function newsletter_audience_users(string $audience): array
+{
+    $pdo = Database::pdo();
+    $audience = strtolower(trim($audience ?: 'all'));
+    if ($audience === 'subscribers' || $audience === 'paid') {
+        return $pdo->query("SELECT DISTINCT users.id, users.email, users.name FROM users LEFT JOIN subscriptions ON subscriptions.user_id = users.id AND subscriptions.status = 'active' WHERE users.status = 'active' AND (users.subscription != 'Free' OR subscriptions.id IS NOT NULL)")->fetchAll();
+    }
+    if (str_starts_with($audience, 'topic:')) {
+        $topic = trim(substr($audience, 6));
+        $users = $pdo->query("SELECT id, email, name FROM users WHERE status = 'active'")->fetchAll();
+        $matches = [];
+        foreach ($users as $user) {
+            $profileStmt = $pdo->prepare('SELECT topic_weights_json FROM recommendation_profiles WHERE user_id = ?');
+            $profileStmt->execute([$user['id']]);
+            $profile = $profileStmt->fetch();
+            $topicWeights = $profile ? parse_json_field($profile['topic_weights_json'], []) : [];
+            $docStmt = $pdo->prepare("SELECT value_json FROM user_documents WHERE user_id = ? AND key = 'recommendation-profile'");
+            $docStmt->execute([$user['id']]);
+            $doc = $docStmt->fetch();
+            $docProfile = $doc ? parse_json_field($doc['value_json'], []) : [];
+            $selected = is_array($docProfile['selectedInterests'] ?? null) ? $docProfile['selectedInterests'] : [];
+            if (isset($topicWeights[$topic]) || in_array($topic, $selected, true)) $matches[] = $user;
+        }
+        return $matches;
+    }
+    return $pdo->query("SELECT id, email, name FROM users WHERE status = 'active'")->fetchAll();
+}
+
+function newsletter_token(string $newsletterId, string $userId, string $email): string
+{
+    return hash_hmac('sha256', $newsletterId . '|' . $userId . '|' . strtolower($email), credential_crypto_key());
+}
+
+function newsletter_user_suppressed(array $user): bool
+{
+    $email = strtolower(trim((string) ($user['email'] ?? '')));
+    if ($email === '') return true;
+    $stmt = Database::pdo()->prepare('SELECT email FROM newsletter_suppressions WHERE email = ? LIMIT 1');
+    $stmt->execute([$email]);
+    return (bool) $stmt->fetch();
+}
+
+function tracked_newsletter_html(array $letter, array $user): string
+{
+    $content = (string) ($letter['content_html'] ?? '');
+    $newsletterId = rawurlencode((string) $letter['id']);
+    $userId = rawurlencode((string) $user['id']);
+    $base = app_url('/');
+    $unsubscribeToken = newsletter_token((string) $letter['id'], (string) $user['id'], (string) $user['email']);
+    $content = preg_replace_callback('/<a\s+([^>]*href=["\'])([^"\']+)(["\'][^>]*)>/i', function ($match) use ($newsletterId, $userId, $base) {
+        $target = $base . 'api/newsletters/' . $newsletterId . '/click?u=' . $userId . '&url=' . rawurlencode($match[2]);
+        return '<a ' . $match[1] . htmlspecialchars($target, ENT_QUOTES, 'UTF-8') . $match[3] . '>';
+    }, $content) ?? $content;
+    $pixel = '<img src="' . htmlspecialchars($base . 'api/newsletters/' . $newsletterId . '/open?u=' . $userId, ENT_QUOTES, 'UTF-8') . '" width="1" height="1" alt="" style="display:none" />';
+    $unsubscribe = '<p style="font-size:12px;color:#667085;margin-top:24px">You are receiving this because you joined InkRiver. <a href="' . htmlspecialchars($base . 'api/newsletters/unsubscribe?n=' . $newsletterId . '&u=' . $userId . '&t=' . $unsubscribeToken, ENT_QUOTES, 'UTF-8') . '">Unsubscribe</a></p>';
+    return $content . $pixel . $unsubscribe;
+}
+
+function send_due_newsletters(): array
+{
+    $pdo = Database::pdo();
+    $now = now_iso();
+    $stmt = $pdo->prepare("SELECT * FROM newsletters WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at ASC LIMIT 20");
+    $stmt->execute([$now]);
+    $letters = $stmt->fetchAll();
+    $sent = 0;
+    foreach ($letters as $letter) {
+        $pdo->prepare("UPDATE newsletters SET status = 'sending', updated_at = ? WHERE id = ?")->execute([$now, $letter['id']]);
+        $users = newsletter_audience_users((string) ($letter['audience'] ?? 'all'));
+        foreach ($users as $user) {
+            if (newsletter_user_suppressed($user)) continue;
+            $ok = send_email_message($user['email'], $letter['subject'], ['templateKey' => 'newsletter', 'name' => $user['name'], 'content' => tracked_newsletter_html($letter, $user), 'newsletterTitle' => $letter['title'], 'audience' => $letter['audience']]);
+            $pdo->prepare('INSERT INTO newsletter_events (id, newsletter_id, user_id, event_type, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+                ->execute([uuid_value('NLE-'), $letter['id'], $user['id'], $ok ? 'sent' : 'failed', '{}', now_iso()]);
+        }
+        $pdo->prepare("UPDATE newsletters SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?")->execute([now_iso(), now_iso(), $letter['id']]);
+        $sent++;
+    }
+    return ['sent' => $sent];
+}
+
+function queue_abandoned_checkout_recovery(): array
+{
+    $pdo = Database::pdo();
+    $cutoff = gmdate('Y-m-d\TH:i:s.v\Z', time() - 3600);
+    $stmt = $pdo->prepare("SELECT payments.*, users.email, users.name FROM payments JOIN users ON users.id = payments.user_id WHERE payments.status IN ('created', 'pending') AND payments.created_at < ? ORDER BY payments.created_at DESC LIMIT 100");
+    $stmt->execute([$cutoff]);
+    $rows = $stmt->fetchAll();
+    $queued = 0;
+    foreach ($rows as $row) {
+        $exists = $pdo->prepare("SELECT id FROM checkout_recovery_events WHERE payment_id = ? AND event_type = 'reminder' LIMIT 1");
+        $exists->execute([$row['id']]);
+        if ($exists->fetch()) continue;
+        send_email_message($row['email'], 'Complete your InkRiver membership', ['name' => $row['name'], 'paymentId' => $row['id'], 'amount' => $row['amount']]);
+        $pdo->prepare("INSERT INTO checkout_recovery_events (id, payment_id, user_id, event_type, created_at) VALUES (?, ?, ?, 'reminder', ?)")
+            ->execute([uuid_value('REC-'), $row['id'], $row['user_id'], now_iso()]);
+        $queued++;
+    }
+    return ['queued' => $queued];
+}
+
+function seo_audit_rows(): array
+{
+    $rows = [];
+    $seenTitles = [];
+    foreach (document_value('stories', []) as $story) {
+        if (!is_array($story)) continue;
+        $slug = (string) ($story['slug'] ?? '');
+        $title = trim((string) ($story['title'] ?? ''));
+        $seo = is_array($story['seo'] ?? null) ? $story['seo'] : [];
+        $bodyText = trim(strip_tags((string) ($story['contentHtml'] ?? '') . ' ' . implode(' ', is_array($story['body'] ?? null) ? $story['body'] : [])));
+        $issues = [];
+        if (strlen(trim((string) ($seo['metaDescription'] ?? $story['dek'] ?? ''))) < 80) $issues[] = 'Meta description is short or missing';
+        if (strlen($bodyText) < 600) $issues[] = 'Thin content';
+        if (empty($story['imageUrl'])) $issues[] = 'Missing featured image';
+        if ($title && isset($seenTitles[strtolower($title)])) $issues[] = 'Duplicate title';
+        $seenTitles[strtolower($title)] = true;
+        if ($issues) $rows[] = ['slug' => $slug, 'title' => $title ?: $slug, 'issues' => $issues, 'score' => max(0, 100 - count($issues) * 20)];
+    }
+    return $rows;
+}
+
+function csv_response(string $filename, array $rows): void
+{
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . preg_replace('/[^A-Za-z0-9_.-]/', '-', $filename) . '"');
+    $out = fopen('php://output', 'w');
+    if ($rows) {
+        fputcsv($out, array_keys($rows[0]));
+        foreach ($rows as $row) fputcsv($out, array_map(fn($value) => is_array($value) ? json_encode($value, JSON_UNESCAPED_SLASHES) : $value, $row));
+    }
+    fclose($out);
+    exit;
+}
+
+function production_readiness(array $installer, array $providers): array
+{
+    return [
+        ['key' => 'sqlite', 'label' => 'SQLite extension', 'ready' => (bool) $installer['sqlite'], 'detail' => 'Required for data storage.'],
+        ['key' => 'uploads', 'label' => 'Uploads writable', 'ready' => (bool) $installer['uploadsWritable'], 'detail' => 'Required for media manager and imports.'],
+        ['key' => 'storage', 'label' => 'Storage writable', 'ready' => (bool) $installer['storageWritable'], 'detail' => 'Required for SQLite and generated assets.'],
+        ['key' => 'cron', 'label' => 'Cron secret', 'ready' => (bool) $installer['cronConfigured'], 'detail' => 'Required for scheduled jobs.'],
+        ['key' => 'admin', 'label' => 'Admin account', 'ready' => (int) $installer['adminUsers'] > 0, 'detail' => 'At least one administrator must exist.'],
+        ['key' => 'payment', 'label' => 'Payment gateway', 'ready' => in_array(true, $providers['payments'] ?? [], true), 'detail' => 'At least one live gateway should be configured.'],
+        ['key' => 'email', 'label' => 'Email provider', 'ready' => (bool) ($providers['email'] ?? false), 'detail' => 'Required for verification, reset, newsletters, and alerts.'],
+        ['key' => 'ai', 'label' => 'AI provider', 'ready' => (bool) ($providers['ai'] ?? false), 'detail' => 'Required for AI tools and translations.'],
+        ['key' => 'geoip', 'label' => 'IP intelligence', 'ready' => (bool) ($providers['geoip'] ?? false), 'detail' => 'Strengthens PayPal India restriction.'],
+    ];
+}
+
+function deployment_shell_available(): bool
+{
+    $disabled = array_filter(array_map('trim', explode(',', (string) ini_get('disable_functions'))));
+    return function_exists('proc_open') && !in_array('proc_open', $disabled, true);
+}
+
+function deployment_repo_root(): string
+{
+    return dirname(__DIR__);
+}
+
+function deployment_git_binary(): string
+{
+    return provider_config_value('GIT_BINARY', 'deployment', 'git_binary', 'git') ?: 'git';
+}
+
+function deployment_php_binary(): string
+{
+    return provider_config_value('PHP_BINARY', 'deployment', 'php_binary', PHP_BINARY) ?: PHP_BINARY;
+}
+
+function deployment_command(array $command, int $timeoutSeconds = 120): array
+{
+    if (!deployment_shell_available()) {
+        return ['ok' => false, 'code' => 127, 'stdout' => '', 'stderr' => 'proc_open is disabled on this server.'];
+    }
+    $cmd = implode(' ', array_map('escapeshellarg', $command));
+    $descriptor = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($cmd, $descriptor, $pipes, deployment_repo_root());
+    if (!is_resource($process)) return ['ok' => false, 'code' => 127, 'stdout' => '', 'stderr' => 'Unable to start process.'];
+    fclose($pipes[0]);
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+    $stdout = '';
+    $stderr = '';
+    $started = time();
+    $timedOut = false;
+    while (true) {
+        $stdout .= stream_get_contents($pipes[1]) ?: '';
+        $stderr .= stream_get_contents($pipes[2]) ?: '';
+        $status = proc_get_status($process);
+        if (!$status['running']) break;
+        if (time() - $started > $timeoutSeconds) {
+            proc_terminate($process);
+            $timedOut = true;
+            break;
+        }
+        usleep(100000);
+    }
+    $stdout .= stream_get_contents($pipes[1]) ?: '';
+    $stderr .= stream_get_contents($pipes[2]) ?: '';
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $code = proc_close($process);
+    if ($timedOut) {
+        $code = 124;
+        $stderr = trim($stderr . "\nCommand timed out after {$timeoutSeconds}s.");
+    }
+    return ['ok' => $code === 0, 'code' => $code, 'stdout' => trim($stdout), 'stderr' => trim($stderr)];
+}
+
+function deployment_git(array $args, int $timeoutSeconds = 120): array
+{
+    return deployment_command(array_merge([deployment_git_binary()], $args), $timeoutSeconds);
+}
+
+function deployment_parse_changed_files(string $raw): array
+{
+    $files = [];
+    foreach (preg_split('/\r?\n/', trim($raw)) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $parts = preg_split('/\s+/', $line, 2);
+        $files[] = ['status' => $parts[0] ?? '', 'path' => $parts[1] ?? $line];
+    }
+    return $files;
+}
+
+function deployment_recent_updates(int $limit = 10): array
+{
+    try {
+        $stmt = Database::pdo()->prepare('SELECT * FROM deployment_updates ORDER BY created_at DESC LIMIT ?');
+        $stmt->execute([max(1, min(50, $limit))]);
+        return array_map(fn($row) => [
+            'id' => $row['id'],
+            'action' => $row['action'],
+            'status' => $row['status'],
+            'branch' => $row['branch'],
+            'beforeCommit' => $row['before_commit'],
+            'afterCommit' => $row['after_commit'],
+            'changedFiles' => parse_json_field($row['changed_files_json'] ?? '[]', []),
+            'log' => $row['log'],
+            'error' => $row['error'],
+            'createdAt' => $row['created_at'],
+            'updatedAt' => $row['updated_at'],
+        ], $stmt->fetchAll());
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+function deployment_current_status(bool $fetchRemote = false, string $branch = ''): array
+{
+    $status = [
+        'enabled' => is_dir(deployment_repo_root() . '/.git') && deployment_shell_available(),
+        'shellAvailable' => deployment_shell_available(),
+        'repoPath' => deployment_repo_root(),
+        'branch' => '',
+        'remote' => '',
+        'currentCommit' => '',
+        'remoteCommit' => '',
+        'dirty' => false,
+        'dirtyFiles' => [],
+        'changedFiles' => [],
+        'recent' => deployment_recent_updates(),
+    ];
+    if (!$status['enabled']) return $status;
+    $inside = deployment_git(['rev-parse', '--is-inside-work-tree'], 15);
+    if (!$inside['ok'] || trim($inside['stdout']) !== 'true') {
+        $status['enabled'] = false;
+        $status['error'] = $inside['stderr'] ?: 'This folder is not a Git work tree.';
+        return $status;
+    }
+    $currentBranch = deployment_git(['rev-parse', '--abbrev-ref', 'HEAD'], 15);
+    $status['branch'] = $branch !== '' ? $branch : (($currentBranch['ok'] && $currentBranch['stdout'] !== 'HEAD') ? $currentBranch['stdout'] : 'main');
+    $remote = deployment_git(['config', '--get', 'remote.origin.url'], 15);
+    $commit = deployment_git(['rev-parse', 'HEAD'], 15);
+    $dirty = deployment_git(['status', '--porcelain'], 20);
+    $status['remote'] = $remote['ok'] ? $remote['stdout'] : '';
+    $status['currentCommit'] = $commit['ok'] ? $commit['stdout'] : '';
+    $status['dirtyFiles'] = $dirty['ok'] && $dirty['stdout'] !== '' ? preg_split('/\r?\n/', trim($dirty['stdout'])) : [];
+    $status['dirty'] = count($status['dirtyFiles']) > 0;
+    if ($fetchRemote) {
+        $fetch = deployment_git(['fetch', 'origin', $status['branch']], 180);
+        $status['fetchLog'] = trim(($fetch['stdout'] ? $fetch['stdout'] . "\n" : '') . $fetch['stderr']);
+        if (!$fetch['ok']) {
+            $status['error'] = $fetch['stderr'] ?: 'Git fetch failed.';
+            return $status;
+        }
+        $remoteCommit = deployment_git(['rev-parse', 'origin/' . $status['branch']], 30);
+        $diff = deployment_git(['diff', '--name-status', 'HEAD', 'origin/' . $status['branch']], 60);
+        $status['remoteCommit'] = $remoteCommit['ok'] ? $remoteCommit['stdout'] : '';
+        $status['changedFiles'] = $diff['ok'] ? deployment_parse_changed_files($diff['stdout']) : [];
+    }
+    return $status;
+}
+
+function deployment_write_update(string $id, array $fields): void
+{
+    $map = [
+        'status' => 'status',
+        'afterCommit' => 'after_commit',
+        'changedFiles' => 'changed_files_json',
+        'log' => 'log',
+        'error' => 'error',
+        'updatedAt' => 'updated_at',
+    ];
+    $sets = [];
+    $values = [];
+    foreach ($map as $input => $column) {
+        if (!array_key_exists($input, $fields)) continue;
+        $sets[] = $column . ' = ?';
+        $values[] = $input === 'changedFiles' ? json_encode($fields[$input], JSON_UNESCAPED_SLASHES) : $fields[$input];
+    }
+    if (!$sets) return;
+    $values[] = $id;
+    Database::pdo()->prepare('UPDATE deployment_updates SET ' . implode(', ', $sets) . ' WHERE id = ?')->execute($values);
+}
+
+function deployment_database_backup_path(string $id): string
+{
+    $dir = deployment_repo_root() . '/storage/backups';
+    if (!is_dir($dir)) mkdir($dir, 0775, true);
+    return $dir . '/pre-deploy-' . preg_replace('/[^A-Za-z0-9_.-]/', '', $id) . '.sqlite';
+}
+
+function deployment_run_update(array $session, array $body): array
+{
+    $status = deployment_current_status(false, substr((string) ($body['branch'] ?? ''), 0, 80));
+    if (!$status['enabled']) throw new RuntimeException($status['error'] ?? 'Git deployment is unavailable on this server.');
+    if ($status['dirty']) {
+        throw new RuntimeException('Update stopped because the server working tree has local changes. Commit, stash, or remove them before pulling from GitHub.');
+    }
+    $branch = preg_replace('/[^A-Za-z0-9._\/-]/', '', (string) ($status['branch'] ?: 'main')) ?: 'main';
+    $before = (string) ($status['currentCommit'] ?? '');
+    $id = uuid_value('DEP-');
+    $now = now_iso();
+    Database::pdo()->prepare("INSERT INTO deployment_updates (id, action, status, branch, before_commit, after_commit, changed_files_json, log, error, triggered_by, created_at, updated_at) VALUES (?, 'pull', 'running', ?, ?, '', '[]', '', '', ?, ?, ?)")
+        ->execute([$id, $branch, $before, $session['user']['id'], $now, $now]);
+
+    $log = [];
+    $changedFiles = [];
+    $dbBackup = '';
+    try {
+        $fetch = deployment_git(['fetch', 'origin', $branch], 180);
+        $log[] = '$ git fetch origin ' . $branch;
+        $log[] = trim(($fetch['stdout'] ? $fetch['stdout'] . "\n" : '') . $fetch['stderr']);
+        if (!$fetch['ok']) throw new RuntimeException($fetch['stderr'] ?: 'Git fetch failed.');
+
+        $diff = deployment_git(['diff', '--name-status', 'HEAD', 'origin/' . $branch], 60);
+        $changedFiles = $diff['ok'] ? deployment_parse_changed_files($diff['stdout']) : [];
+        deployment_write_update($id, ['changedFiles' => $changedFiles, 'log' => trim(implode("\n", array_filter($log))), 'updatedAt' => now_iso()]);
+        if (!$changedFiles) {
+            $after = (deployment_git(['rev-parse', 'HEAD'], 15)['stdout'] ?? $before) ?: $before;
+            deployment_write_update($id, ['status' => 'success', 'afterCommit' => $after, 'changedFiles' => [], 'log' => trim(implode("\n", array_filter($log))) . "\nNo remote changes found.", 'updatedAt' => now_iso()]);
+            return ['ok' => true, 'deployment' => deployment_current_status(false, $branch), 'update' => deployment_recent_updates(1)[0] ?? null];
+        }
+
+        if (is_file(database_path())) {
+            $dbBackup = deployment_database_backup_path($id);
+            if (!copy(database_path(), $dbBackup)) throw new RuntimeException('Unable to create SQLite backup before update.');
+            $log[] = 'Database backup created: storage/backups/' . basename($dbBackup);
+        }
+
+        $pull = deployment_git(['pull', '--ff-only', 'origin', $branch], 240);
+        $log[] = '$ git pull --ff-only origin ' . $branch;
+        $log[] = trim(($pull['stdout'] ? $pull['stdout'] . "\n" : '') . $pull['stderr']);
+        if (!$pull['ok']) throw new RuntimeException($pull['stderr'] ?: 'Git pull failed.');
+
+        $migration = deployment_command([deployment_php_binary(), '-r', "require 'app/Database.php'; Database::pdo(); echo \"Migrations complete\\n\";"], 120);
+        $log[] = '$ php -r migrations';
+        $log[] = trim(($migration['stdout'] ? $migration['stdout'] . "\n" : '') . $migration['stderr']);
+        if (!$migration['ok']) throw new RuntimeException($migration['stderr'] ?: 'Database migrations failed.');
+
+        $after = deployment_git(['rev-parse', 'HEAD'], 15);
+        $afterCommit = $after['ok'] ? $after['stdout'] : '';
+        deployment_write_update($id, ['status' => 'success', 'afterCommit' => $afterCommit, 'changedFiles' => $changedFiles, 'log' => trim(implode("\n", array_filter($log))), 'updatedAt' => now_iso()]);
+        audit_log($session['user']['id'], 'admin.deployment_update', 'deployment_update', $id, ['branch' => $branch, 'before' => $before, 'after' => $afterCommit]);
+        return ['ok' => true, 'deployment' => deployment_current_status(false, $branch), 'update' => deployment_recent_updates(1)[0] ?? null];
+    } catch (Throwable $error) {
+        $rollbackLog = '';
+        if ($before !== '') {
+            $rollback = deployment_git(['reset', '--hard', $before], 120);
+            $rollbackLog = trim(($rollback['stdout'] ? $rollback['stdout'] . "\n" : '') . $rollback['stderr']);
+            if ($rollback['ok'] && $dbBackup && is_file($dbBackup)) @copy($dbBackup, database_path());
+        }
+        $log[] = 'Update failed: ' . $error->getMessage();
+        if ($rollbackLog !== '') $log[] = "Rollback:\n" . $rollbackLog;
+        deployment_write_update($id, ['status' => 'rolled_back', 'changedFiles' => $changedFiles, 'log' => trim(implode("\n", array_filter($log))), 'error' => $error->getMessage(), 'updatedAt' => now_iso()]);
+        audit_log($session['user']['id'], 'admin.deployment_update_failed', 'deployment_update', $id, ['branch' => $branch, 'error' => $error->getMessage()]);
+        throw new RuntimeException('Update failed and rollback was attempted: ' . $error->getMessage());
+    }
+}
+
+function imported_story_items(string $sourceType, string $raw): array
+{
+    if ($sourceType === 'csv') {
+        $handle = fopen('php://temp', 'r+');
+        fwrite($handle, $raw);
+        rewind($handle);
+        $headers = fgetcsv($handle);
+        if (!$headers) throw new RuntimeException('CSV import needs a header row.');
+        $headers = array_map(fn($header) => trim((string) $header), $headers);
+        $items = [];
+        while (($row = fgetcsv($handle)) !== false) {
+            $item = [];
+            foreach ($headers as $index => $header) $item[$header] = $row[$index] ?? '';
+            $items[] = $item;
+        }
+        fclose($handle);
+        return $items;
+    }
+    if (in_array($sourceType, ['wordpress', 'medium'], true)) {
+        libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($raw);
+        if (!$xml) throw new RuntimeException('Import content must be valid XML for WordPress or Medium exports.');
+        $items = [];
+        foreach ($xml->xpath('//item') ?: [] as $item) {
+            $namespaces = $item->getNamespaces(true);
+            $content = isset($namespaces['content']) ? (string) $item->children($namespaces['content'])->encoded : '';
+            $dc = isset($namespaces['dc']) ? $item->children($namespaces['dc']) : null;
+            $items[] = [
+                'title' => (string) $item->title,
+                'slug' => strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', (string) ($item->title ?: uuid_value('story'))), '-')),
+                'author' => $dc ? (string) $dc->creator : '',
+                'contentHtml' => $content ?: (string) $item->description,
+                'dek' => trim(strip_tags((string) $item->description)),
+                'status' => 'draft',
+                'publishedAt' => (string) $item->pubDate,
+            ];
+        }
+        return $items;
+    }
+    $items = json_decode($raw, true);
+    if (!is_array($items)) throw new RuntimeException('Import content must be a JSON array of stories.');
+    return $items;
+}
+
 function run_background_job(array $job): array
 {
     $payload = parse_json_field($job['payload_json'] ?? '{}', []);
@@ -1466,7 +2497,11 @@ function run_background_job(array $job): array
             foreach ($stories as $story) $results[] = ensure_story_translations($story);
             return ['processed' => count($stories), 'created' => array_sum(array_column($results, 'created')), 'failed' => array_sum(array_column($results, 'failed'))];
         })(),
+        'publishing.scheduled' => publish_scheduled_stories(),
+        'newsletters.send' => send_due_newsletters(),
+        'checkouts.recover' => queue_abandoned_checkout_recovery(),
         'subscriptions.sync' => sync_subscription_lifecycle(),
+        'payouts.execute' => execute_due_payouts((int) ($payload['limit'] ?? 20)),
         'media.variants' => (function () use ($payload) {
             $stmt = Database::pdo()->prepare('SELECT * FROM media_assets WHERE id = ?');
             $stmt->execute([(string) ($payload['mediaAssetId'] ?? '')]);
@@ -1541,12 +2576,37 @@ function scan_moderation_rules(): array
 {
     $pdo = Database::pdo();
     $rules = $pdo->query('SELECT * FROM moderation_rules WHERE enabled = 1')->fetchAll();
-    if (!$rules) return ['scanned' => 0, 'created' => 0];
+    foreach ($pdo->query('SELECT * FROM moderation_dictionary')->fetchAll() as $term) {
+        $rules[] = [
+            'id' => $term['id'],
+            'kind' => $term['kind'],
+            'pattern' => $term['term'],
+            'action' => $term['action'],
+        ];
+    }
     $comments = $pdo->query("SELECT comments.*, users.id AS reporter FROM comments JOIN users ON users.id = comments.user_id WHERE comments.status = 'published' ORDER BY comments.created_at DESC LIMIT 500")->fetchAll();
     $created = 0;
+    $seenCommentHashes = [];
     foreach ($comments as $comment) {
+        $text = strtolower(trim((string) $comment['text']));
+        $linkCount = preg_match_all('#https?://#i', $comment['text']);
+        $wordCount = max(1, str_word_count(strip_tags((string) $comment['text'])));
+        $hash = hash('sha256', preg_replace('/\s+/', ' ', $text));
+        $builtInHit = '';
+        if ($linkCount >= 3 || ($linkCount >= 1 && $wordCount < 8)) $builtInHit = 'bot_score';
+        if (isset($seenCommentHashes[$hash])) $builtInHit = 'duplicate_check';
+        $seenCommentHashes[$hash] = true;
+        if ($builtInHit !== '') {
+            $exists = $pdo->prepare("SELECT id FROM moderation_cases WHERE target_type = 'comment' AND target_id = ? AND kind = ? AND status NOT IN ('Resolved', 'Dismissed') LIMIT 1");
+            $exists->execute([$comment['id'], $builtInHit]);
+            if ($exists->fetch()) continue;
+            $id = uuid_value('MOD-');
+            $pdo->prepare("INSERT INTO moderation_cases (id, reporter_user_id, target_type, target_id, kind, subject, risk, status, evidence_json, created_at, updated_at) VALUES (?, ?, 'comment', ?, ?, ?, 'Medium', 'Open', ?, ?, ?)")
+                ->execute([$id, $comment['reporter'], $comment['id'], $builtInHit, 'Automated abuse protection matched', json_encode([['ruleId' => 'built-in', 'reason' => $builtInHit, 'links' => $linkCount, 'words' => $wordCount]], JSON_UNESCAPED_SLASHES), now_iso(), now_iso()]);
+            $created++;
+            continue;
+        }
         foreach ($rules as $rule) {
-            $text = strtolower($comment['text']);
             $pattern = strtolower($rule['pattern']);
             $hit = $rule['kind'] === 'blocked_word' ? str_contains($text, $pattern) : ($rule['kind'] === 'link_filter' && preg_match('#https?://#i', $comment['text']));
             if (!$hit) continue;
@@ -1558,7 +2618,26 @@ function scan_moderation_rules(): array
             break;
         }
     }
-    return ['scanned' => count($comments), 'created' => $created];
+    $stories = array_values(array_filter(document_value('stories', []), fn($story) => is_array($story)));
+    $seenStoryHashes = [];
+    foreach ($stories as $story) {
+        $body = strtolower(trim(strip_tags((string) ($story['contentHtml'] ?? '') . ' ' . implode(' ', is_array($story['body'] ?? null) ? $story['body'] : []))));
+        if ($body === '') continue;
+        $fingerprint = hash('sha256', preg_replace('/\s+/', ' ', $body));
+        if (isset($seenStoryHashes[$fingerprint])) {
+            $targetId = (string) ($story['slug'] ?? $story['id'] ?? '');
+            $exists = $pdo->prepare("SELECT id FROM moderation_cases WHERE target_type = 'post' AND target_id = ? AND kind = 'duplicate_check' AND status NOT IN ('Resolved', 'Dismissed') LIMIT 1");
+            $exists->execute([$targetId]);
+            if ($exists->fetch()) continue;
+            $id = uuid_value('MOD-');
+            $pdo->prepare("INSERT INTO moderation_cases (id, reporter_user_id, target_type, target_id, kind, subject, risk, status, evidence_json, created_at, updated_at) VALUES (?, NULL, 'post', ?, 'duplicate_check', ?, 'Medium', 'Open', ?, ?, ?)")
+                ->execute([$id, $targetId, 'Possible duplicate story content', json_encode([['ruleId' => 'built-in', 'duplicateOf' => $seenStoryHashes[$fingerprint]]], JSON_UNESCAPED_SLASHES), now_iso(), now_iso()]);
+            $created++;
+        } else {
+            $seenStoryHashes[$fingerprint] = (string) ($story['slug'] ?? $story['id'] ?? '');
+        }
+    }
+    return ['scanned' => count($comments) + count($stories), 'created' => $created];
 }
 
 function test_provider_connection(string $provider): array
@@ -1661,7 +2740,11 @@ function handle_api(string $path, string $method): void
         }
         $body = read_json();
         if (!empty($body['enqueueDefaults'])) {
+            enqueue_background_job('publishing.scheduled');
+            enqueue_background_job('newsletters.send');
+            enqueue_background_job('checkouts.recover');
             enqueue_background_job('subscriptions.sync');
+            enqueue_background_job('payouts.execute');
             enqueue_background_job('pwa.sync');
             enqueue_background_job('moderation.scan');
         }
@@ -1671,6 +2754,99 @@ function handle_api(string $path, string $method): void
     if ($method === 'GET' && $path === '/api/auth/session') {
         $session = current_session();
         json_response(['user' => $session['user'] ?? null]);
+    }
+
+    if ($method === 'PATCH' && $path === '/api/me/account') {
+        $session = require_auth();
+        $body = read_json();
+        $name = trim((string) ($body['name'] ?? $session['user']['name']));
+        $email = strtolower(trim((string) ($body['email'] ?? $session['user']['email'])));
+        $username = clean_username_value((string) ($body['username'] ?? ($session['user']['username'] ?? '')));
+        $currentPassword = (string) ($body['currentPassword'] ?? '');
+        if (strlen($name) < 2) json_response(['error' => 'INVALID_NAME', 'message' => 'Enter your full display name.'], 400);
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_EMAIL', 'message' => 'Enter a valid email address.'], 400);
+        if ($error = username_error($username)) json_response(['error' => 'INVALID_USERNAME', 'message' => $error], 400);
+        if ($username !== '') {
+            $usernameExists = $pdo->prepare("SELECT id FROM users WHERE username = ? AND id != ? AND status != 'deleted'");
+            $usernameExists->execute([$username, $session['user']['id']]);
+            if ($usernameExists->fetch()) json_response(['error' => 'USERNAME_EXISTS', 'message' => 'That username is already taken.'], 409);
+        }
+        $emailChanged = strtolower((string) $session['user']['email']) !== $email;
+        if ($emailChanged) {
+            if ($currentPassword === '' || !verify_password_value($currentPassword, (string) $session['raw']['password_hash'])) {
+                json_response(['error' => 'PASSWORD_REQUIRED', 'message' => 'Enter your current password to change your email address.'], 403);
+            }
+            $exists = $pdo->prepare("SELECT id FROM users WHERE email = ? AND id != ? AND status != 'deleted'");
+            $exists->execute([$email, $session['user']['id']]);
+            if ($exists->fetch()) json_response(['error' => 'EMAIL_EXISTS', 'message' => 'Another account already uses that email address.'], 409);
+        }
+        $now = now_iso();
+        $pdo->prepare('UPDATE users SET name = ?, email = ?, username = ?, email_verified = CASE WHEN ? THEN 0 ELSE email_verified END, updated_at = ? WHERE id = ?')
+            ->execute([$name, $email, $username !== '' ? $username : null, $emailChanged ? 1 : 0, $now, $session['user']['id']]);
+        if ($emailChanged) {
+            $pdo->prepare("DELETE FROM security_tokens WHERE user_id = ? AND type = 'email_verification' AND consumed_at IS NULL")->execute([$session['user']['id']]);
+            audit_log($session['user']['id'], 'account.email_changed', 'user', $session['user']['id'], ['oldEmail' => $session['user']['email'], 'newEmail' => $email]);
+        } else {
+            audit_log($session['user']['id'], 'account.profile_updated', 'user', $session['user']['id']);
+        }
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+        $stmt->execute([$session['user']['id']]);
+        json_response(['user' => public_user($stmt->fetch()), 'emailVerificationRequired' => $emailChanged]);
+    }
+
+    if ($method === 'POST' && $path === '/api/me/password') {
+        $session = require_auth();
+        $body = read_json();
+        $currentPassword = (string) ($body['currentPassword'] ?? '');
+        $newPassword = (string) ($body['newPassword'] ?? '');
+        if ($currentPassword === '' || !verify_password_value($currentPassword, (string) $session['raw']['password_hash'])) {
+            json_response(['error' => 'INVALID_CURRENT_PASSWORD', 'message' => 'Your current password is incorrect.'], 403);
+        }
+        $passwordError = password_policy_error($newPassword);
+        if ($passwordError) json_response(['error' => 'WEAK_PASSWORD', 'message' => $passwordError], 400);
+        $now = now_iso();
+        $pdo->prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')->execute([hash_password_value($newPassword), $now, $session['user']['id']]);
+        $currentToken = $_COOKIE['inkriver_session'] ?? '';
+        if ($currentToken) $pdo->prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?')->execute([$session['user']['id'], session_token_hash($currentToken)]);
+        audit_log($session['user']['id'], 'account.password_changed', 'user', $session['user']['id']);
+        json_response(['ok' => true, 'otherSessionsRevoked' => true]);
+    }
+
+    if ($method === 'POST' && $path === '/api/me/avatar') {
+        $session = require_auth();
+        if (empty($_FILES['file']) || !is_uploaded_file($_FILES['file']['tmp_name'])) {
+            json_response(['error' => 'NO_FILE', 'message' => 'Choose a profile photo to upload.'], 400);
+        }
+        $file = $_FILES['file'];
+        if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) json_response(['error' => 'UPLOAD_FAILED', 'message' => 'The upload failed.'], 400);
+        if ((int) $file['size'] > 4 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Profile photos must be 4 MB or smaller.'], 413);
+        $info = getimagesize($file['tmp_name']);
+        if (!$info) json_response(['error' => 'INVALID_IMAGE', 'message' => 'Only valid image files can be uploaded.'], 400);
+        $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+        $mime = $info['mime'] ?? '';
+        if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_IMAGE', 'message' => 'Use JPG, PNG, WebP, or GIF.'], 400);
+        $relativeDir = 'uploads/avatars/' . gmdate('Y/m');
+        $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+        if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
+        $storedName = uuid_value('avatar-') . '.' . $allowed[$mime];
+        $target = $absoluteDir . '/' . $storedName;
+        if (!move_uploaded_file($file['tmp_name'], $target)) json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not save the profile photo.'], 500);
+        $url = '/' . $relativeDir . '/' . $storedName;
+        $now = now_iso();
+        $pdo->prepare('UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ?')->execute([$url, $now, $session['user']['id']]);
+        audit_log($session['user']['id'], 'account.avatar_updated', 'user', $session['user']['id']);
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+        $stmt->execute([$session['user']['id']]);
+        json_response(['user' => public_user($stmt->fetch()), 'avatarUrl' => $url], 201);
+    }
+
+    if ($method === 'DELETE' && $path === '/api/me/avatar') {
+        $session = require_auth();
+        $pdo->prepare("UPDATE users SET avatar_url = '', updated_at = ? WHERE id = ?")->execute([now_iso(), $session['user']['id']]);
+        audit_log($session['user']['id'], 'account.avatar_removed', 'user', $session['user']['id']);
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+        $stmt->execute([$session['user']['id']]);
+        json_response(['user' => public_user($stmt->fetch())]);
     }
 
     if ($method === 'POST' && $path === '/api/auth/register') {
@@ -1744,6 +2920,87 @@ function handle_api(string $path, string $method): void
                 'time' => $now,
             ]);
         }
+        json_response(['user' => public_user($row)]);
+    }
+
+    if ($method === 'POST' && $path === '/api/auth/passkeys/challenge') {
+        $body = read_json();
+        $email = strtolower(trim((string) ($body['email'] ?? '')));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            json_response(['error' => 'EMAIL_REQUIRED', 'message' => 'Enter your email before using a passkey.'], 400);
+        }
+        $stmt = $pdo->prepare("SELECT id, email, status FROM users WHERE email = ? AND status != 'deleted'");
+        $stmt->execute([$email]);
+        $user = $stmt->fetch();
+        if (!$user || $user['status'] !== 'active') json_response(['error' => 'PASSKEY_UNAVAILABLE', 'message' => 'No active passkeys are available for this account.'], 404);
+        $credentials = $pdo->prepare('SELECT credential_id, transports FROM passkey_credentials WHERE user_id = ? ORDER BY created_at DESC');
+        $credentials->execute([$user['id']]);
+        $rows = $credentials->fetchAll();
+        if (!$rows) json_response(['error' => 'PASSKEY_UNAVAILABLE', 'message' => 'No active passkeys are available for this account.'], 404);
+        $challenge = base64url_encode_value(random_bytes(32));
+        $now = now_iso();
+        $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+            ->execute([$user['id'], 'passkey-login-challenge', json_encode(['challenge' => $challenge, 'createdAt' => $now], JSON_UNESCAPED_SLASHES), $now]);
+        json_response([
+            'challenge' => $challenge,
+            'rpId' => webauthn_rp_id(),
+            'allowCredentials' => array_map(fn($row) => [
+                'type' => 'public-key',
+                'id' => $row['credential_id'],
+                'transports' => parse_json_field($row['transports'] ?? '[]', []),
+            ], $rows),
+            'timeout' => 60000,
+            'userVerification' => 'preferred',
+        ]);
+    }
+
+    if ($method === 'POST' && $path === '/api/auth/passkeys/login') {
+        $body = read_json();
+        $email = strtolower(trim((string) ($body['email'] ?? '')));
+        $credentialId = trim((string) ($body['credentialId'] ?? ''));
+        $clientDataJson = base64url_decode_value((string) ($body['clientDataJSON'] ?? ''));
+        $authenticatorData = base64url_decode_value((string) ($body['authenticatorData'] ?? ''));
+        $signature = base64url_decode_value((string) ($body['signature'] ?? ''));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || $credentialId === '' || $clientDataJson === '' || $authenticatorData === '' || $signature === '') {
+            json_response(['error' => 'INVALID_PASSKEY_ASSERTION', 'message' => 'A complete passkey assertion is required.'], 400);
+        }
+        $stmt = $pdo->prepare("SELECT users.*, passkey_credentials.id AS passkey_id, passkey_credentials.public_key, passkey_credentials.sign_count FROM users JOIN passkey_credentials ON passkey_credentials.user_id = users.id WHERE users.email = ? AND passkey_credentials.credential_id = ? AND users.status != 'deleted'");
+        $stmt->execute([$email, $credentialId]);
+        $row = $stmt->fetch();
+        if (!$row || $row['status'] !== 'active') json_response(['error' => 'PASSKEY_NOT_FOUND', 'message' => 'Passkey was not found for this account.'], 404);
+        $challengeStmt = $pdo->prepare("SELECT value_json FROM user_documents WHERE user_id = ? AND key = 'passkey-login-challenge'");
+        $challengeStmt->execute([$row['id']]);
+        $challengeRow = $challengeStmt->fetch();
+        $challenge = $challengeRow ? parse_json_field($challengeRow['value_json'], []) : [];
+        $clientData = json_decode($clientDataJson, true);
+        if (!is_array($clientData)
+            || ($clientData['type'] ?? '') !== 'webauthn.get'
+            || !hash_equals((string) ($challenge['challenge'] ?? ''), (string) ($clientData['challenge'] ?? ''))
+            || !hash_equals(webauthn_expected_origin(), (string) ($clientData['origin'] ?? ''))
+            || strtotime((string) ($challenge['createdAt'] ?? '1970-01-01')) < time() - 300) {
+            json_response(['error' => 'INVALID_PASSKEY_CHALLENGE', 'message' => 'The passkey challenge expired or did not match.'], 400);
+        }
+        if (strlen($authenticatorData) < 37 || !hash_equals(hash('sha256', webauthn_rp_id(), true), substr($authenticatorData, 0, 32))) {
+            json_response(['error' => 'INVALID_PASSKEY_ASSERTION', 'message' => 'Passkey authenticator data is invalid for this site.'], 400);
+        }
+        $flags = ord($authenticatorData[32]);
+        if (($flags & 0x01) === 0) json_response(['error' => 'USER_PRESENCE_REQUIRED', 'message' => 'Passkey user presence was not verified.'], 400);
+        $counter = unpack('N', substr($authenticatorData, 33, 4))[1];
+        $publicKey = parse_json_field((string) $row['public_key'], []);
+        $verified = openssl_verify($authenticatorData . hash('sha256', $clientDataJson, true), $signature, webauthn_public_key_pem($publicKey), OPENSSL_ALGO_SHA256);
+        if ($verified !== 1) json_response(['error' => 'INVALID_PASSKEY_SIGNATURE', 'message' => 'Passkey signature verification failed.'], 401);
+        if ($counter > 0 && (int) $row['sign_count'] > 0 && $counter <= (int) $row['sign_count']) {
+            audit_log($row['id'], 'security.passkey_counter_replay', 'passkey', $row['passkey_id']);
+            json_response(['error' => 'PASSKEY_REPLAY_DETECTED', 'message' => 'This passkey assertion was rejected for security reasons.'], 401);
+        }
+        $now = now_iso();
+        $pdo->prepare('UPDATE passkey_credentials SET sign_count = ?, last_used_at = ? WHERE id = ?')->execute([$counter, $now, $row['passkey_id']]);
+        $pdo->prepare("DELETE FROM user_documents WHERE user_id = ? AND key = 'passkey-login-challenge'")->execute([$row['id']]);
+        $pdo->prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')->execute([$now, $now, $row['id']]);
+        $row['last_login_at'] = $now;
+        $token = create_session_for_user($row['id']);
+        set_session_cookie($token);
+        audit_log($row['id'], 'auth.passkey_login', 'user', $row['id']);
         json_response(['user' => public_user($row)]);
     }
 
@@ -1822,6 +3079,7 @@ function handle_api(string $path, string $method): void
             'translations' => stored_translations(),
             'translationLanguages' => configured_translation_languages(),
             'ads' => active_ads(),
+            'featureFlags' => public_feature_flags($session),
             'providers' => provider_status(),
             'paymentPolicy' => ['paypalIndiaRestriction' => paypal_restricted_for_india($session)],
             'pushPublicKey' => provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key', '') ?: '',
@@ -1842,6 +3100,213 @@ function handle_api(string $path, string $method): void
         }
         $suggestions = array_map(fn($story) => ['type' => 'Story', 'label' => $story['title'], 'meta' => $story['author'] . ' · ' . $story['topic'], 'route' => '/stories/' . $story['slug']], $results);
         json_response(['suggestions' => array_slice(array_merge($suggestions, array_values($authors)), 0, 8)]);
+    }
+
+    if ($method === 'GET' && preg_match('#^/api/newsletters/([^/]+)/(open|click)$#', $path, $m)) {
+        $newsletterId = urldecode($m[1]);
+        $eventType = $m[2];
+        $userId = (string) ($_GET['u'] ?? '');
+        $metadata = $eventType === 'click' ? ['url' => (string) ($_GET['url'] ?? '')] : [];
+        try {
+            $pdo->prepare('INSERT INTO newsletter_events (id, newsletter_id, user_id, event_type, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+                ->execute([uuid_value('NLE-'), $newsletterId, $userId ?: null, $eventType, json_encode($metadata, JSON_UNESCAPED_SLASHES), now_iso()]);
+        } catch (Throwable) {
+        }
+        if ($eventType === 'click') {
+            $url = (string) ($_GET['url'] ?? '/');
+            if (!preg_match('#^(https?://|/)#i', $url)) $url = '/';
+            redirect_response($url);
+        }
+        header('Content-Type: image/gif');
+        echo base64_decode('R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==');
+        exit;
+    }
+
+    if ($method === 'GET' && $path === '/api/newsletters/unsubscribe') {
+        $newsletterId = (string) ($_GET['n'] ?? '');
+        $userId = (string) ($_GET['u'] ?? '');
+        $token = (string) ($_GET['t'] ?? '');
+        $stmt = $pdo->prepare('SELECT id, email FROM users WHERE id = ?');
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch();
+        if (!$user || !hash_equals(newsletter_token($newsletterId, $userId, (string) $user['email']), $token)) {
+            http_response_code(403);
+            echo 'Invalid unsubscribe link.';
+            exit;
+        }
+        $pdo->prepare("INSERT INTO newsletter_suppressions (email, user_id, reason, source_newsletter_id, created_at) VALUES (?, ?, 'unsubscribe', ?, ?) ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, source_newsletter_id = excluded.source_newsletter_id, created_at = excluded.created_at")
+            ->execute([strtolower((string) $user['email']), $userId, $newsletterId ?: null, now_iso()]);
+        header('Content-Type: text/html; charset=UTF-8');
+        echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribed</title><body style="font-family:system-ui;margin:40px;line-height:1.5"><h1>You are unsubscribed</h1><p>You will no longer receive InkRiver newsletters at this email address.</p></body>';
+        exit;
+    }
+
+    if ($method === 'GET' && $path === '/api/publications') {
+        $publications = array_map(fn($row) => [
+            'id' => $row['id'], 'slug' => $row['slug'], 'name' => $row['name'], 'description' => $row['description'], 'logoUrl' => $row['logo_url'], 'status' => $row['status'],
+        ], current_publication_rows());
+        json_response(['publications' => $publications]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/publications') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $name = trim((string) ($body['name'] ?? ''));
+        if (strlen($name) < 2) json_response(['error' => 'INVALID_PUBLICATION', 'message' => 'Publication name is required.'], 400);
+        $slug = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower((string) ($body['slug'] ?? $name))), '-');
+        $now = now_iso();
+        $id = uuid_value('PUB-');
+        $pdo->prepare("INSERT INTO publications (id, slug, name, description, logo_url, status, owner_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET name = excluded.name, description = excluded.description, logo_url = excluded.logo_url, status = 'active', updated_at = excluded.updated_at")
+            ->execute([$id, $slug, $name, substr((string) ($body['description'] ?? ''), 0, 1000), substr((string) ($body['logoUrl'] ?? ''), 0, 1000), $session['user']['id'], $now, $now]);
+        audit_log($session['user']['id'], 'admin.publication_upsert', 'publication', $slug);
+        json_response(['publications' => current_publication_rows()], 201);
+    }
+
+    if (preg_match('#^/api/admin/publications/([^/]+)$#', $path, $m) && in_array($method, ['PATCH', 'DELETE'], true)) {
+        $session = require_auth(['admin']);
+        $idOrSlug = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM publications WHERE id = ? OR slug = ?');
+        $stmt->execute([$idOrSlug, $idOrSlug]);
+        $publication = $stmt->fetch();
+        if (!$publication) json_response(['error' => 'PUBLICATION_NOT_FOUND', 'message' => 'Publication was not found.'], 404);
+        if ($method === 'DELETE') {
+            $pdo->prepare("UPDATE publications SET status = 'archived', updated_at = ? WHERE id = ?")->execute([now_iso(), $publication['id']]);
+            audit_log($session['user']['id'], 'admin.publication_archive', 'publication', $publication['id']);
+            json_response(['publications' => current_publication_rows()]);
+        }
+        $body = read_json();
+        $name = trim((string) ($body['name'] ?? $publication['name']));
+        if (strlen($name) < 2) json_response(['error' => 'INVALID_PUBLICATION', 'message' => 'Publication name is required.'], 400);
+        $slug = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower((string) ($body['slug'] ?? $publication['slug']))), '-');
+        if ($slug === '') json_response(['error' => 'INVALID_SLUG', 'message' => 'Publication slug is required.'], 400);
+        $status = in_array(($body['status'] ?? $publication['status']), ['active', 'paused', 'archived'], true) ? (string) ($body['status'] ?? $publication['status']) : 'active';
+        $pdo->prepare('UPDATE publications SET slug = ?, name = ?, description = ?, logo_url = ?, status = ?, updated_at = ? WHERE id = ?')
+            ->execute([$slug, $name, substr((string) ($body['description'] ?? $publication['description']), 0, 1000), substr((string) ($body['logoUrl'] ?? $publication['logo_url']), 0, 1000), $status, now_iso(), $publication['id']]);
+        audit_log($session['user']['id'], 'admin.publication_update', 'publication', $publication['id']);
+        json_response(['publications' => current_publication_rows()]);
+    }
+
+    if (preg_match('#^/api/admin/publications/([^/]+)/members(?:/([^/]+))?$#', $path, $m)) {
+        $session = require_auth(['admin']);
+        $idOrSlug = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM publications WHERE id = ? OR slug = ?');
+        $stmt->execute([$idOrSlug, $idOrSlug]);
+        $publication = $stmt->fetch();
+        if (!$publication) json_response(['error' => 'PUBLICATION_NOT_FOUND', 'message' => 'Publication was not found.'], 404);
+
+        if ($method === 'GET') {
+            $members = $pdo->prepare('SELECT publication_members.*, users.name, users.email, users.role AS platform_role FROM publication_members JOIN users ON users.id = publication_members.user_id WHERE publication_members.publication_id = ? ORDER BY publication_members.role, users.name');
+            $members->execute([$publication['id']]);
+            json_response(['members' => array_map(fn($row) => [
+                'userId' => $row['user_id'],
+                'name' => $row['name'],
+                'email' => $row['email'],
+                'role' => $row['role'],
+                'platformRole' => $row['platform_role'],
+                'createdAt' => $row['created_at'],
+            ], $members->fetchAll())]);
+        }
+
+        if ($method === 'POST') {
+            $body = read_json();
+            $identifier = trim((string) ($body['userId'] ?? $body['email'] ?? ''));
+            $role = in_array(($body['role'] ?? 'writer'), ['owner', 'editor', 'writer'], true) ? (string) ($body['role'] ?? 'writer') : 'writer';
+            if ($identifier === '') json_response(['error' => 'USER_REQUIRED', 'message' => 'User ID or email is required.'], 400);
+            $userStmt = $pdo->prepare('SELECT id, status FROM users WHERE id = ? OR email = ?');
+            $userStmt->execute([$identifier, strtolower($identifier)]);
+            $user = $userStmt->fetch();
+            if (!$user || $user['status'] !== 'active') json_response(['error' => 'USER_NOT_FOUND', 'message' => 'Active user was not found.'], 404);
+            $pdo->prepare('INSERT INTO publication_members (publication_id, user_id, role, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(publication_id, user_id) DO UPDATE SET role = excluded.role')
+                ->execute([$publication['id'], $user['id'], $role, now_iso()]);
+            audit_log($session['user']['id'], 'admin.publication_member_upsert', 'publication', $publication['id']);
+            json_response(['ok' => true]);
+        }
+
+        if ($method === 'DELETE' && !empty($m[2])) {
+            $userId = urldecode($m[2]);
+            $pdo->prepare('DELETE FROM publication_members WHERE publication_id = ? AND user_id = ?')->execute([$publication['id'], $userId]);
+            audit_log($session['user']['id'], 'admin.publication_member_remove', 'publication', $publication['id']);
+            json_response(['removed' => true]);
+        }
+    }
+
+    if ($method === 'POST' && preg_match('#^/api/admin/publications/([^/]+)/invites$#', $path, $m)) {
+        $session = require_auth(['admin']);
+        $idOrSlug = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM publications WHERE id = ? OR slug = ?');
+        $stmt->execute([$idOrSlug, $idOrSlug]);
+        $publication = $stmt->fetch();
+        if (!$publication) json_response(['error' => 'PUBLICATION_NOT_FOUND', 'message' => 'Publication was not found.'], 404);
+        $body = read_json();
+        $email = strtolower(trim((string) ($body['email'] ?? '')));
+        $role = in_array(($body['role'] ?? 'writer'), ['owner', 'editor', 'writer'], true) ? (string) ($body['role'] ?? 'writer') : 'writer';
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_EMAIL', 'message' => 'Enter a valid invite email.'], 400);
+        $token = bin2hex(random_bytes(24));
+        $now = now_iso();
+        $expiresAt = gmdate('c', time() + 60 * 60 * 24 * 14);
+        $id = uuid_value('PIN-');
+        $pdo->prepare("UPDATE publication_invites SET status = 'revoked', updated_at = ? WHERE publication_id = ? AND email = ? AND status = 'pending'")
+            ->execute([$now, $publication['id'], $email]);
+        $pdo->prepare('INSERT INTO publication_invites (id, publication_id, email, role, token_hash, status, invited_by, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, $publication['id'], $email, $role, hash('sha256', $token), 'pending', $session['user']['id'], $expiresAt, $now, $now]);
+        $inviteUrl = app_url('/publication-invites/' . $token);
+        send_email_message($email, 'Publication invite: ' . $publication['name'], [
+            'type' => 'publication_invite',
+            'publication' => $publication['name'],
+            'role' => $role,
+            'inviteUrl' => $inviteUrl,
+            'html' => '<p>You have been invited to join ' . htmlspecialchars($publication['name'], ENT_QUOTES, 'UTF-8') . ' as ' . htmlspecialchars($role, ENT_QUOTES, 'UTF-8') . '.</p><p><a href="' . htmlspecialchars($inviteUrl, ENT_QUOTES, 'UTF-8') . '">Accept invite</a></p>',
+        ]);
+        audit_log($session['user']['id'], 'admin.publication_invite_create', 'publication', $publication['id']);
+        json_response(['inviteId' => $id, 'inviteUrl' => $inviteUrl], 201);
+    }
+
+    if ($method === 'POST' && $path === '/api/publication-invites/accept') {
+        $session = require_auth();
+        $body = read_json();
+        $token = (string) ($body['token'] ?? '');
+        if ($token === '') json_response(['error' => 'TOKEN_REQUIRED', 'message' => 'Invite token is required.'], 400);
+        $stmt = $pdo->prepare("SELECT publication_invites.*, publications.name AS publication_name FROM publication_invites JOIN publications ON publications.id = publication_invites.publication_id WHERE token_hash = ? AND publication_invites.status = 'pending' LIMIT 1");
+        $stmt->execute([hash('sha256', $token)]);
+        $invite = $stmt->fetch();
+        if (!$invite || strtotime($invite['expires_at']) < time()) json_response(['error' => 'INVITE_EXPIRED', 'message' => 'This publication invite is no longer valid.'], 410);
+        if (strtolower((string) $session['user']['email']) !== strtolower((string) $invite['email']) && ($session['user']['role'] ?? '') !== 'admin') {
+            json_response(['error' => 'INVITE_EMAIL_MISMATCH', 'message' => 'Sign in with the invited email address to accept this invite.'], 403);
+        }
+        $now = now_iso();
+        $pdo->prepare('INSERT INTO publication_members (publication_id, user_id, role, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(publication_id, user_id) DO UPDATE SET role = excluded.role')
+            ->execute([$invite['publication_id'], $session['user']['id'], $invite['role'], $now]);
+        $pdo->prepare("UPDATE publication_invites SET status = 'accepted', updated_at = ? WHERE id = ?")->execute([$now, $invite['id']]);
+        audit_log($session['user']['id'], 'publication_invite_accept', 'publication', $invite['publication_id']);
+        json_response(['accepted' => true, 'publication' => $invite['publication_name']]);
+    }
+
+    if (preg_match('#^/api/stories/([^/]+)/collaboration-notes(?:/([^/]+))?$#', $path, $m)) {
+        $session = require_auth(['admin', 'moderator', 'writer']);
+        $slug = substr(urldecode($m[1]), 0, 200);
+        if ($method === 'GET') {
+            $stmt = $pdo->prepare('SELECT draft_collaboration_notes.*, users.name AS user_name FROM draft_collaboration_notes LEFT JOIN users ON users.id = draft_collaboration_notes.user_id WHERE story_slug = ? ORDER BY created_at DESC');
+            $stmt->execute([$slug]);
+            json_response(['notes' => $stmt->fetchAll()]);
+        }
+        if ($method === 'POST') {
+            $body = read_json();
+            $bodyText = trim((string) ($body['body'] ?? ''));
+            if ($bodyText === '') json_response(['error' => 'NOTE_REQUIRED', 'message' => 'Note body is required.'], 400);
+            $id = uuid_value('DCN-');
+            $now = now_iso();
+            $type = in_array(($body['noteType'] ?? 'comment'), ['comment', 'suggestion', 'approval', 'blocker'], true) ? (string) ($body['noteType'] ?? 'comment') : 'comment';
+            $pdo->prepare('INSERT INTO draft_collaboration_notes (id, story_slug, user_id, note_type, body, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                ->execute([$id, $slug, $session['user']['id'], $type, substr($bodyText, 0, 4000), 'open', $now, $now]);
+            json_response(['noteId' => $id], 201);
+        }
+        if ($method === 'PATCH' && !empty($m[2])) {
+            $body = read_json();
+            $status = in_array(($body['status'] ?? 'open'), ['open', 'resolved', 'dismissed'], true) ? (string) ($body['status'] ?? 'open') : 'open';
+            $pdo->prepare('UPDATE draft_collaboration_notes SET status = ?, updated_at = ? WHERE id = ? AND story_slug = ?')
+                ->execute([$status, now_iso(), urldecode($m[2]), $slug]);
+            json_response(['status' => $status]);
+        }
     }
 
     if (preg_match('#^/api/admin/documents/([^/]+)$#', $path, $m)) {
@@ -1865,6 +3330,9 @@ function handle_api(string $path, string $method): void
                     ->execute([json_encode($value, JSON_UNESCAPED_SLASHES), $session['user']['id'], $updatedAt]);
             }
             if ($key === 'stories') rebuild_story_search_index(is_array($value) ? $value : null);
+            if ($key === 'stories' && is_array($value)) {
+                foreach ($value as $story) if (is_array($story)) record_story_revision($story, $session['user']['id'], 'Admin stories document update');
+            }
             audit_log($session['user']['id'], 'admin.document_update', 'platform_document', $key);
             json_response(['value' => $value, 'updatedAt' => $updatedAt]);
         }
@@ -1901,7 +3369,7 @@ function handle_api(string $path, string $method): void
         if ($method === 'POST') {
             $body = read_json();
             $type = (string) ($body['type'] ?? '');
-            if (!in_array($type, ['recommendations.rebuild', 'recommendations.train_user', 'translations.backfill', 'subscriptions.sync', 'moderation.scan', 'media.variants', 'pwa.sync'], true)) {
+            if (!in_array($type, ['recommendations.rebuild', 'recommendations.train_user', 'translations.backfill', 'publishing.scheduled', 'newsletters.send', 'checkouts.recover', 'subscriptions.sync', 'payouts.execute', 'moderation.scan', 'media.variants', 'pwa.sync'], true)) {
                 json_response(['error' => 'INVALID_JOB_TYPE', 'message' => 'Unsupported background job type.'], 400);
             }
             json_response(['jobId' => enqueue_background_job($type, is_array($body['payload'] ?? null) ? $body['payload'] : [])], 201);
@@ -1912,6 +3380,318 @@ function handle_api(string $path, string $method): void
         require_auth(['admin']);
         $body = read_json();
         json_response(run_due_background_jobs((int) ($body['limit'] ?? 10)));
+    }
+
+    if ($method === 'GET' && $path === '/api/admin/deployment/status') {
+        require_auth(['admin']);
+        $branch = substr((string) ($_GET['branch'] ?? ''), 0, 80);
+        json_response(['deployment' => deployment_current_status(false, $branch)]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/deployment/check') {
+        require_auth(['admin']);
+        $body = read_json();
+        $branch = substr((string) ($body['branch'] ?? ''), 0, 80);
+        json_response(['deployment' => deployment_current_status(true, $branch)]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/deployment/update') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        json_response(deployment_run_update($session, $body));
+    }
+
+    if ($method === 'GET' && $path === '/api/admin/production-suite') {
+        require_auth(['admin']);
+        $tax = document_value('tax-settings', ['gstin' => '', 'taxRate' => 18, 'invoicePrefix' => 'INV']);
+        $flags = $pdo->query('SELECT * FROM feature_flags ORDER BY key')->fetchAll();
+        $templates = $pdo->query('SELECT key, subject, enabled, updated_at FROM email_templates ORDER BY key')->fetchAll();
+        $newsletters = $pdo->query("SELECT newsletters.*, publications.name AS publication_name,
+            COALESCE(SUM(CASE WHEN newsletter_events.event_type = 'sent' THEN 1 ELSE 0 END), 0) AS sent_count,
+            COALESCE(SUM(CASE WHEN newsletter_events.event_type = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count,
+            COALESCE(SUM(CASE WHEN newsletter_events.event_type = 'open' THEN 1 ELSE 0 END), 0) AS open_count,
+            COALESCE(SUM(CASE WHEN newsletter_events.event_type = 'click' THEN 1 ELSE 0 END), 0) AS click_count
+            FROM newsletters
+            LEFT JOIN publications ON publications.id = newsletters.publication_id
+            LEFT JOIN newsletter_events ON newsletter_events.newsletter_id = newsletters.id
+            GROUP BY newsletters.id
+            ORDER BY newsletters.created_at DESC LIMIT 100")->fetchAll();
+        $assignments = $pdo->query('SELECT editorial_assignments.*, users.name AS assignee_name FROM editorial_assignments LEFT JOIN users ON users.id = editorial_assignments.assignee_user_id ORDER BY editorial_assignments.created_at DESC LIMIT 100')->fetchAll();
+        $imports = $pdo->query('SELECT * FROM content_imports ORDER BY created_at DESC LIMIT 50')->fetchAll();
+        $newsletterLinks = [];
+        foreach ($pdo->query("SELECT newsletter_id, json_extract(metadata_json, '$.url') AS url, COUNT(*) AS clicks FROM newsletter_events WHERE event_type = 'click' GROUP BY newsletter_id, url ORDER BY clicks DESC LIMIT 50")->fetchAll() as $row) {
+            if ($row['url']) $newsletterLinks[$row['newsletter_id']][] = ['url' => $row['url'], 'clicks' => (int) $row['clicks']];
+        }
+        $newsletterSuppressions = (int) $pdo->query('SELECT COUNT(*) AS count FROM newsletter_suppressions')->fetch()['count'];
+        $checkoutRows = $pdo->query("SELECT payments.id AS payment_id, payments.user_id, payments.provider, payments.purpose, payments.amount, payments.currency, payments.status, payments.created_at, COALESCE(checkout_recovery_events.event_type, 'pending') AS event_type, users.name, users.email FROM payments LEFT JOIN users ON users.id = payments.user_id LEFT JOIN checkout_recovery_events ON checkout_recovery_events.payment_id = payments.id WHERE payments.status IN ('created', 'pending') ORDER BY payments.created_at DESC LIMIT 100")->fetchAll();
+        $jobs = $pdo->query('SELECT * FROM background_jobs ORDER BY created_at DESC LIMIT 30')->fetchAll();
+        $providers = provider_status();
+        $installer = [
+            'phpVersion' => PHP_VERSION,
+            'sqlite' => extension_loaded('pdo_sqlite'),
+            'uploadsWritable' => is_writable(dirname(__DIR__) . '/uploads') || is_writable(dirname(__DIR__)),
+            'storageWritable' => is_writable(dirname(__DIR__) . '/storage') || is_writable(dirname(__DIR__)),
+            'cronConfigured' => (bool) (env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret')),
+            'adminUsers' => (int) $pdo->query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")->fetch()['count'],
+        ];
+        json_response([
+            'emailTemplates' => $templates,
+            'newsletters' => $newsletters,
+            'newsletterLinks' => $newsletterLinks,
+            'newsletterSuppressions' => $newsletterSuppressions,
+            'featureFlags' => $flags,
+            'taxSettings' => $tax,
+            'seoAudit' => seo_audit_rows(),
+            'editorialAssignments' => $assignments,
+            'imports' => $imports,
+            'abandonedCheckouts' => $checkoutRows,
+            'jobs' => $jobs,
+            'deployment' => deployment_current_status(false),
+            'installer' => $installer + ['readiness' => production_readiness($installer, $providers)],
+        ]);
+    }
+
+    if ($method === 'PUT' && $path === '/api/admin/feature-flags') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $key = preg_replace('/[^a-z0-9_.-]/', '', strtolower((string) ($body['key'] ?? '')));
+        if ($key === '') json_response(['error' => 'INVALID_FLAG', 'message' => 'Feature flag key is required.'], 400);
+        $enabled = empty($body['enabled']) ? 0 : 1;
+        $rollout = max(0, min(100, (int) ($body['rolloutPercent'] ?? $body['rollout_percent'] ?? 100)));
+        $roles = is_array($body['roles'] ?? null) ? $body['roles'] : array_values(array_filter(array_map('trim', explode(',', (string) ($body['rolesText'] ?? '')))));
+        $roles = array_values(array_intersect($roles, ['guest', 'reader', 'subscriber', 'writer', 'moderator', 'admin']));
+        $startsAt = ($body['startsAt'] ?? '') ?: null;
+        $endsAt = ($body['endsAt'] ?? '') ?: null;
+        $description = substr((string) ($body['description'] ?? ''), 0, 500);
+        $now = now_iso();
+        $environment = preg_replace('/[^a-z0-9_.-]/', '', strtolower((string) ($body['environment'] ?? 'all'))) ?: 'all';
+        if (!in_array($environment, ['all', 'production', 'staging', 'development', 'local'], true)) $environment = 'all';
+        $pdo->prepare('INSERT INTO feature_flags (key, enabled, rollout_percent, roles_json, starts_at, ends_at, environment, description, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET enabled = excluded.enabled, rollout_percent = excluded.rollout_percent, roles_json = excluded.roles_json, starts_at = excluded.starts_at, ends_at = excluded.ends_at, environment = excluded.environment, description = excluded.description, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+            ->execute([$key, $enabled, $rollout, json_encode($roles, JSON_UNESCAPED_SLASHES), $startsAt, $endsAt, $environment, $description, $session['user']['id'], $now]);
+        $pdo->prepare('INSERT INTO feature_flag_history (id, key, enabled, rollout_percent, roles_json, starts_at, ends_at, environment, description, updated_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([uuid_value('FFH-'), $key, $enabled, $rollout, json_encode($roles, JSON_UNESCAPED_SLASHES), $startsAt, $endsAt, $environment, $description, $session['user']['id'], $now]);
+        json_response(['ok' => true]);
+    }
+
+    if ($method === 'PUT' && $path === '/api/admin/tax-settings') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $value = ['gstin' => substr((string) ($body['gstin'] ?? ''), 0, 30), 'taxRate' => max(0, min(100, (float) ($body['taxRate'] ?? 18))), 'invoicePrefix' => substr((string) ($body['invoicePrefix'] ?? 'INV'), 0, 12)];
+        $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+            ->execute(['tax-settings', json_encode($value, JSON_UNESCAPED_SLASHES), $session['user']['id'], now_iso()]);
+        json_response(['taxSettings' => $value]);
+    }
+
+    if ($method === 'PUT' && $path === '/api/admin/email-templates') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $key = preg_replace('/[^a-z0-9_.-]/', '', strtolower((string) ($body['key'] ?? '')));
+        if ($key === '') json_response(['error' => 'INVALID_TEMPLATE', 'message' => 'Template key is required.'], 400);
+        $pdo->prepare('INSERT INTO email_templates (key, subject, body, enabled, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET subject = excluded.subject, body = excluded.body, enabled = excluded.enabled, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+            ->execute([$key, substr((string) ($body['subject'] ?? ''), 0, 240), (string) ($body['body'] ?? ''), empty($body['enabled']) ? 0 : 1, $session['user']['id'], now_iso()]);
+        json_response(['ok' => true]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/newsletters') {
+        if (!feature_flag_enabled('newsletters')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Newsletters are disabled.'], 403);
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $id = uuid_value('NWL-');
+        $now = now_iso();
+        $status = !empty($body['scheduledAt']) ? 'scheduled' : 'draft';
+        $publicationId = ($body['publicationId'] ?? '') ?: null;
+        $scheduledAt = ($body['scheduledAt'] ?? '') ?: null;
+        $pdo->prepare('INSERT INTO newsletters (id, title, publication_id, subject, content_html, audience, status, scheduled_at, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, substr((string) ($body['title'] ?? 'Newsletter'), 0, 180), $publicationId, substr((string) ($body['subject'] ?? 'InkRiver newsletter'), 0, 240), (string) ($body['contentHtml'] ?? ''), substr((string) ($body['audience'] ?? 'all'), 0, 120), $status, $scheduledAt, $session['user']['id'], $now, $now]);
+        if ($status === 'scheduled') enqueue_background_job('newsletters.send', [], (string) $scheduledAt);
+        json_response(['newsletterId' => $id], 201);
+    }
+
+    if ($method === 'POST' && preg_match('#^/api/admin/newsletters/([^/]+)/send$#', $path, $m)) {
+        if (!feature_flag_enabled('newsletters')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Newsletters are disabled.'], 403);
+        require_auth(['admin']);
+        $id = urldecode($m[1]);
+        $pdo->prepare("UPDATE newsletters SET status = 'scheduled', scheduled_at = ?, updated_at = ? WHERE id = ?")->execute([now_iso(), now_iso(), $id]);
+        json_response(['jobId' => enqueue_background_job('newsletters.send')], 202);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/newsletters/suppressions') {
+        require_auth(['admin']);
+        $body = read_json();
+        $email = strtolower(trim((string) ($body['email'] ?? '')));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_EMAIL', 'message' => 'A valid email address is required.'], 400);
+        $reason = substr((string) ($body['reason'] ?? 'admin'), 0, 80);
+        $pdo->prepare('INSERT INTO newsletter_suppressions (email, user_id, reason, source_newsletter_id, created_at) VALUES (?, NULL, ?, NULL, ?) ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, created_at = excluded.created_at')
+            ->execute([$email, $reason, now_iso()]);
+        json_response(['ok' => true]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/newsletters/bounce') {
+        require_auth(['admin']);
+        $body = read_json();
+        $email = strtolower(trim((string) ($body['email'] ?? '')));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_EMAIL', 'message' => 'A valid email address is required.'], 400);
+        $stmt = $pdo->prepare('SELECT id FROM users WHERE lower(email) = ?');
+        $stmt->execute([$email]);
+        $user = $stmt->fetch();
+        $pdo->prepare("INSERT INTO newsletter_suppressions (email, user_id, reason, source_newsletter_id, created_at) VALUES (?, ?, 'bounce', ?, ?) ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, source_newsletter_id = excluded.source_newsletter_id, created_at = excluded.created_at")
+            ->execute([$email, $user['id'] ?? null, ($body['newsletterId'] ?? '') ?: null, now_iso()]);
+        json_response(['ok' => true]);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/editorial-assignments') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $id = uuid_value('EDA-');
+        $now = now_iso();
+        $assigneeUserId = ($body['assigneeUserId'] ?? '') ?: null;
+        $dueAt = ($body['dueAt'] ?? '') ?: null;
+        $pdo->prepare('INSERT INTO editorial_assignments (id, story_slug, assignee_user_id, role, due_at, priority, status, notes, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, substr((string) ($body['storySlug'] ?? ''), 0, 200), $assigneeUserId, substr((string) ($body['role'] ?? 'editor'), 0, 80), $dueAt, substr((string) ($body['priority'] ?? 'Normal'), 0, 40), 'assigned', substr((string) ($body['notes'] ?? ''), 0, 2000), $session['user']['id'], $now, $now]);
+        json_response(['assignmentId' => $id], 201);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/imports') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $sourceType = substr((string) ($body['sourceType'] ?? 'json'), 0, 40);
+        $raw = (string) ($body['content'] ?? '');
+        $id = uuid_value('IMP-');
+        $now = now_iso();
+        $imported = 0;
+        $skipped = 0;
+        $error = '';
+        $duplicateMode = in_array(($body['duplicateMode'] ?? 'skip'), ['skip', 'replace', 'unique'], true) ? (string) $body['duplicateMode'] : 'skip';
+        $defaultStatus = in_array(($body['defaultStatus'] ?? 'draft'), ['draft', 'published', 'scheduled'], true) ? (string) $body['defaultStatus'] : 'draft';
+        $defaultAuthor = substr((string) ($body['defaultAuthor'] ?? ''), 0, 120);
+        $defaultTopic = substr((string) ($body['defaultTopic'] ?? ''), 0, 120);
+        try {
+            $items = imported_story_items($sourceType, $raw);
+            $stories = document_value('stories', []);
+            $snapshot = $stories;
+            $existingSlugs = [];
+            foreach ($stories as $index => $existingStory) if (is_array($existingStory) && !empty($existingStory['slug'])) $existingSlugs[(string) $existingStory['slug']] = $index;
+            foreach ($items as $item) {
+                if (!is_array($item) || empty($item['title'])) continue;
+                $item['id'] = $item['id'] ?? 'blog-' . uuid_value();
+                $item['slug'] = $item['slug'] ?? strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', (string) $item['title']), '-'));
+                $slug = (string) $item['slug'];
+                if (isset($existingSlugs[$slug])) {
+                    if ($duplicateMode === 'skip') {
+                        $skipped++;
+                        continue;
+                    }
+                    if ($duplicateMode === 'unique') {
+                        $baseSlug = $slug;
+                        $suffix = 2;
+                        while (isset($existingSlugs[$slug])) $slug = $baseSlug . '-' . $suffix++;
+                        $item['slug'] = $slug;
+                    }
+                }
+                $item['status'] = $item['status'] ?? $defaultStatus;
+                $item['author'] = $item['author'] ?? ($defaultAuthor ?: 'InkRiver Team');
+                $item['topic'] = $item['topic'] ?? ($defaultTopic ?: 'Imported');
+                $item['contentHtml'] = $item['contentHtml'] ?? ($item['content_html'] ?? '');
+                $item['dek'] = $item['dek'] ?? substr(trim(strip_tags((string) $item['contentHtml'])), 0, 180);
+                $item['body'] = $item['body'] ?? array_values(array_filter(preg_split('/\n{2,}/', trim(strip_tags((string) $item['contentHtml'])) ?: (string) ($item['content'] ?? ''))));
+                $item['createdAt'] = $item['createdAt'] ?? $now;
+                $item['updatedAt'] = $now;
+                if ($duplicateMode === 'replace' && isset($existingSlugs[$slug])) {
+                    $targetIndex = (int) $existingSlugs[$slug];
+                    $stories[$targetIndex] = $item;
+                } else {
+                    $stories[] = $item;
+                    $targetIndex = count($stories) - 1;
+                }
+                $existingSlugs[(string) $item['slug']] = $targetIndex;
+                $imported++;
+            }
+            $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+                ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
+            rebuild_story_search_index($stories);
+        } catch (Throwable $e) {
+            $error = $e->getMessage();
+        }
+        $status = $error ? 'failed' : 'processed';
+        $pdo->prepare('INSERT INTO content_imports (id, source_type, status, imported_count, error, metadata_json, snapshot_json, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, $sourceType, $status, $imported, $error, json_encode(['preview' => array_slice($items ?? [], 0, 5), 'skippedDuplicates' => $skipped, 'duplicateMode' => $duplicateMode, 'defaults' => ['status' => $defaultStatus, 'author' => $defaultAuthor, 'topic' => $defaultTopic]], JSON_UNESCAPED_SLASHES), json_encode($snapshot ?? [], JSON_UNESCAPED_SLASHES), $session['user']['id'], $now, $now]);
+        json_response(['importId' => $id, 'status' => $status, 'imported' => $imported, 'skippedDuplicates' => $skipped, 'error' => $error], $error ? 400 : 201);
+    }
+
+    if ($method === 'POST' && $path === '/api/admin/imports/preview') {
+        require_auth(['admin']);
+        $body = read_json();
+        $items = imported_story_items(substr((string) ($body['sourceType'] ?? 'json'), 0, 40), (string) ($body['content'] ?? ''));
+        $duplicateMode = in_array(($body['duplicateMode'] ?? 'skip'), ['skip', 'replace', 'unique'], true) ? (string) $body['duplicateMode'] : 'skip';
+        $existing = [];
+        foreach (document_value('stories', []) as $story) if (is_array($story) && !empty($story['slug'])) $existing[(string) $story['slug']] = true;
+        $duplicates = 0;
+        foreach ($items as $item) {
+            $slug = (string) ($item['slug'] ?? strtolower(trim(preg_replace('/[^a-z0-9]+/i', '-', (string) ($item['title'] ?? '')), '-')));
+            if ($slug && isset($existing[$slug])) $duplicates++;
+        }
+        json_response(['count' => count($items), 'duplicates' => $duplicates, 'duplicateMode' => $duplicateMode, 'sample' => array_slice(array_map(fn($item) => [
+            'title' => $item['title'] ?? '',
+            'slug' => $item['slug'] ?? '',
+            'author' => $item['author'] ?? '',
+            'status' => $item['status'] ?? 'draft',
+        ], $items), 0, 10)]);
+    }
+
+    if ($method === 'POST' && preg_match('#^/api/admin/imports/([^/]+)/rollback$#', $path, $m)) {
+        $session = require_auth(['admin']);
+        $id = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM content_imports WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        if (!$row || $row['status'] !== 'processed') json_response(['error' => 'IMPORT_NOT_ROLLBACKABLE', 'message' => 'Only processed imports can be rolled back.'], 400);
+        $snapshot = parse_json_field($row['snapshot_json'] ?? '[]', []);
+        $now = now_iso();
+        $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+            ->execute(['stories', json_encode($snapshot, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
+        rebuild_story_search_index(is_array($snapshot) ? $snapshot : []);
+        $metadata = parse_json_field($row['metadata_json'] ?? '{}', []);
+        $metadata['rolledBackAt'] = $now;
+        $pdo->prepare("UPDATE content_imports SET metadata_json = ?, updated_at = ? WHERE id = ?")->execute([json_encode($metadata, JSON_UNESCAPED_SLASHES), $now, $id]);
+        json_response(['rolledBack' => true, 'stories' => count($snapshot)]);
+    }
+
+    if ($method === 'GET' && preg_match('#^/api/admin/exports/([a-z_-]+)$#', $path, $m)) {
+        require_auth(['admin']);
+        $type = $m[1];
+        $allowed = [
+            'users' => 'SELECT id, name, email, role, subscription, status, created_at, last_login_at FROM users ORDER BY created_at DESC',
+            'payments' => 'SELECT id, user_id, provider, purpose, amount, currency, status, created_at FROM payments ORDER BY created_at DESC',
+            'subscriptions' => 'SELECT id, user_id, plan_id, provider, provider_subscription_id, amount, currency, status, starts_at, ends_at FROM subscriptions ORDER BY created_at DESC',
+            'stories' => null,
+            'comments' => 'SELECT id, story_slug, user_id, status, pinned, created_at FROM comments ORDER BY created_at DESC',
+            'ads' => 'SELECT id, name, placement, sponsor, status, budget, cpm, created_at FROM ad_campaigns ORDER BY created_at DESC',
+            'payouts' => 'SELECT id, writer_user_id, amount, currency, status, created_at, paid_at FROM writer_payouts ORDER BY created_at DESC',
+        ];
+        if (!array_key_exists($type, $allowed)) json_response(['error' => 'INVALID_EXPORT', 'message' => 'Unsupported export type.'], 400);
+        $rows = $type === 'stories' ? array_map(fn($story) => ['id' => $story['id'] ?? '', 'slug' => $story['slug'] ?? '', 'title' => $story['title'] ?? '', 'status' => $story['status'] ?? '', 'author' => $story['author'] ?? '', 'publication' => $story['publication'] ?? ''], document_value('stories', [])) : $pdo->query($allowed[$type])->fetchAll();
+        csv_response('inkriver-' . $type . '.csv', $rows);
+    }
+
+    if ($method === 'GET' && $path === '/api/admin/installer/report') {
+        require_auth(['admin']);
+        $providers = provider_status();
+        $installer = [
+            'phpVersion' => PHP_VERSION,
+            'sqlite' => extension_loaded('pdo_sqlite'),
+            'uploadsWritable' => is_writable(dirname(__DIR__) . '/uploads') || is_writable(dirname(__DIR__)),
+            'storageWritable' => is_writable(dirname(__DIR__) . '/storage') || is_writable(dirname(__DIR__)),
+            'cronConfigured' => (bool) (env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret')),
+            'adminUsers' => (int) $pdo->query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")->fetch()['count'],
+        ];
+        json_response([
+            'generatedAt' => now_iso(),
+            'environment' => env_value('APP_ENV', 'production'),
+            'installer' => $installer,
+            'providers' => $providers,
+            'readiness' => production_readiness($installer, $providers),
+            'databasePath' => database_path(),
+        ]);
     }
 
     if ($method === 'GET' && $path === '/api/admin/media') {
@@ -2008,6 +3788,28 @@ function handle_api(string $path, string $method): void
         json_response(['indexed' => rebuild_story_search_index(), 'rebuiltAt' => now_iso()]);
     }
 
+    if ($method === 'GET' && $path === '/api/admin/seo/artifacts') {
+        require_auth(['admin']);
+        $rows = $pdo->query('SELECT key, mime_type, updated_at FROM seo_artifacts ORDER BY key')->fetchAll();
+        json_response(['artifacts' => $rows, 'sitemapUrl' => '/sitemap.xml', 'robotsUrl' => '/robots.txt']);
+    }
+
+    if ($method === 'PUT' && $path === '/api/admin/seo/artifacts') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $key = preg_replace('/[^a-z0-9_.-]/i', '', (string) ($body['key'] ?? 'custom'));
+        $content = substr((string) ($body['content'] ?? ''), 0, 200000);
+        $mime = substr((string) ($body['mimeType'] ?? 'text/plain; charset=utf-8'), 0, 120);
+        $pdo->prepare('INSERT INTO seo_artifacts (key, content, mime_type, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET content = excluded.content, mime_type = excluded.mime_type, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+            ->execute([$key, $content, $mime, $session['user']['id'], now_iso()]);
+        json_response(['artifacts' => $pdo->query('SELECT key, mime_type, updated_at FROM seo_artifacts ORDER BY key')->fetchAll()]);
+    }
+
+    if ($method === 'GET' && $path === '/api/admin/permissions') {
+        require_auth(['admin']);
+        json_response(['permissions' => $pdo->query('SELECT * FROM role_permissions ORDER BY role, permission')->fetchAll()]);
+    }
+
     if ($method === 'GET' && $path === '/api/admin/recommendations/status') {
         require_auth(['admin']);
         $row = $pdo->query('SELECT COUNT(*) AS profiles, COALESCE(SUM(signals_count), 0) AS signals, MAX(last_trained_at) AS last_trained_at FROM recommendation_profiles')->fetch();
@@ -2091,7 +3893,7 @@ function handle_api(string $path, string $method): void
         $stmt = $pdo->prepare('SELECT * FROM user_security_settings WHERE user_id = ?');
         $stmt->execute([$session['user']['id']]);
         $row = $stmt->fetch();
-        $passkeys = $pdo->prepare('SELECT id, credential_id, transports, created_at, last_used_at FROM passkey_credentials WHERE user_id = ? ORDER BY created_at DESC');
+        $passkeys = $pdo->prepare('SELECT id, credential_id, public_key, transports, created_at, last_used_at FROM passkey_credentials WHERE user_id = ? ORDER BY created_at DESC');
         $passkeys->execute([$session['user']['id']]);
         json_response([
             'emailVerified' => (bool) ($session['raw']['email_verified'] ?? false),
@@ -2101,10 +3903,82 @@ function handle_api(string $path, string $method): void
                 'id' => $item['id'],
                 'credentialId' => substr($item['credential_id'], 0, 8) . '...' . substr($item['credential_id'], -6),
                 'transports' => parse_json_field($item['transports'] ?? '[]', []),
+                'needsReRegistration' => !isset(parse_json_field((string) ($item['public_key'] ?? '{}'), [])['x']),
                 'createdAt' => $item['created_at'],
                 'lastUsedAt' => $item['last_used_at'],
             ], $passkeys->fetchAll()),
         ]);
+    }
+
+    if ($method === 'GET' && $path === '/api/me/notifications') {
+        $session = require_auth();
+        $stmt = $pdo->prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100');
+        $stmt->execute([$session['user']['id']]);
+        $unread = $pdo->prepare('SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL');
+        $unread->execute([$session['user']['id']]);
+        json_response(['notifications' => $stmt->fetchAll(), 'unread' => (int) ($unread->fetch()['count'] ?? 0)]);
+    }
+
+    if ($method === 'PATCH' && $path === '/api/me/notifications/read') {
+        $session = require_auth();
+        $body = read_json();
+        if (!empty($body['id'])) {
+            $stmt = $pdo->prepare('UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ?');
+            $stmt->execute([now_iso(), (string) $body['id'], $session['user']['id']]);
+        } else {
+            $stmt = $pdo->prepare('UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE user_id = ?');
+            $stmt->execute([now_iso(), $session['user']['id']]);
+        }
+        json_response(['updated' => $stmt->rowCount()]);
+    }
+
+    if ($method === 'GET' && $path === '/api/me/invoices') {
+        $session = require_auth();
+        $stmt = $pdo->prepare('SELECT * FROM billing_invoices WHERE user_id = ? ORDER BY issued_at DESC LIMIT 100');
+        $stmt->execute([$session['user']['id']]);
+        json_response(['invoices' => $stmt->fetchAll()]);
+    }
+
+    if ($method === 'POST' && $path === '/api/me/subscription/cancel') {
+        $session = require_auth();
+        $stmt = $pdo->prepare("SELECT * FROM subscriptions WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1");
+        $stmt->execute([$session['user']['id']]);
+        $subscription = $stmt->fetch();
+        if (!$subscription) json_response(['error' => 'NO_ACTIVE_SUBSCRIPTION', 'message' => 'No active subscription was found.'], 404);
+        try {
+            $providerCancellation = cancel_provider_subscription($subscription);
+        } catch (Throwable $error) {
+            $pdo->prepare('INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                ->execute([uuid_value('SEV-'), $subscription['id'], $session['user']['id'], $subscription['provider'], 'cancel_provider_failed', $subscription['status'], $subscription['status'], json_encode(['error' => $error->getMessage()], JSON_UNESCAPED_SLASHES), now_iso()]);
+            json_response(['error' => 'PROVIDER_CANCELLATION_FAILED', 'message' => $error->getMessage()], 502);
+        }
+        $now = now_iso();
+        $pdo->prepare("UPDATE subscriptions SET status = 'cancelled', updated_at = ? WHERE id = ?")->execute([$now, $subscription['id']]);
+        $pdo->prepare('INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([uuid_value('SEV-'), $subscription['id'], $session['user']['id'], $subscription['provider'], 'cancelled_by_user', $subscription['status'], 'cancelled', json_encode($providerCancellation, JSON_UNESCAPED_SLASHES), $now]);
+        $pdo->prepare("UPDATE users SET subscription = 'Free', updated_at = ? WHERE id = ?")->execute([$now, $session['user']['id']]);
+        create_notification($session['user']['id'], 'subscription_cancelled', 'Membership cancelled', !empty($providerCancellation['remote']) ? 'Your provider subscription cancellation has been submitted.' : 'Your local subscription has been cancelled.', '/dashboard');
+        audit_log($session['user']['id'], 'subscription.cancel', 'subscription', $subscription['id']);
+        $userStmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+        $userStmt->execute([$session['user']['id']]);
+        json_response(['status' => 'cancelled', 'provider' => $providerCancellation, 'user' => public_user($userStmt->fetch())]);
+    }
+
+    if ($path === '/api/me/pwa/settings') {
+        $session = require_auth();
+        if ($method === 'GET') {
+            $stmt = $pdo->prepare("SELECT value_json FROM user_documents WHERE user_id = ? AND key = 'pwa-settings'");
+            $stmt->execute([$session['user']['id']]);
+            $row = $stmt->fetch();
+            json_response(['settings' => $row ? parse_json_field($row['value_json'], []) : ['offlineSavedArticles' => true, 'backgroundSync' => true, 'pushDigest' => true]]);
+        }
+        if ($method === 'PUT') {
+            $body = read_json();
+            $settings = is_array($body['settings'] ?? null) ? $body['settings'] : [];
+            $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+                ->execute([$session['user']['id'], 'pwa-settings', json_encode($settings, JSON_UNESCAPED_SLASHES), now_iso()]);
+            json_response(['settings' => $settings]);
+        }
     }
 
     if ($method === 'POST' && $path === '/api/me/security/passkeys/challenge') {
@@ -2116,10 +3990,9 @@ function handle_api(string $path, string $method): void
         $now = now_iso();
         $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
             ->execute([$session['user']['id'], 'passkey-registration-challenge', json_encode(['challenge' => $challenge, 'createdAt' => $now], JSON_UNESCAPED_SLASHES), $now]);
-        $rpId = preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? 'localhost'));
         json_response([
             'challenge' => $challenge,
-            'rp' => ['name' => 'InkRiver', 'id' => $rpId],
+            'rp' => ['name' => 'InkRiver', 'id' => webauthn_rp_id()],
             'user' => [
                 'id' => $session['user']['id'],
                 'idEncoded' => base64url_encode_value(hash('sha256', $session['user']['id'], true)),
@@ -2143,12 +4016,20 @@ function handle_api(string $path, string $method): void
         $challengeRow = $challengeStmt->fetch();
         $challenge = parse_json_field($challengeRow['value_json'] ?? '{}', []);
         $clientData = json_decode(base64url_decode_value($clientDataJson), true);
-        if (!$challengeRow || !is_array($clientData) || !hash_equals((string) ($challenge['challenge'] ?? ''), (string) ($clientData['challenge'] ?? ''))) {
+        if (!$challengeRow || !is_array($clientData) || ($clientData['type'] ?? '') !== 'webauthn.create' || !hash_equals((string) ($challenge['challenge'] ?? ''), (string) ($clientData['challenge'] ?? '')) || !hash_equals(webauthn_expected_origin(), (string) ($clientData['origin'] ?? '')) || strtotime((string) ($challenge['createdAt'] ?? '1970-01-01')) < time() - 300) {
             json_response(['error' => 'INVALID_PASSKEY_CHALLENGE', 'message' => 'The passkey challenge expired or did not match.'], 400);
+        }
+        try {
+            $publicKey = extract_webauthn_public_key(base64url_decode_value($attestationObject));
+        } catch (Throwable $error) {
+            json_response(['error' => 'INVALID_PASSKEY_PUBLIC_KEY', 'message' => $error->getMessage()], 400);
+        }
+        if (!hash_equals($credentialId, $publicKey['credentialId'])) {
+            json_response(['error' => 'INVALID_PASSKEY_CREDENTIAL', 'message' => 'Passkey credential ID did not match authenticator data.'], 400);
         }
         $id = uuid_value('PKY-');
         $pdo->prepare('INSERT INTO passkey_credentials (id, user_id, credential_id, public_key, sign_count, transports, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
-            ->execute([$id, $session['user']['id'], $credentialId, json_encode(['clientDataJSON' => $clientDataJson, 'attestationObject' => $attestationObject], JSON_UNESCAPED_SLASHES), json_encode($body['transports'] ?? [], JSON_UNESCAPED_SLASHES), now_iso()]);
+            ->execute([$id, $session['user']['id'], $credentialId, json_encode($publicKey, JSON_UNESCAPED_SLASHES), json_encode($body['transports'] ?? [], JSON_UNESCAPED_SLASHES), now_iso()]);
         $pdo->prepare("DELETE FROM user_documents WHERE user_id = ? AND key = 'passkey-registration-challenge'")->execute([$session['user']['id']]);
         audit_log($session['user']['id'], 'security.passkey_added', 'passkey', $id);
         json_response(['passkey' => ['id' => $id]], 201);
@@ -2185,6 +4066,7 @@ function handle_api(string $path, string $method): void
     }
 
     if (preg_match('#^/api/stories/([^/]+)/comments$#', $path, $m)) {
+        if (!feature_flag_enabled('comments')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Comments are disabled.'], 403);
         $slug = urldecode($m[1]);
         if ($method === 'GET') {
             $stmt = $pdo->prepare("SELECT comments.*, users.name AS author_name, users.role AS author_role FROM comments JOIN users ON users.id = comments.user_id WHERE comments.story_slug = ? AND comments.status != 'deleted' ORDER BY comments.pinned DESC, comments.created_at DESC");
@@ -2222,6 +4104,7 @@ function handle_api(string $path, string $method): void
     }
 
     if (preg_match('#^/api/comments/([^/]+)$#', $path, $m)) {
+        if (!feature_flag_enabled('comments')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Comments are disabled.'], 403);
         $session = require_auth();
         $id = urldecode($m[1]);
         if ($method === 'PATCH') {
@@ -2240,6 +4123,7 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'POST' && preg_match('#^/api/comments/([^/]+)/like$#', $path, $m)) {
+        if (!feature_flag_enabled('comments')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Comments are disabled.'], 403);
         $session = require_auth();
         $commentId = urldecode($m[1]);
         $stmt = $pdo->prepare("SELECT id FROM comments WHERE id = ? AND status != 'deleted'");
@@ -2403,6 +4287,20 @@ function handle_api(string $path, string $method): void
         }
     }
 
+    if ($path === '/api/admin/moderation/dictionary') {
+        $session = require_auth(['admin', 'moderator']);
+        if ($method === 'GET') json_response(['terms' => $pdo->query('SELECT * FROM moderation_dictionary ORDER BY updated_at DESC')->fetchAll()]);
+        if ($method === 'POST') {
+            $body = read_json();
+            $term = trim((string) ($body['term'] ?? ''));
+            if ($term === '') json_response(['error' => 'INVALID_TERM', 'message' => 'A moderation term is required.'], 400);
+            $now = now_iso();
+            $pdo->prepare('INSERT INTO moderation_dictionary (id, term, kind, severity, action, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(term) DO UPDATE SET kind = excluded.kind, severity = excluded.severity, action = excluded.action, updated_at = excluded.updated_at')
+                ->execute([uuid_value('MDT-'), substr($term, 0, 180), substr((string) ($body['kind'] ?? 'blocked_word'), 0, 80), substr((string) ($body['severity'] ?? 'Medium'), 0, 40), substr((string) ($body['action'] ?? 'queue'), 0, 40), $session['user']['id'], $now, $now]);
+            json_response(['terms' => $pdo->query('SELECT * FROM moderation_dictionary ORDER BY updated_at DESC')->fetchAll()], 201);
+        }
+    }
+
     if ($method === 'GET' && $path === '/api/admin/ads') {
         require_auth(['admin']);
         $rows = $pdo->query("SELECT ad_campaigns.*, SUM(CASE WHEN ad_events.event_type = 'impression' THEN 1 ELSE 0 END) AS impressions, SUM(CASE WHEN ad_events.event_type = 'click' THEN 1 ELSE 0 END) AS clicks FROM ad_campaigns LEFT JOIN ad_events ON ad_events.campaign_id = ad_campaigns.id GROUP BY ad_campaigns.id ORDER BY ad_campaigns.created_at DESC")->fetchAll();
@@ -2410,6 +4308,7 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'POST' && $path === '/api/admin/ads') {
+        if (!feature_flag_enabled('ads')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Ads are disabled.'], 403);
         $session = require_auth(['admin']);
         $body = read_json();
         $id = 'AD-' . uuid_value();
@@ -2421,6 +4320,7 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'PATCH' && preg_match('#^/api/admin/ads/([^/]+)$#', $path, $m)) {
+        if (!feature_flag_enabled('ads')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Ads are disabled.'], 403);
         require_auth(['admin']);
         $body = read_json();
         $id = urldecode($m[1]);
@@ -2430,6 +4330,7 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'POST' && $path === '/api/ads/events') {
+        if (!feature_flag_enabled('ads')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Ads are disabled.'], 403);
         $session = current_session();
         $body = read_json();
         $stmt = $pdo->prepare("SELECT * FROM ad_campaigns WHERE id = ? AND status = 'active'");
@@ -2448,6 +4349,7 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'POST' && $path === '/api/admin/discounts') {
+        if (!feature_flag_enabled('discounts')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Discounts are disabled.'], 403);
         $session = require_auth(['admin']);
         $body = read_json();
         $code = strtoupper(preg_replace('/[^A-Z0-9_-]/', '', (string) ($body['code'] ?? '')));
@@ -2460,6 +4362,7 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'PATCH' && preg_match('#^/api/admin/discounts/([^/]+)$#', $path, $m)) {
+        if (!feature_flag_enabled('discounts')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Discounts are disabled.'], 403);
         require_auth(['admin']);
         $body = read_json();
         $pdo->prepare('UPDATE discount_codes SET active = ?, updated_at = ? WHERE id = ?')->execute([!empty($body['active']) ? 1 : 0, now_iso(), urldecode($m[1])]);
@@ -2467,6 +4370,7 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'POST' && $path === '/api/discounts/validate') {
+        if (!feature_flag_enabled('discounts')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Discounts are disabled.'], 403);
         $body = read_json();
         $code = strtoupper(trim((string) ($body['code'] ?? '')));
         $amount = max(0, (int) ($body['amount'] ?? 0));
@@ -2508,6 +4412,11 @@ function handle_api(string $path, string $method): void
         $i = 2;
         while (array_filter($stories, fn($story) => ($story['slug'] ?? '') === $slug)) $slug = $baseSlug . '-' . $i++;
         $now = now_iso();
+        $publication = substr((string) ($body['publication'] ?? 'InkRiver'), 0, 120);
+        $requestedStatus = in_array(($body['status'] ?? 'draft'), ['draft', 'review', 'approved', 'scheduled', 'published'], true) ? (string) $body['status'] : 'draft';
+        if (in_array($requestedStatus, ['approved', 'scheduled', 'published'], true) && !can_manage_publication_content($session, $publication)) {
+            $requestedStatus = 'review';
+        }
         $story = [
             'id' => 'blog-' . uuid_value(),
             'slug' => $slug,
@@ -2516,7 +4425,7 @@ function handle_api(string $path, string $method): void
             'author' => $session['user']['name'],
             'authorUserId' => $session['user']['id'],
             'role' => $session['user']['role'] === 'admin' ? 'Editorial desk' : 'Writer',
-            'publication' => substr((string) ($body['publication'] ?? 'InkRiver'), 0, 120),
+            'publication' => $publication,
             'topic' => substr((string) ($body['topic'] ?? 'Marketing'), 0, 80),
             'readTime' => substr((string) ($body['readTime'] ?? '5 min read'), 0, 40),
             'premium' => (bool) ($body['premium'] ?? false),
@@ -2525,22 +4434,62 @@ function handle_api(string $path, string $method): void
             'color' => substr((string) ($body['color'] ?? 'mint'), 0, 30),
             'imageUrl' => substr((string) ($body['imageUrl'] ?? ''), 0, 2000),
             'tags' => is_array($body['tags'] ?? null) ? array_slice($body['tags'], 0, 30) : [],
-            'status' => ($body['status'] ?? '') === 'published' ? 'published' : 'draft',
+            'status' => $requestedStatus,
+            'scheduledAt' => $requestedStatus === 'scheduled' ? substr((string) ($body['scheduledAt'] ?? ''), 0, 80) : '',
             'body' => is_array($body['body'] ?? null) ? array_slice($body['body'], 0, 200) : [(string) ($body['content'] ?? '')],
             'contentHtml' => substr((string) ($body['contentHtml'] ?? ''), 0, 200000),
             'interactiveBlocks' => is_array($body['interactiveBlocks'] ?? null) ? array_slice($body['interactiveBlocks'], 0, 30) : [],
             'seo' => is_array($body['seo'] ?? null) ? $body['seo'] : [],
             'claps' => 0, 'comments' => 0, 'reads' => 0, 'revenue' => 0,
-            'publishedAt' => ($body['status'] ?? '') === 'published' ? $now : '',
+            'publishedAt' => $requestedStatus === 'published' ? $now : '',
             'createdAt' => $now, 'updatedAt' => $now,
         ];
         array_unshift($stories, $story);
         $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
             ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
+        record_story_revision($story, $session['user']['id'], 'Story created as ' . $story['status']);
         rebuild_story_search_index($stories);
         $translationJobId = null;
         if ($story['status'] === 'published' && provider_status()['ai']) $translationJobId = enqueue_background_job('translations.backfill');
+        if ($story['status'] === 'published') create_notification($session['user']['id'], 'story_published', 'Story published', $story['title'] . ' is now live.', '/stories/' . $story['slug']);
         json_response(['story' => $story, 'translationJobId' => $translationJobId], 201);
+    }
+
+    if ($method === 'GET' && preg_match('#^/api/admin/stories/([^/]+)/revisions$#', $path, $m)) {
+        require_auth(['admin']);
+        $slug = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT id, story_slug, revision_number, author_user_id, note, created_at FROM post_revisions WHERE story_slug = ? ORDER BY revision_number DESC LIMIT 100');
+        $stmt->execute([$slug]);
+        json_response(['revisions' => $stmt->fetchAll()]);
+    }
+
+    if ($method === 'POST' && preg_match('#^/api/admin/stories/([^/]+)/revisions/([^/]+)/restore$#', $path, $m)) {
+        $session = require_auth(['admin']);
+        $slug = urldecode($m[1]);
+        $revisionId = urldecode($m[2]);
+        $stmt = $pdo->prepare('SELECT * FROM post_revisions WHERE id = ? AND story_slug = ?');
+        $stmt->execute([$revisionId, $slug]);
+        $revision = $stmt->fetch();
+        if (!$revision) json_response(['error' => 'NOT_FOUND', 'message' => 'Revision not found.'], 404);
+        $snapshot = parse_json_field($revision['snapshot_json'], null);
+        if (!is_array($snapshot)) json_response(['error' => 'INVALID_REVISION', 'message' => 'Revision snapshot is invalid.'], 400);
+        $stories = document_value('stories', []);
+        $restored = false;
+        foreach ($stories as &$story) {
+            if (($story['slug'] ?? '') === $slug) {
+                $snapshot['updatedAt'] = now_iso();
+                $story = $snapshot;
+                $restored = true;
+                break;
+            }
+        }
+        unset($story);
+        if (!$restored) array_unshift($stories, $snapshot);
+        $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+            ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), $session['user']['id'], now_iso()]);
+        record_story_revision($snapshot, $session['user']['id'], 'Restored revision ' . $revision['revision_number']);
+        rebuild_story_search_index($stories);
+        json_response(['story' => $snapshot]);
     }
 
     if ($method === 'GET' && $path === '/api/me/payouts') {
@@ -2607,26 +4556,10 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && preg_match('#^/api/admin/payouts/([^/]+)/execute$#', $path, $m)) {
         require_auth(['admin']);
         $payoutId = urldecode($m[1]);
-        $stmt = $pdo->prepare('SELECT * FROM writer_payouts WHERE id = ?');
-        $stmt->execute([$payoutId]);
-        $payout = $stmt->fetch();
-        if (!$payout) json_response(['error' => 'NOT_FOUND', 'message' => 'Payout not found.'], 404);
-        $transferId = uuid_value('PTR-');
-        $now = now_iso();
-        $pdo->prepare("INSERT INTO payout_transfers (id, payout_id, provider, status, request_json, created_at, updated_at) VALUES (?, ?, ?, 'processing', ?, ?, ?)")
-            ->execute([$transferId, $payoutId, provider_config_value('PAYOUT_PROVIDER', 'payouts', 'provider', 'manual') ?: 'manual', json_encode(['payoutId' => $payoutId], JSON_UNESCAPED_SLASHES), $now, $now]);
-        $pdo->prepare("UPDATE writer_payouts SET status = 'processing', updated_at = ? WHERE id = ?")->execute([$now, $payoutId]);
         try {
-            $response = execute_payout_transfer($payout);
-            $providerTransferId = (string) ($response['batch_header']['payout_batch_id'] ?? $response['id'] ?? $response['transferId'] ?? '');
-            $pdo->prepare("UPDATE payout_transfers SET status = 'paid', provider_transfer_id = ?, response_json = ?, updated_at = ? WHERE id = ?")
-                ->execute([$providerTransferId, json_encode($response, JSON_UNESCAPED_SLASHES), now_iso(), $transferId]);
-            $pdo->prepare("UPDATE writer_payouts SET status = 'paid', paid_at = ?, updated_at = ? WHERE id = ?")->execute([now_iso(), now_iso(), $payoutId]);
-            json_response(['transferId' => $transferId, 'providerTransferId' => $providerTransferId, 'status' => 'paid']);
+            json_response(execute_payout_by_id($payoutId));
         } catch (Throwable $error) {
-            $pdo->prepare("UPDATE payout_transfers SET status = 'failed', error = ?, updated_at = ? WHERE id = ?")->execute([$error->getMessage(), now_iso(), $transferId]);
-            $pdo->prepare("UPDATE writer_payouts SET status = 'failed', updated_at = ? WHERE id = ?")->execute([now_iso(), $payoutId]);
-            json_response(['error' => 'PAYOUT_TRANSFER_FAILED', 'message' => $error->getMessage(), 'transferId' => $transferId], 502);
+            json_response(['error' => 'PAYOUT_TRANSFER_FAILED', 'message' => $error->getMessage()], 502);
         }
     }
 
@@ -2659,20 +4592,31 @@ function handle_api(string $path, string $method): void
         $id = 'PAY-' . uuid_value();
         $now = now_iso();
         $metadata = is_array($body['metadata'] ?? null) ? $body['metadata'] : [];
+        if (($metadata['kind'] ?? '') === 'tip' && !feature_flag_enabled('tips')) {
+            json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Writer tipping is disabled.'], 403);
+        }
         if (!empty($body['discountCode'])) $metadata['discountCode'] = strtoupper(trim((string) $body['discountCode']));
         $metadata['originalAmount'] = (int) ($body['amount'] ?? 0);
         $paymentPreview = ['id' => $id, 'amount' => (int) ($body['amount'] ?? 0), 'currency' => strtoupper((string) ($body['currency'] ?? 'INR')), 'purpose' => $body['purpose'] ?? 'payment'];
         $amount = payment_amount_for_checkout($paymentPreview, $metadata);
+        $isRecurringMembership = !in_array(($metadata['kind'] ?? 'membership'), ['tip', 'gift'], true);
         $pdo->prepare("INSERT INTO payments (id, user_id, provider, purpose, amount, currency, status, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, ?, ?)")
             ->execute([$id, $session['user']['id'], $provider, $body['purpose'] ?? 'payment', $amount, strtoupper((string) ($body['currency'] ?? 'INR')), json_encode($metadata, JSON_UNESCAPED_SLASHES), $now, $now]);
         $payment = ['id' => $id, 'amount' => $amount, 'currency' => strtoupper((string) ($body['currency'] ?? 'INR')), 'purpose' => $body['purpose'] ?? 'payment'];
         try {
-            $order = create_provider_order($provider, $payment, $session['user']);
+            $order = $isRecurringMembership
+                ? create_provider_subscription_checkout($provider, $payment, $session['user'], $metadata)
+                : create_provider_order($provider, $payment, $session['user']);
         } catch (Throwable $error) {
             $pdo->prepare("UPDATE payments SET status = 'failed', updated_at = ? WHERE id = ?")->execute([now_iso(), $id]);
             json_response(['error' => 'CHECKOUT_FAILED', 'message' => $error->getMessage()], 502);
         }
-        $pdo->prepare("UPDATE payments SET status = 'pending', provider_order_id = ?, updated_at = ? WHERE id = ?")->execute([$order['providerOrderId'] ?? '', now_iso(), $id]);
+        if (!empty($order['providerSubscriptionId'])) {
+            $metadata['providerSubscriptionId'] = (string) $order['providerSubscriptionId'];
+            $metadata['recurring'] = true;
+        }
+        $pdo->prepare("UPDATE payments SET status = 'pending', provider_order_id = ?, metadata = ?, updated_at = ? WHERE id = ?")
+            ->execute([$order['providerOrderId'] ?? '', json_encode($metadata, JSON_UNESCAPED_SLASHES), now_iso(), $id]);
         json_response(['paymentId' => $id, 'provider' => $provider, 'amount' => $amount, 'currency' => $payment['currency'], 'checkout' => $order['checkout'] ?? []], 201);
     }
 
@@ -2681,10 +4625,12 @@ function handle_api(string $path, string $method): void
         $body = read_json();
         $paymentId = (string) ($body['paymentId'] ?? '');
         $orderId = (string) ($body['razorpay_order_id'] ?? '');
+        $subscriptionId = (string) ($body['razorpay_subscription_id'] ?? '');
         $razorpayPaymentId = (string) ($body['razorpay_payment_id'] ?? '');
         $signature = (string) ($body['razorpay_signature'] ?? '');
-        $expected = hash_hmac('sha256', $orderId . '|' . $razorpayPaymentId, (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret'));
-        if (!$paymentId || !$orderId || !$razorpayPaymentId || !hash_equals($expected, $signature)) {
+        $signedValue = $subscriptionId !== '' ? $razorpayPaymentId . '|' . $subscriptionId : $orderId . '|' . $razorpayPaymentId;
+        $expected = hash_hmac('sha256', $signedValue, (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret'));
+        if (!$paymentId || (!$orderId && !$subscriptionId) || !$razorpayPaymentId || !hash_equals($expected, $signature)) {
             json_response(['error' => 'INVALID_PAYMENT_SIGNATURE', 'message' => 'Payment verification failed.'], 400);
         }
         $user = activate_paid_payment($paymentId, $razorpayPaymentId);
@@ -2695,13 +4641,25 @@ function handle_api(string $path, string $method): void
     if ($method === 'GET' && $path === '/api/payments/paypal/return') {
         $paymentId = (string) ($_GET['paymentId'] ?? '');
         $tokenId = (string) ($_GET['token'] ?? '');
-        if ($paymentId === '' || $tokenId === '') redirect_response('/pricing?payment=invalid');
+        $subscriptionId = (string) ($_GET['subscription_id'] ?? $_GET['ba_token'] ?? '');
+        if ($paymentId === '' || ($tokenId === '' && $subscriptionId === '')) redirect_response('/pricing?payment=invalid');
         $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
         $token = http_request_json($base . '/v1/oauth2/token', [
             'method' => 'POST',
             'headers' => ['Authorization' => 'Basic ' . base64_encode(provider_config_value('PAYPAL_CLIENT_ID', 'paypal', 'client_id') . ':' . provider_config_value('PAYPAL_CLIENT_SECRET', 'paypal', 'client_secret')), 'Content-Type' => 'application/x-www-form-urlencoded'],
             'body' => ['grant_type' => 'client_credentials'],
         ]);
+        if (($_GET['mode'] ?? '') === 'subscription' || $subscriptionId !== '') {
+            $local = $pdo->prepare('SELECT provider_order_id FROM payments WHERE id = ?');
+            $local->execute([$paymentId]);
+            $storedSubscriptionId = (string) (($local->fetch()['provider_order_id'] ?? '') ?: $subscriptionId);
+            $remote = http_request_json($base . '/v1/billing/subscriptions/' . rawurlencode($storedSubscriptionId), [
+                'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
+            ]);
+            if (!in_array(($remote['status'] ?? ''), ['ACTIVE', 'APPROVAL_PENDING'], true)) redirect_response('/pricing?payment=failed');
+            activate_paid_payment($paymentId, $storedSubscriptionId);
+            redirect_response('/dashboard?payment=success');
+        }
         $capture = http_request_json($base . '/v2/checkout/orders/' . rawurlencode($tokenId) . '/capture', [
             'method' => 'POST',
             'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
@@ -2715,6 +4673,20 @@ function handle_api(string $path, string $method): void
     if ($method === 'GET' && $path === '/api/payments/cashfree/return') {
         $paymentId = (string) ($_GET['paymentId'] ?? $_GET['order_id'] ?? '');
         if ($paymentId === '') redirect_response('/pricing?payment=invalid');
+        $paymentStmt = $pdo->prepare('SELECT * FROM payments WHERE id = ?');
+        $paymentStmt->execute([$paymentId]);
+        $localPayment = $paymentStmt->fetch();
+        $localMetadata = $localPayment ? parse_json_field($localPayment['metadata'] ?? '{}', []) : [];
+        if (!empty($localMetadata['recurring'])) {
+            $subscriptionBase = provider_config_value('CASHFREE_SUBSCRIPTIONS_API_URL', 'cashfree', 'subscriptions_api_url', '');
+            if ($subscriptionBase === '') redirect_response('/pricing?payment=failed');
+            $subscription = http_request_json(rtrim($subscriptionBase, '/') . '/' . rawurlencode((string) ($localPayment['provider_order_id'] ?? $paymentId)), [
+                'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret')],
+            ]);
+            if (!in_array(strtoupper((string) ($subscription['status'] ?? $subscription['subscription_status'] ?? '')), ['ACTIVE', 'APPROVED', 'BANK_APPROVAL_PENDING'], true)) redirect_response('/pricing?payment=failed');
+            activate_paid_payment($paymentId, (string) ($subscription['subscription_id'] ?? $localPayment['provider_order_id'] ?? $paymentId));
+            redirect_response('/dashboard?payment=success');
+        }
         $base = provider_config_value('CASHFREE_ENVIRONMENT', 'cashfree', 'environment', 'sandbox') === 'production' ? 'https://api.cashfree.com/pg/orders/' : 'https://sandbox.cashfree.com/pg/orders/';
         $order = http_request_json($base . rawurlencode($paymentId), [
             'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret')],
@@ -2728,7 +4700,7 @@ function handle_api(string $path, string $method): void
         $body = $_POST;
         $paymentId = (string) ($body['udf1'] ?? $body['txnid'] ?? '');
         if (($body['status'] ?? '') !== 'success' || $paymentId === '' || !payu_response_hash_valid($body)) redirect_response('/pricing?payment=failed');
-        activate_paid_payment($paymentId, (string) ($body['mihpayid'] ?? $body['txnid'] ?? ''));
+        activate_paid_payment($paymentId, (string) ($body['subscription_id'] ?? $body['mihpayid'] ?? $body['txnid'] ?? ''));
         redirect_response('/dashboard?payment=success');
     }
 
@@ -2741,17 +4713,24 @@ function handle_api(string $path, string $method): void
         $eventType = (string) ($payload['event'] ?? $payload['event_type'] ?? $payload['type'] ?? $payload['status'] ?? 'webhook');
         $paymentId = '';
         $providerPaymentId = '';
+        $providerSubscriptionId = '';
 
         if ($provider === 'razorpay') {
             $signature = (string) ($_SERVER['HTTP_X_RAZORPAY_SIGNATURE'] ?? '');
             $secret = provider_config_value('RAZORPAY_WEBHOOK_SECRET', 'razorpay', 'webhook_secret') ?: provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret');
             $valid = $secret && $signature && hash_equals(hash_hmac('sha256', $raw, (string) $secret), $signature);
-            $entity = $payload['payload']['payment']['entity'] ?? $payload['payload']['order']['entity'] ?? [];
+            $entity = $payload['payload']['payment']['entity'] ?? $payload['payload']['subscription']['entity'] ?? $payload['payload']['order']['entity'] ?? [];
             $providerPaymentId = (string) ($entity['id'] ?? '');
+            $providerSubscriptionId = (string) ($entity['subscription_id'] ?? ($payload['payload']['subscription']['entity']['id'] ?? ''));
             $paymentId = (string) ($entity['notes']['paymentId'] ?? $entity['receipt'] ?? '');
             if ($paymentId === '' && !empty($entity['order_id'])) {
                 $stmt = $pdo->prepare('SELECT id FROM payments WHERE provider = ? AND provider_order_id = ?');
                 $stmt->execute(['razorpay', $entity['order_id']]);
+                $paymentId = (string) (($stmt->fetch()['id'] ?? ''));
+            }
+            if ($paymentId === '' && $providerSubscriptionId !== '') {
+                $stmt = $pdo->prepare('SELECT id FROM payments WHERE provider = ? AND provider_order_id = ?');
+                $stmt->execute(['razorpay', $providerSubscriptionId]);
                 $paymentId = (string) (($stmt->fetch()['id'] ?? ''));
             }
         } elseif ($provider === 'cashfree') {
@@ -2762,6 +4741,7 @@ function handle_api(string $path, string $method): void
             $data = $payload['data'] ?? $payload;
             $paymentId = (string) ($data['order']['order_id'] ?? $data['order_id'] ?? '');
             $providerPaymentId = (string) ($data['payment']['cf_payment_id'] ?? $data['cf_payment_id'] ?? '');
+            $providerSubscriptionId = (string) ($data['subscription']['subscription_id'] ?? $data['subscription_id'] ?? '');
         } elseif ($provider === 'paypal') {
             $eventType = (string) ($payload['event_type'] ?? 'paypal.webhook');
             $valid = false;
@@ -2794,30 +4774,50 @@ function handle_api(string $path, string $method): void
             }
             $resource = $payload['resource'] ?? [];
             $providerPaymentId = (string) ($resource['id'] ?? '');
+            $providerSubscriptionId = (string) ($resource['billing_agreement_id'] ?? $resource['subscription_id'] ?? (str_contains($eventType, 'SUBSCRIPTION') ? ($resource['id'] ?? '') : ''));
+            if (!empty($resource['custom_id'])) $paymentId = (string) $resource['custom_id'];
             foreach (($resource['purchase_units'] ?? []) as $unit) {
                 if (!empty($unit['reference_id'])) $paymentId = (string) $unit['reference_id'];
             }
         } else {
             $paymentId = (string) ($payload['udf1'] ?? $payload['txnid'] ?? '');
             $providerPaymentId = (string) ($payload['mihpayid'] ?? $payload['payuMoneyId'] ?? '');
+            $providerSubscriptionId = (string) ($payload['subscription_id'] ?? $payload['subscriptionId'] ?? '');
             $valid = $paymentId !== '' && payu_response_hash_valid($payload);
         }
 
         $paidEvent = preg_match('/paid|captured|completed|success/i', $eventType . ' ' . json_encode($payload));
-        $processed = $valid && $paidEvent && process_paid_provider_event($provider, $paymentId, $providerPaymentId);
+        $subscriptionProcessed = $valid && $providerSubscriptionId !== '' && process_subscription_provider_event($provider, $eventType, $providerSubscriptionId, $payload);
+        $processed = $subscriptionProcessed || ($valid && $paidEvent && process_paid_provider_event($provider, $paymentId, $providerPaymentId));
         store_payment_webhook($provider, $eventType, $paymentId, $providerPaymentId, $valid, $payload, $processed ? 'processed' : ($valid ? 'ignored' : 'failed'));
         json_response(['ok' => true, 'processed' => $processed, 'signatureValid' => $valid]);
     }
 
     if ($method === 'POST' && $path === '/api/ai/assist') {
-        require_auth(['writer', 'moderator', 'admin']);
+        if (!feature_flag_enabled('ai')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'AI tools are disabled.'], 403);
+        $session = require_auth(['writer', 'moderator', 'admin']);
         if (!provider_status()['ai']) json_response(['error' => 'AI_NOT_CONFIGURED', 'message' => 'The AI provider is not configured on the server.'], 503);
         $body = read_json();
         $task = trim((string) ($body['task'] ?? 'improve'));
         $prompt = "Task: {$task}\nTitle: " . (string) ($body['title'] ?? '') . "\nExcerpt: " . (string) ($body['excerpt'] ?? '') . "\nContent HTML:\n" . (string) ($body['content'] ?? '');
         try {
             $result = openai_text_response($prompt, 'You are InkRiver AI. Give concise, actionable editorial help. Keep all changes optional and visible.');
-            json_response(['result' => $result ?: 'The AI provider returned an empty response.']);
+            $result = $result ?: 'The AI provider returned an empty response.';
+            $review = null;
+            if (str_starts_with($task, 'review-')) {
+                $review = [
+                    'id' => uuid_value('AIR-'),
+                    'task' => $task,
+                    'label' => ucwords(str_replace('-', ' ', substr($task, 7))),
+                    'status' => stripos($result, 'no issue') !== false || stripos($result, 'looks good') !== false ? 'passed' : 'needs_review',
+                    'result' => $result,
+                    'createdAt' => now_iso(),
+                ];
+                $slug = trim((string) ($body['slug'] ?? ''));
+                $pdo->prepare("INSERT INTO ai_review_results (id, user_id, story_slug, task, status, result_text, checks_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                    ->execute([$review['id'], $session['user']['id'], $slug ?: null, $task, $review['status'], $result, json_encode([$review], JSON_UNESCAPED_SLASHES), $review['createdAt']]);
+            }
+            json_response(['result' => $result, 'review' => $review]);
         } catch (Throwable $error) {
             json_response(['error' => 'AI_REQUEST_FAILED', 'message' => $error->getMessage()], 502);
         }
@@ -2881,11 +4881,16 @@ function handle_api(string $path, string $method): void
         $rows = $pdo->query('SELECT * FROM push_subscriptions ORDER BY updated_at DESC LIMIT 1000')->fetchAll();
         $sent = 0;
         $failed = 0;
+        $notifiedUsers = [];
         foreach ($rows as $row) {
             try {
                 send_push_message($row, $payload) ? $sent++ : $failed++;
             } catch (Throwable) {
                 $failed++;
+            }
+            if (!isset($notifiedUsers[$row['user_id']])) {
+                create_notification($row['user_id'], 'admin_push', $payload['title'], $payload['body'], $payload['url']);
+                $notifiedUsers[$row['user_id']] = true;
             }
         }
         json_response(['sent' => $sent, 'failed' => $failed, 'total' => count($rows)]);

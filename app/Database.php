@@ -29,6 +29,25 @@ final class Database
         $schema = file_get_contents(dirname(__DIR__) . '/schema.sql');
         if ($schema === false) throw new RuntimeException('schema.sql not found');
         self::$pdo->exec($schema);
+        self::ensureColumn('users', 'username', 'TEXT COLLATE NOCASE');
+        self::$pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL AND username != ''");
+        self::ensureColumn('users', 'avatar_url', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('feature_flags', 'rollout_percent', "INTEGER NOT NULL DEFAULT 100");
+        self::ensureColumn('feature_flags', 'roles_json', "TEXT NOT NULL DEFAULT '[]'");
+        self::ensureColumn('feature_flags', 'starts_at', 'TEXT');
+        self::ensureColumn('feature_flags', 'ends_at', 'TEXT');
+        self::ensureColumn('feature_flags', 'environment', "TEXT NOT NULL DEFAULT 'all'");
+        self::ensureColumn('feature_flag_history', 'environment', "TEXT NOT NULL DEFAULT 'all'");
+        self::ensureColumn('content_imports', 'metadata_json', "TEXT NOT NULL DEFAULT '{}'");
+        self::ensureColumn('content_imports', 'snapshot_json', "TEXT NOT NULL DEFAULT '[]'");
+    }
+
+    private static function ensureColumn(string $table, string $column, string $definition): void
+    {
+        $columns = self::$pdo->query("PRAGMA table_info($table)")->fetchAll();
+        foreach ($columns as $existing) {
+            if (($existing['name'] ?? '') === $column) return;
+        }
+        self::$pdo->exec("ALTER TABLE $table ADD COLUMN $column $definition");
     }
 }
-

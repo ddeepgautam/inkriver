@@ -10,6 +10,20 @@ if (str_starts_with($path, '/api/')) {
     handle_api($path, $method);
 }
 
+if ($method === 'GET' && $path === '/sitemap.xml') {
+    $artifact = seo_artifact_content('sitemap.xml');
+    foreach (security_headers() + ['Content-Type' => $artifact['mimeType'] ?? 'application/xml; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
+    echo $artifact['content'] ?? sitemap_xml();
+    exit;
+}
+
+if ($method === 'GET' && $path === '/robots.txt') {
+    $artifact = seo_artifact_content('robots.txt');
+    foreach (security_headers() + ['Content-Type' => $artifact['mimeType'] ?? 'text/plain; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
+    echo $artifact['content'] ?? "User-agent: *\nAllow: /\nSitemap: " . rtrim(app_origin(), '/') . "/sitemap.xml\n";
+    exit;
+}
+
 $file = realpath(__DIR__ . $path);
 $root = realpath(__DIR__);
 if ($file && $root && str_starts_with($file, $root) && is_file($file) && basename($file) !== 'index.php') {
@@ -33,4 +47,3 @@ foreach (security_headers() + ['Content-Type' => 'text/html; charset=utf-8', 'Ca
     header($key . ': ' . $value);
 }
 readfile(__DIR__ . '/index.html');
-

@@ -62,6 +62,8 @@ function public_user(?array $row): ?array
         'id' => $row['id'],
         'name' => $row['name'],
         'email' => $row['email'],
+        'username' => $row['username'] ?? '',
+        'avatarUrl' => $row['avatar_url'] ?? '',
         'role' => $row['role'],
         'subscription' => $row['subscription'],
         'status' => $row['status'],
@@ -77,4 +79,3 @@ function parse_json_field(?string $value, mixed $fallback): mixed
     $decoded = json_decode($value, true);
     return json_last_error() === JSON_ERROR_NONE ? $decoded : $fallback;
 }
-

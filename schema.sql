@@ -3,6 +3,8 @@
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    username TEXT UNIQUE COLLATE NOCASE,
+    avatar_url TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'reader'
       CHECK (role IN ('reader', 'subscriber', 'writer', 'moderator', 'admin')),
@@ -316,6 +318,74 @@
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS publications (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    logo_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active'
+      CHECK (status IN ('active', 'paused', 'archived')),
+    owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS publication_members (
+    publication_id TEXT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'writer'
+      CHECK (role IN ('owner', 'editor', 'writer')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (publication_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '/',
+    read_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS post_revisions (
+    id TEXT PRIMARY KEY,
+    story_id TEXT NOT NULL,
+    story_slug TEXT NOT NULL,
+    revision_number INTEGER NOT NULL,
+    author_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    snapshot_json TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS billing_invoices (
+    id TEXT PRIMARY KEY,
+    invoice_number TEXT NOT NULL UNIQUE,
+    payment_id TEXT REFERENCES payments(id) ON DELETE SET NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    tax_amount INTEGER NOT NULL DEFAULT 0,
+    billing_name TEXT NOT NULL DEFAULT '',
+    billing_email TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'issued'
+      CHECK (status IN ('issued', 'void', 'refunded')),
+    issued_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+  );
+
+  CREATE TABLE IF NOT EXISTS seo_artifacts (
+    key TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS payment_webhooks (
     id TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
@@ -487,6 +557,150 @@
     UNIQUE(media_asset_id, variant)
   );
 
+  CREATE TABLE IF NOT EXISTS ai_review_results (
+    id TEXT PRIMARY KEY,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    story_slug TEXT,
+    task TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
+    result_text TEXT NOT NULL,
+    checks_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS email_templates (
+    key TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS newsletters (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    publication_id TEXT REFERENCES publications(id) ON DELETE SET NULL,
+    subject TEXT NOT NULL,
+    content_html TEXT NOT NULL,
+    audience TEXT NOT NULL DEFAULT 'all',
+    status TEXT NOT NULL DEFAULT 'draft'
+      CHECK (status IN ('draft', 'scheduled', 'sending', 'sent', 'cancelled')),
+    scheduled_at TEXT,
+    sent_at TEXT,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS newsletter_events (
+    id TEXT PRIMARY KEY,
+    newsletter_id TEXT NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('queued', 'sent', 'open', 'click', 'failed')),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS newsletter_suppressions (
+    email TEXT PRIMARY KEY,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    reason TEXT NOT NULL DEFAULT 'unsubscribe',
+    source_newsletter_id TEXT REFERENCES newsletters(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS publication_invites (
+    id TEXT PRIMARY KEY,
+    publication_id TEXT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'writer'
+      CHECK (role IN ('owner', 'editor', 'writer')),
+    token_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')),
+    invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS editorial_assignments (
+    id TEXT PRIMARY KEY,
+    story_slug TEXT NOT NULL,
+    assignee_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    role TEXT NOT NULL DEFAULT 'editor',
+    due_at TEXT,
+    priority TEXT NOT NULL DEFAULT 'Normal',
+    status TEXT NOT NULL DEFAULT 'assigned'
+      CHECK (status IN ('assigned', 'in_progress', 'review', 'done', 'cancelled')),
+    notes TEXT NOT NULL DEFAULT '',
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS draft_collaboration_notes (
+    id TEXT PRIMARY KEY,
+    story_slug TEXT NOT NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    note_type TEXT NOT NULL DEFAULT 'comment',
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open'
+      CHECK (status IN ('open', 'resolved', 'dismissed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS feature_flags (
+    key TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    rollout_percent INTEGER NOT NULL DEFAULT 100,
+    roles_json TEXT NOT NULL DEFAULT '[]',
+    starts_at TEXT,
+    ends_at TEXT,
+    environment TEXT NOT NULL DEFAULT 'all',
+    description TEXT NOT NULL DEFAULT '',
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS feature_flag_history (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    rollout_percent INTEGER NOT NULL DEFAULT 100,
+    roles_json TEXT NOT NULL DEFAULT '[]',
+    starts_at TEXT,
+    ends_at TEXT,
+    environment TEXT NOT NULL DEFAULT 'all',
+    description TEXT NOT NULL DEFAULT '',
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS content_imports (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued'
+      CHECK (status IN ('queued', 'processed', 'failed', 'rolled_back')),
+    imported_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    snapshot_json TEXT NOT NULL DEFAULT '[]',
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS checkout_recovery_events (
+    id TEXT PRIMARY KEY,
+    payment_id TEXT REFERENCES payments(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    event_type TEXT NOT NULL DEFAULT 'reminder',
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS security_policies (
     key TEXT PRIMARY KEY,
     value_json TEXT NOT NULL,
@@ -526,6 +740,17 @@
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS moderation_dictionary (
+    id TEXT PRIMARY KEY,
+    term TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    kind TEXT NOT NULL DEFAULT 'blocked_word',
+    severity TEXT NOT NULL DEFAULT 'Medium',
+    action TEXT NOT NULL DEFAULT 'queue',
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS pwa_sync_queue (
     id TEXT PRIMARY KEY,
     user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
@@ -543,6 +768,22 @@
     status TEXT NOT NULL,
     details_json TEXT NOT NULL DEFAULT '{}',
     checked_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS deployment_updates (
+    id TEXT PRIMARY KEY,
+    action TEXT NOT NULL DEFAULT 'pull',
+    status TEXT NOT NULL
+      CHECK (status IN ('running', 'success', 'failed', 'rolled_back')),
+    branch TEXT NOT NULL DEFAULT '',
+    before_commit TEXT NOT NULL DEFAULT '',
+    after_commit TEXT NOT NULL DEFAULT '',
+    changed_files_json TEXT NOT NULL DEFAULT '[]',
+    log TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    triggered_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
 
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
@@ -567,12 +808,27 @@
   CREATE INDEX IF NOT EXISTS idx_ad_campaigns_placement_status ON ad_campaigns(placement, status);
   CREATE INDEX IF NOT EXISTS idx_ad_events_campaign_type ON ad_events(campaign_id, event_type);
   CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_publications_slug ON publications(slug, status);
+  CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, read_at, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_post_revisions_story ON post_revisions(story_slug, revision_number DESC);
+  CREATE INDEX IF NOT EXISTS idx_invoices_user_issued ON billing_invoices(user_id, issued_at DESC);
   CREATE INDEX IF NOT EXISTS idx_payment_webhooks_provider ON payment_webhooks(provider, processed_at DESC);
   CREATE INDEX IF NOT EXISTS idx_provider_credentials_provider ON provider_credentials(provider, enabled);
   CREATE INDEX IF NOT EXISTS idx_subscription_events_subscription ON subscription_events(subscription_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_dunning_status_next ON subscription_dunning(status, next_attempt_at);
   CREATE INDEX IF NOT EXISTS idx_payout_transfers_payout ON payout_transfers(payout_id, status);
   CREATE INDEX IF NOT EXISTS idx_background_jobs_status_available ON background_jobs(status, available_at);
+  CREATE INDEX IF NOT EXISTS idx_ai_review_story_created ON ai_review_results(story_slug, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_newsletters_status_scheduled ON newsletters(status, scheduled_at);
+  CREATE INDEX IF NOT EXISTS idx_newsletter_events_newsletter ON newsletter_events(newsletter_id, event_type);
+  CREATE INDEX IF NOT EXISTS idx_publication_invites_email ON publication_invites(email, status);
+  CREATE INDEX IF NOT EXISTS idx_editorial_assignments_story ON editorial_assignments(story_slug, status);
+  CREATE INDEX IF NOT EXISTS idx_draft_notes_story ON draft_collaboration_notes(story_slug, status);
+  CREATE INDEX IF NOT EXISTS idx_feature_flags_enabled ON feature_flags(enabled);
+  CREATE INDEX IF NOT EXISTS idx_imports_created ON content_imports(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_checkout_recovery_payment ON checkout_recovery_events(payment_id, event_type);
   CREATE INDEX IF NOT EXISTS idx_media_variants_asset ON media_variants(media_asset_id);
   CREATE INDEX IF NOT EXISTS idx_moderation_rules_kind ON moderation_rules(kind, enabled);
+  CREATE INDEX IF NOT EXISTS idx_moderation_dictionary_kind ON moderation_dictionary(kind, action);
   CREATE INDEX IF NOT EXISTS idx_pwa_sync_user_status ON pwa_sync_queue(user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_deployment_updates_created ON deployment_updates(created_at DESC);
