@@ -4519,6 +4519,7 @@ function adminTemplate() {
         ${adminShortcutTemplate("users", "User management", "Search members and manage roles, plans, suspensions, or deletion.", "/admin/users", `${state.users.length} users`)}
         ${adminShortcutTemplate("gauge", "Site SEO", "Control search appearance, sitemaps, schema, robots, and verification.", "/admin/seo", "Site-wide")}
         ${adminShortcutTemplate("card", "Settings", "Manage memberships, payments, currencies, and social sign-in.", "/admin/settings", "Platform")}
+        ${adminShortcutTemplate("download", "GitHub updates", "Pull the latest code, run migrations, and review deployment logs.", "/admin/production", "Deployment")}
       </section>
       <section class="admin-dashboard-columns">
         <div class="work-panel">
@@ -4544,7 +4545,7 @@ function adminShellTemplate(title, description, content, actions = "") {
     ["shield", "Moderation", "/admin/moderation"],
     ["link", "Copyright", "/admin/copyright"],
     ["comment", "Support", "/admin/support"],
-    ["spark", "Production", "/admin/production"],
+    ["download", "GitHub Updates", "/admin/production"],
     ["gauge", "Platform health", "/admin/health"],
     ["lock", "Security", "/admin/security"],
     ["gauge", "Site SEO", "/admin/seo"],
