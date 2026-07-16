@@ -2541,6 +2541,13 @@ button {
   gap: 12px;
 }
 
+.credential-preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
 .settings-toggle-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4443,6 +4450,23 @@ button:disabled {
 
 .auth-form input {
   min-height: 44px;
+}
+
+.password-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.password-toggle {
+  min-width: 70px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--text);
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .auth-form > small {

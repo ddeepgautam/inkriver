@@ -3830,6 +3830,34 @@ function handle_api(string $path, string $method): void
         json_response(['users' => array_map('public_user', $stmt->fetchAll())]);
     }
 
+    if ($method === 'POST' && $path === '/api/admin/users') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $name = trim((string) ($body['name'] ?? ''));
+        $email = strtolower(trim((string) ($body['email'] ?? '')));
+        $password = (string) ($body['password'] ?? '');
+        $roles = ['reader', 'subscriber', 'writer', 'moderator', 'admin'];
+        $statuses = ['active', 'suspended'];
+        $role = in_array($body['role'] ?? 'reader', $roles, true) ? (string) ($body['role'] ?? 'reader') : 'reader';
+        $status = in_array($body['status'] ?? 'active', $statuses, true) ? (string) ($body['status'] ?? 'active') : 'active';
+        $subscription = substr((string) ($body['subscription'] ?? 'Free'), 0, 120) ?: 'Free';
+        if ($name === '' || strlen($name) > 80) json_response(['error' => 'INVALID_NAME', 'message' => 'Enter a name up to 80 characters.'], 400);
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_EMAIL', 'message' => 'Enter a valid email address.'], 400);
+        $passwordError = password_strength_error($password);
+        if ($passwordError) json_response(['error' => 'WEAK_PASSWORD', 'message' => $passwordError], 400);
+        $exists = $pdo->prepare("SELECT id FROM users WHERE email = ? AND status != 'deleted'");
+        $exists->execute([$email]);
+        if ($exists->fetch()) json_response(['error' => 'EMAIL_EXISTS', 'message' => 'A user with this email already exists.'], 409);
+        $id = uuid_value('USR-');
+        $now = now_iso();
+        $pdo->prepare('INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)')
+            ->execute([$id, $name, $email, hash_password_value($password), $role, $subscription, $status, $now, $now]);
+        audit_log($session['user']['id'], 'admin.user_create', 'user', $id, compact('role', 'status', 'subscription'));
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+        $stmt->execute([$id]);
+        json_response(['user' => public_user($stmt->fetch())], 201);
+    }
+
     if (preg_match('#^/api/admin/users/([^/]+)$#', $path, $m) && $method === 'PATCH') {
         $session = require_auth(['admin']);
         $body = read_json();

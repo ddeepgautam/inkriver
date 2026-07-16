@@ -1513,6 +1513,7 @@ const state = {
   loginMessage: "",
   authMode: "login",
   authForm: { name: "", email: "", password: "", twoFactorCode: "" },
+  authPasswordVisible: false,
   authBusy: false,
   sessionReady: false,
   onboardingOpen: Boolean(initialUser && !initialRecommendation.completedOnboarding),
@@ -2194,7 +2195,7 @@ function escapeHtml(value) {
 
 function safeImageUrl(value) {
   const url = String(value || "").trim();
-  if (/^https?:\/\//i.test(url) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(url)) return url;
+  if (/^https?:\/\//i.test(url) || /^\/uploads\//i.test(url) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(url)) return url;
   return "";
 }
 
@@ -4729,6 +4730,7 @@ function userManagementTemplate() {
           <span>Search users</span>
           <input id="userSearch" value="${state.userSearch}" placeholder="Search by name, email, or user ID" />
         </label>
+        <button class="primary-button" data-action="create-admin-user">${icon("users", 15)}Create user</button>
         <div class="user-counts">
           <span><strong>${state.users.length}</strong><em>Total users</em></span>
           <span><strong>${activeCount}</strong><em>Active</em></span>
@@ -5222,6 +5224,18 @@ function subscriptionManagerTemplate() {
 function gatewaySettingsTemplate() {
   const credentialRows = state.providerCredentials || [];
   const providerTests = ["razorpay", "paypal", "payu", "cashfree", "openai", "email", "push", "geoip", "google", "facebook"];
+  const credentialPresets = [
+    ["razorpay", "key_id"], ["razorpay", "key_secret"],
+    ["paypal", "client_id"], ["paypal", "client_secret"], ["paypal", "webhook_id"],
+    ["payu", "merchant_key"], ["payu", "salt"],
+    ["cashfree", "client_id"], ["cashfree", "client_secret"],
+    ["openai", "api_key"], ["email", "api_url"], ["email", "api_key"],
+    ["push", "api_url"], ["push", "api_key"],
+    ["google", "client_id"], ["google", "client_secret"],
+    ["facebook", "app_id"], ["facebook", "app_secret"],
+    ["geoip", "api_url"], ["geoip", "api_key"],
+    ["deployment", "git_binary"], ["deployment", "php_binary"],
+  ];
   return `
     <div class="work-panel gateway-settings-panel">
       <div class="panel-title">${icon("card")}<h2>Provider configuration</h2></div>
@@ -5269,6 +5283,8 @@ function gatewaySettingsTemplate() {
       </div>
       <section class="credential-vault">
         <div class="panel-title">${icon("lock", 16)}<h3>Encrypted API key vault</h3></div>
+        <p class="settings-note">Choose a preset below to add API keys for payments, AI, email, push, social login, IP intelligence, or server deployment. Values are encrypted and never shown after saving.</p>
+        <div class="credential-preset-grid">${credentialPresets.map(([provider, key]) => `<button class="secondary-button" data-credential-provider="${provider}" data-credential-key="${key}">${escapeHtml(provider)}.${escapeHtml(key)}</button>`).join("")}</div>
         <div class="settings-actions">
           <button class="primary-button" data-action="add-provider-credential">Add credential</button>
           ${providerTests.map((provider) => `<button class="secondary-button" data-test-provider="${provider}">Test ${provider}</button>`).join("")}
@@ -5434,7 +5450,7 @@ function loginTemplate() {
         <form class="auth-form" id="authForm">
           ${state.authMode === "register" ? `<label><span>Full name</span><input id="authName" name="name" autocomplete="name" maxlength="80" value="${escapeHtml(state.authForm.name)}" required /></label>` : ""}
           <label><span>Email address</span><input id="authEmail" name="email" type="email" autocomplete="email" maxlength="254" value="${escapeHtml(state.authForm.email)}" required /></label>
-          <label><span>Password</span><input id="authPassword" name="password" type="password" autocomplete="${state.authMode === "register" ? "new-password" : "current-password"}" minlength="10" maxlength="128" required /></label>
+          <label><span>Password</span><div class="password-field"><input id="authPassword" name="password" type="${state.authPasswordVisible ? "text" : "password"}" autocomplete="${state.authMode === "register" ? "new-password" : "current-password"}" minlength="10" maxlength="128" required /><button type="button" class="password-toggle" data-action="toggle-auth-password" aria-label="${state.authPasswordVisible ? "Hide password" : "Show password"}">${state.authPasswordVisible ? "Hide" : "Show"}</button></div></label>
           ${state.authMode === "login" ? `<label><span>Authenticator or recovery code</span><input id="authTwoFactorCode" name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="20" value="${escapeHtml(state.authForm.twoFactorCode || "")}" placeholder="Only needed when 2FA is enabled" /></label>` : ""}
           ${state.authMode === "register" ? `<small>Use at least 10 characters with uppercase, lowercase, and a number.</small>` : ""}
           <button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait…" : state.authMode === "register" ? "Create secure account" : "Sign in"}</button>
@@ -5473,6 +5489,7 @@ function adminModalTemplate() {
     ad: { title: "Create ad campaign", action: "submit-admin-modal-ad", fields: [["name", "Campaign name"], ["sponsor", "Sponsor"], ["headline", "Headline"], ["targetUrl", "Target URL"], ["placement", "Placement"]] },
     discount: { title: "Create discount", action: "submit-admin-modal-discount", fields: [["code", "Code"], ["discountType", "Type percent or amount"], ["discountValue", "Value"], ["audience", "Audience"]] },
     credential: { title: "Add provider credential", action: "submit-admin-modal-credential", fields: [["provider", "Provider"], ["key", "Credential key"], ["value", "Secret value"], ["environment", "Environment"]] },
+    user: { title: "Create user", action: "submit-admin-modal-user", fields: [["name", "Full name"], ["email", "Email"], ["password", "Temporary password"], ["role", "Role"], ["subscription", "Subscription"], ["status", "Status"]] },
     geoip: { title: "Configure IP intelligence", action: "submit-admin-modal-geoip", fields: [["apiUrl", "API URL with {ip}"], ["apiKey", "API key"]] },
     translationLanguage: { title: "Add translation language", action: "submit-admin-modal-language", fields: [["language", "Language name"], ["locale", "Locale code"]] },
     payout: { title: "Create writer payout", action: "submit-admin-modal-payout", fields: [["writerUserId", "Writer user ID"]] },
@@ -6169,6 +6186,8 @@ document.addEventListener("click", async (event) => {
   const adClick = target.dataset.adClick;
   const adUrl = target.dataset.adUrl;
   const testProvider = target.dataset.testProvider;
+  const credentialProvider = target.dataset.credentialProvider;
+  const credentialKey = target.dataset.credentialKey;
   const sendNewsletter = target.dataset.sendNewsletter;
   const exportType = target.dataset.exportType;
   const inviteToken = target.dataset.inviteToken;
@@ -6211,9 +6230,16 @@ document.addEventListener("click", async (event) => {
     render();
     return;
   }
+  if (action === "toggle-auth-password") {
+    state.authPasswordVisible = !state.authPasswordVisible;
+    render();
+    return;
+  }
   if (action === "create-ad-campaign") return openAdminModal("ad", { placement: "leaderboard" });
   if (action === "create-discount") return openAdminModal("discount", { discountType: "percent", discountValue: "10", audience: "All readers" });
   if (action === "add-provider-credential") return openAdminModal("credential", { environment: "production" });
+  if (credentialProvider && credentialKey) return openAdminModal("credential", { provider: credentialProvider, key: credentialKey, environment: "production" });
+  if (action === "create-admin-user") return openAdminModal("user", { role: "reader", subscription: "Free", status: "active" });
   if (action === "configure-ip-intelligence") return openAdminModal("geoip", {});
   if (action === "add-translation-language") return openAdminModal("translationLanguage", {});
   if (action === "create-payout") return openAdminModal("payout", {});
@@ -6259,6 +6285,14 @@ document.addEventListener("click", async (event) => {
         state.providerCredentials = payload.credentials || state.providerCredentials;
         state.providerStatus = payload.providers || state.providerStatus;
         state.providerTestMessage = `${fields.provider || "Provider"} credential saved in the encrypted vault.`;
+      }
+      if (action === "submit-admin-modal-user") {
+        const payload = await apiRequest("/api/admin/users", {
+          method: "POST",
+          body: JSON.stringify(fields),
+        });
+        state.users = [payload.user, ...state.users.filter((user) => user.id !== payload.user.id)];
+        state.userMessage = `User created: ${payload.user.email}`;
       }
       if (action === "submit-admin-modal-language") {
         const cleanLocale = String(fields.locale || "").trim();
