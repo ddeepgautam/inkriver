@@ -1,5 +1,5 @@
-const CACHE = "inkriver-v21-github-jump";
-const CORE = ["/", "/index.html", "/src/app.js?v=20260716-github-jump", "/src/styles.css?v=20260716-github-jump", "/manifest.webmanifest", "/src/icon.svg"];
+const CACHE = "inkriver-v22-admin-mobile";
+const CORE = ["/", "/index.html", "/src/app.js?v=20260716-admin-mobile", "/src/styles.css?v=20260716-admin-mobile", "/manifest.webmanifest", "/src/icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));

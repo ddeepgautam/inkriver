@@ -1453,9 +1453,11 @@ button {
   grid-template-columns: 236px minmax(0, 1fr);
   gap: 24px;
   max-width: 1280px;
+  width: 100%;
   min-height: calc(100vh - 68px);
   margin: 0 auto;
   padding: 32px 24px 60px;
+  overflow-x: clip;
 }
 
 .admin-sidebar {
@@ -1613,6 +1615,7 @@ button {
 
 .admin-main {
   min-width: 0;
+  max-width: 100%;
 }
 
 .admin-page-header {
@@ -3552,6 +3555,13 @@ button:disabled {
 }
 
 @media (max-width: 680px) {
+  html,
+  body,
+  .app-shell {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
   .header-inner {
     height: auto;
     min-height: 64px;
@@ -3578,7 +3588,34 @@ button:disabled {
   }
 
   .admin-app {
-    padding: 20px 16px 48px;
+    width: 100%;
+    max-width: 100vw;
+    padding: 20px 12px 48px;
+    overflow-x: clip;
+  }
+
+  .admin-main,
+  .admin-main > *,
+  .work-panel,
+  .production-panel,
+  .gateway-settings-panel,
+  .user-management-panel {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .admin-sidebar {
+    max-width: calc(100vw - 24px);
+  }
+
+  .admin-sidebar nav {
+    max-width: 100%;
+  }
+
+  .admin-nav-item {
+    flex: 0 0 auto;
+    max-width: 74vw;
+    white-space: nowrap;
   }
 
   .admin-page-header {
@@ -3789,12 +3826,61 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .user-admin-row,
+  .blog-admin-row,
+  .plan-admin-row,
+  .category-row,
+  .compact-list article,
+  .promotion-list article,
+  .queue-row,
+  .inventory-row {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .user-actions,
+  .settings-actions,
+  .blog-admin-actions,
+  .category-actions {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .user-actions > button,
+  .settings-actions > button,
+  .blog-admin-actions > button,
+  .category-actions > button,
+  .export-grid > button {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .user-counts {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .plan-admin-row {
     grid-template-columns: 1fr;
+  }
+
+  .ops-table {
+    max-width: calc(100vw - 24px);
+  }
+
+  .ops-table-head,
+  .ops-table-row {
+    min-width: 620px;
+    gap: 10px;
+    padding: 11px 12px;
+  }
+
+  .compact-ops .ops-table-head,
+  .compact-ops .ops-table-row {
+    min-width: 520px;
+  }
+
+  .admin-form-modal {
+    width: min(100%, calc(100vw - 24px));
   }
 
   .plan-admin-row > div:last-child {
@@ -4078,6 +4164,8 @@ button:disabled {
   border: 1px solid var(--line);
   background: var(--surface);
   overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
 }
 
 .ops-table-head,
@@ -5019,8 +5107,33 @@ button:disabled {
   .account-center > header h1 { font-size: 34px; }
   .health-usage { grid-template-columns: repeat(2, 1fr); }
   .production-panel.wide-panel { grid-column: auto; }
+  .production-grid,
+  .production-panel,
   .installer-grid,
-  .export-grid { grid-template-columns: 1fr; }
+  .export-grid,
+  .credential-preset-grid,
+  .feature-flag-presets {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .installer-grid,
+  .export-grid { grid-template-columns: minmax(0, 1fr); }
+  .credential-preset-grid,
+  .feature-flag-presets,
+  .installer-steps {
+    align-items: stretch;
+  }
+  .credential-preset-grid > button,
+  .feature-flag-presets > button,
+  .installer-steps > button {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .compact-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
   .copyright-workflow { justify-content: flex-start; overflow-x: auto; }
   .copyright-workflow > * { flex: 0 0 auto; }
   .reader-toolbar { margin-bottom: 18px; }
