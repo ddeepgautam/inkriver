@@ -4256,12 +4256,12 @@ function productionSuiteTemplate() {
         <div class="installer-guide">
           <strong>${escapeHtml(activeStep[1])} setup</strong>
           <p>${installerGuideText(activeStep[0])}</p>
-          <div class="settings-actions"><button class="secondary-button" data-action="add-provider-credential">Add encrypted credential</button><button class="secondary-button" data-action="run-production-jobs">Test jobs</button><button class="secondary-button" data-action="export-installer-report">Export launch report</button><button class="secondary-button" data-route="/admin/security">Security center</button></div>
+          <div class="settings-actions"><button class="secondary-button" data-action="add-provider-credential">Add encrypted credential</button><button class="secondary-button" data-action="scroll-github-updates">GitHub updates</button><button class="secondary-button" data-action="run-production-jobs">Test jobs</button><button class="secondary-button" data-action="export-installer-report">Export launch report</button><button class="secondary-button" data-route="/admin/security">Security center</button></div>
         </div>
         <div class="compact-list readiness-list">${(installer.readiness || []).map((item) => `<article><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail || "")}</small></span><b class="status-pill">${item.ready ? "ready" : "needed"}</b></article>`).join("")}</div>
       </article>
 
-      <article class="work-panel production-panel wide-panel">
+      <article class="work-panel production-panel wide-panel" id="github-updates-panel">
         <div class="panel-title">${icon("download")}<h2>GitHub updates</h2></div>
         <div class="installer-grid">
           <span><strong>Status</strong><small>${deployment.enabled ? "Git updater ready" : "Unavailable"}</small></span>
@@ -6233,6 +6233,10 @@ document.addEventListener("click", async (event) => {
   if (action === "toggle-auth-password") {
     state.authPasswordVisible = !state.authPasswordVisible;
     render();
+    return;
+  }
+  if (action === "scroll-github-updates") {
+    document.getElementById("github-updates-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
   if (action === "create-ad-campaign") return openAdminModal("ad", { placement: "leaderboard" });
