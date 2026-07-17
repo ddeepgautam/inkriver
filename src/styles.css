@@ -3120,7 +3120,8 @@ button:disabled {
   border-top: 1px solid var(--line);
 }
 
-.site-footer div {
+.footer-links,
+.footer-social {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
@@ -3129,6 +3130,72 @@ button:disabled {
 .site-footer button:not(.brand) {
   color: var(--muted);
   font-weight: 700;
+}
+
+.footer-social {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.footer-social a {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.footer-social a:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.social-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.social-profile-grid label,
+.social-profile-panel > label {
+  display: grid;
+  gap: 6px;
+}
+
+.social-profile-grid label > span,
+.social-profile-panel > label > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.social-admin-icon {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--soft);
+  color: var(--accent-strong);
+  font-size: 10px;
+}
+
+.contact-mail-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: max-content;
+  text-decoration: none;
 }
 
 .profile-settings-grid .profile-message {
@@ -3639,7 +3706,8 @@ button:disabled {
   .post-editor-sidebar,
   .seo-section-grid,
   .settings-form-grid,
-  .settings-toggle-grid {
+  .settings-toggle-grid,
+  .social-profile-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3909,6 +3977,11 @@ button:disabled {
     align-items: flex-start;
     flex-direction: column;
     padding: 24px 16px 38px;
+  }
+
+  .footer-links,
+  .footer-social {
+    justify-content: flex-start;
   }
 
   .search-shell {

@@ -435,7 +435,7 @@ function persistComments() {
 }
 
 function loadGatewaySettings() {
-  return { fxApiKey: "", cashfreeEnvironment: "sandbox", googleLoginEnabled: true, facebookLoginEnabled: true, googleClientId: "", facebookAppId: "" };
+  return { fxApiKey: "", cashfreeEnvironment: "sandbox", googleLoginEnabled: true, facebookLoginEnabled: true, googleClientId: "", facebookAppId: "", contactEmail: "", socialProfiles: {} };
 }
 
 function persistGatewaySettings() {
@@ -444,6 +444,8 @@ function persistGatewaySettings() {
     facebookLoginEnabled: state.gatewaySettings.facebookLoginEnabled !== false,
     cashfreeEnvironment: state.gatewaySettings.cashfreeEnvironment || "sandbox",
     translationLanguages: state.translationLanguages,
+    socialProfiles: state.gatewaySettings.socialProfiles || {},
+    contactEmail: state.gatewaySettings.contactEmail || "",
   });
 }
 
@@ -2907,6 +2909,8 @@ function appTemplate() {
             ? supportCenterTemplate()
           : state.path.startsWith("/about")
             ? aboutPageTemplate()
+          : state.path.startsWith("/contact")
+            ? contactPageTemplate()
           : state.path.startsWith("/terms")
             ? termsPageTemplate()
           : state.path.startsWith("/admin")
@@ -4468,6 +4472,17 @@ function aboutPageTemplate() {
   </main>`;
 }
 
+function contactPageTemplate() {
+  const contactEmail = state.gatewaySettings.contactEmail || "support@inkriver.local";
+  return `<main class="account-center"><header><h1>Contact us</h1><p>Reach the InkRiver team for publishing support, membership help, partnerships, advertising, and platform operations.</p></header>
+    <section class="privacy-layout"><div class="privacy-controls">
+      <section><h2>General support</h2><p>Use the support center for account, payment, subscription, security, publishing, or technical questions.</p><button class="primary-button" data-route="/support">${icon("comment", 16)}Open support center</button></section>
+      <section><h2>Email</h2><p>Send detailed requests, legal notices, or partnership enquiries to <strong>${escapeHtml(contactEmail)}</strong>.</p><a class="secondary-button contact-mail-link" href="mailto:${escapeHtml(contactEmail)}">${icon("mail", 16)}Email us</a></section>
+      <section><h2>For creators and advertisers</h2><p>Writers, publications, sponsors, and media partners can contact us for onboarding, campaign setup, paid memberships, or payout questions.</p></section>
+    </div><aside class="privacy-actions"><h2>Quick links</h2><button data-route="/about">${icon("link", 16)}<span><strong>About us</strong><small>What InkRiver does</small></span></button><button data-route="/security">${icon("lock", 16)}<span><strong>Security</strong><small>Account protection</small></span></button><button data-route="/privacy">${icon("shield", 16)}<span><strong>Privacy</strong><small>Data controls</small></span></button></aside></section>
+  </main>`;
+}
+
 function termsPageTemplate() {
   return `<main class="account-center"><header><h1>Terms</h1><p>These terms describe the basic rules for using InkRiver, publishing content, memberships, payments, and community features.</p></header>
     <section class="privacy-layout"><div class="privacy-controls">
@@ -4618,7 +4633,7 @@ function adminSettingsTemplate() {
   return adminShellTemplate(
     "Platform settings",
     "Manage subscription packages, payment credentials, currency conversion, and social login.",
-    `<section class="admin-settings-stack">${subscriptionManagerTemplate()}${publicationManagerTemplate()}${gatewaySettingsTemplate()}</section>`,
+    `<section class="admin-settings-stack">${subscriptionManagerTemplate()}${publicationManagerTemplate()}${socialProfileManagerTemplate()}${gatewaySettingsTemplate()}</section>`,
   );
 }
 
@@ -5305,6 +5320,32 @@ function gatewaySettingsTemplate() {
   `;
 }
 
+function socialProfilePlatforms() {
+  return [
+    { id: "facebook", name: "Facebook", icon: "f", prefix: "https://facebook.com/" },
+    { id: "instagram", name: "Instagram", icon: "IG", prefix: "https://instagram.com/" },
+    { id: "x", name: "X", icon: "X", prefix: "https://x.com/" },
+    { id: "linkedin", name: "LinkedIn", icon: "in", prefix: "https://linkedin.com/company/" },
+    { id: "youtube", name: "YouTube", icon: "YT", prefix: "https://youtube.com/@" },
+    { id: "threads", name: "Threads", icon: "Th", prefix: "https://threads.net/@" },
+    { id: "telegram", name: "Telegram", icon: "Tg", prefix: "https://t.me/" },
+    { id: "whatsapp", name: "WhatsApp", icon: "WA", prefix: "https://wa.me/" },
+  ];
+}
+
+function socialProfileManagerTemplate() {
+  const profiles = state.gatewaySettings.socialProfiles || {};
+  return `<div class="work-panel social-profile-panel">
+    <div class="panel-title">${icon("link")}<h2>Footer social links</h2></div>
+    <p class="settings-note">Enter only the username, handle, company slug, channel handle, or WhatsApp number. Filled profiles appear as themed icons in the public footer.</p>
+    <div class="social-profile-grid">
+      ${socialProfilePlatforms().map((platform) => `<label><span><b class="social-admin-icon">${escapeHtml(platform.icon)}</b>${escapeHtml(platform.name)}</span><input data-social-profile="${platform.id}" value="${escapeHtml(profiles[platform.id] || "")}" placeholder="${platform.id === "whatsapp" ? "919876543210" : "inkriver"}" /></label>`).join("")}
+    </div>
+    <label><span>Contact email</span><input data-setting="contactEmail" value="${escapeHtml(state.gatewaySettings.contactEmail || "")}" placeholder="support@example.com" /></label>
+    <div class="settings-actions"><button class="primary-button" data-action="save-gateway-settings">Save footer links</button><span>${state.gatewaySettingsSaved ? "Footer links saved" : "Only filled profiles will appear publicly."}</span></div>
+  </div>`;
+}
+
 function adCampaignManagerTemplate() {
   if (!featureEnabled("ads")) return `<div class="work-panel">${featureDisabledMessage("Advertisement campaigns")}</div>`;
   const placementLabel = { leaderboard: "Leaderboard", square: "Square", native: "Native story" };
@@ -5564,17 +5605,27 @@ function onboardingTemplate() {
 function footerTemplate() {
   const links = [
     ["About us", "/about"],
+    ["Contact us", "/contact"],
     ["Terms", "/terms"],
     ["Privacy", "/privacy"],
     ["Security", "/security"],
     ["Support", "/support"],
   ];
+  const profiles = state.gatewaySettings.socialProfiles || {};
+  const socialLinks = socialProfilePlatforms().map((platform) => {
+    const username = String(profiles[platform.id] || "").trim().replace(/^@+/, "");
+    if (!username) return null;
+    const clean = platform.id === "whatsapp" ? username.replace(/[^\d]/g, "") : username.replace(/^https?:\/\/[^/]+\//i, "").replace(/^@+/, "");
+    if (!clean) return null;
+    return { ...platform, url: platform.prefix + encodeURIComponent(clean).replace(/%2F/g, "/") };
+  }).filter(Boolean);
   return `
     <footer class="site-footer">
       <button class="brand compact" data-route="/"><span class="brand-mark">IR</span><span>InkRiver</span></button>
-      <div>
+      <div class="footer-links">
         ${links.map(([label, route]) => `<button data-route="${route}">${label}</button>`).join("")}
       </div>
+      ${socialLinks.length ? `<div class="footer-social" aria-label="Social media links">${socialLinks.map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(item.name)}" title="${escapeHtml(item.name)}"><span>${escapeHtml(item.icon)}</span></a>`).join("")}</div>` : ""}
     </footer>
   `;
 }
@@ -5999,6 +6050,15 @@ function bindInputs() {
   document.querySelectorAll("[data-setting]").forEach((field) => {
     const update = (event) => {
       state.gatewaySettings[event.target.dataset.setting] = event.target.value;
+      state.gatewaySettingsSaved = false;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-social-profile]").forEach((field) => {
+    const update = (event) => {
+      state.gatewaySettings.socialProfiles = state.gatewaySettings.socialProfiles || {};
+      state.gatewaySettings.socialProfiles[event.target.dataset.socialProfile] = event.target.value;
       state.gatewaySettingsSaved = false;
     };
     field.addEventListener("input", update);
