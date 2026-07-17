@@ -1295,11 +1295,68 @@ async function loadSupportTickets() {
       priority: ticket.priority,
       status: ticket.status,
       owner: ticket.owner,
-      age: new Date(ticket.created_at).toLocaleString(),
+      details: ticket.details || "",
+      requesterName: ticket.requesterName || "",
+      requesterEmail: ticket.requesterEmail || "",
+      age: new Date(ticket.updatedAt || ticket.createdAt || ticket.created_at).toLocaleString(),
     }));
+    if (state.supportSelectedTicketId && !state.operations.tickets.some((ticket) => ticket.id === state.supportSelectedTicketId)) {
+      state.supportSelectedTicketId = "";
+      state.supportTicketDetail = null;
+    }
   } catch (error) {
     state.supportMessage = error.message;
   }
+}
+
+async function loadSupportTicketDetail(ticketId) {
+  const payload = await apiRequest(`/api/support/tickets/${encodeURIComponent(ticketId)}`);
+  state.supportSelectedTicketId = ticketId;
+  state.supportTicketDetail = payload;
+  state.supportReply = {
+    body: "",
+    visibility: "public",
+    status: payload.ticket?.status || "Open",
+    priority: payload.ticket?.priority || "Normal",
+    owner: payload.ticket?.owner || "Support",
+  };
+}
+
+async function submitSupportTicket() {
+  const form = new FormData();
+  Object.entries(state.supportTicketForm).forEach(([key, value]) => form.append(key, value || ""));
+  const fileInput = document.getElementById("supportTicketFiles");
+  [...(fileInput?.files || [])].forEach((file) => form.append("attachments[]", file));
+  const payload = await apiRequest("/api/support/tickets", { method: "POST", body: form });
+  state.supportCreating = false;
+  state.supportTicketForm = { subject: "", category: "Account", priority: "Normal", details: "" };
+  await loadSupportTickets();
+  await loadSupportTicketDetail(payload.ticket.id);
+  state.supportMessage = "Support ticket created.";
+}
+
+async function submitSupportReply() {
+  if (!state.supportSelectedTicketId) return;
+  const form = new FormData();
+  form.append("body", state.supportReply.body || "");
+  form.append("visibility", state.supportReply.visibility || "public");
+  const fileInput = document.getElementById("supportReplyFiles");
+  [...(fileInput?.files || [])].forEach((file) => form.append("attachments[]", file));
+  await apiRequest(`/api/support/tickets/${encodeURIComponent(state.supportSelectedTicketId)}/messages`, { method: "POST", body: form });
+  await loadSupportTickets();
+  await loadSupportTicketDetail(state.supportSelectedTicketId);
+  state.supportMessage = "Reply added.";
+}
+
+async function updateSupportTicketStatus() {
+  if (!state.supportSelectedTicketId) return;
+  const payload = await apiRequest(`/api/support/tickets/${encodeURIComponent(state.supportSelectedTicketId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: state.supportReply.status, priority: state.supportReply.priority, owner: state.supportReply.owner }),
+  });
+  await loadSupportTickets();
+  await loadSupportTicketDetail(payload.ticket.id);
+  state.supportMessage = "Ticket updated.";
 }
 
 async function loadCreatorAnalytics() {
@@ -1659,6 +1716,11 @@ const state = {
   segmentQuery: "",
   opsFilter: "all",
   supportMessage: "",
+  supportCreating: false,
+  supportSelectedTicketId: "",
+  supportTicketDetail: null,
+  supportTicketForm: { subject: "", category: "Account", priority: "Normal", details: "" },
+  supportReply: { body: "", visibility: "public", status: "Open", priority: "Normal", owner: "Support" },
   privacyMessage: "",
   securityMessage: "",
   calendarMessage: "",
@@ -4199,6 +4261,7 @@ function adminSupportTemplate() {
 }
 
 function supportWorkspaceTemplate(admin = false) {
+  return supportWorkspaceTemplateV2(admin);
   const openTickets = state.operations.tickets.filter((ticket) => ticket.status !== "Resolved" && ticket.status !== "Closed").length;
   return `
     ${admin ? operationsSummaryTemplate([["Open tickets", String(openTickets)], ["Total tickets", String(state.operations.tickets.length)], ["Provider", state.providerStatus.email ? "Email ready" : "Email unavailable"], ["Storage", "Database"]]) : ""}
@@ -4207,6 +4270,46 @@ function supportWorkspaceTemplate(admin = false) {
       <aside class="help-library"><h2>Help articles</h2>${["Manage a membership", "Fix a failed payment", "Recover your account", "Publication verification", "Writer payout schedule"].map((title, index) => `<button><span>${icon(index === 2 ? "lock" : "link", 15)}</span><span><strong>${title}</strong><small>${18-index*2} articles</small></span></button>`).join("")}<div class="support-contact"><strong>Still need help?</strong><p>Send account, payment, or publishing details to the support team.</p><button class="secondary-button" data-action="new-ticket">Contact support</button></div></aside>
     </section>
   `;
+}
+
+function supportWorkspaceTemplateV2(admin = false) {
+  const openTickets = state.operations.tickets.filter((ticket) => ticket.status !== "Resolved" && ticket.status !== "Closed").length;
+  const selected = state.operations.tickets.find((ticket) => ticket.id === state.supportSelectedTicketId) || state.operations.tickets[0];
+  return `
+    ${admin ? operationsSummaryTemplate([["Open tickets", String(openTickets)], ["Total tickets", String(state.operations.tickets.length)], ["Provider", state.providerStatus.email ? "Email ready" : "Email unavailable"], ["Storage", "Database"]]) : ""}
+    ${state.supportMessage ? `<div class="payment-message">${escapeHtml(state.supportMessage)}</div>` : ""}
+    <section class="support-layout">
+      <div class="ticket-list"><header><div><h2>${admin ? "Support queue" : "Your requests"}</h2><p>Select a ticket to open the conversation, attachments, and staff actions.</p></div><button class="primary-button" data-action="new-ticket">New ticket</button></header>${state.operations.tickets.map((ticket) => `<button class="ticket-row ${ticket.priority.toLowerCase()} ${ticket.id === state.supportSelectedTicketId ? "active" : ""}" data-ticket-open="${escapeHtml(ticket.id)}"><span><strong>${escapeHtml(ticket.id)} - ${escapeHtml(ticket.subject)}</strong><small>${escapeHtml(ticket.category)} - ${escapeHtml(ticket.owner)}${admin && ticket.requesterEmail ? ` - ${escapeHtml(ticket.requesterEmail)}` : ""}</small></span><span><b>${escapeHtml(ticket.status)}</b><small>${escapeHtml(ticket.age)}</small></span></button>`).join("") || `<div class="empty-state">No support tickets yet.</div>`}</div>
+      <div class="support-detail">${state.supportCreating ? supportTicketCreateTemplate() : supportTicketDetailTemplate(selected, admin)}</div>
+      <aside class="help-library"><h2>Help articles</h2>${["Manage a membership", "Fix a failed payment", "Recover your account", "Publication verification", "Writer payout schedule"].map((title, index) => `<button><span>${icon(index === 2 ? "lock" : "link", 15)}</span><span><strong>${title}</strong><small>${18-index*2} articles</small></span></button>`).join("")}<div class="support-contact"><strong>Still need help?</strong><p>Create a ticket with issue details and optional screenshots or documents.</p><button class="secondary-button" data-action="new-ticket">Contact support</button></div></aside>
+    </section>
+  `;
+}
+
+function supportTicketCreateTemplate() {
+  const form = state.supportTicketForm;
+  return `<section class="support-compose"><header><h2>Create support ticket</h2><p>Explain the problem clearly. Attach screenshots, invoices, error logs, or files if helpful.</p></header>
+    <label><span>Subject</span><input data-support-form="subject" value="${escapeHtml(form.subject)}" placeholder="Payment failed but amount was deducted" /></label>
+    <div class="support-form-grid">
+      <label><span>Category</span><select data-support-form="category">${["Account", "Billing", "Payment", "Subscription", "Publishing", "Technical", "Security", "Other"].map((value) => `<option value="${value}" ${form.category === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>
+      <label><span>Priority</span><select data-support-form="priority">${["Low", "Normal", "High", "Urgent"].map((value) => `<option value="${value}" ${form.priority === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>
+    </div>
+    <label><span>Describe your problem</span><textarea data-support-form="details" rows="7" placeholder="What happened? Which page, payment ID, article, or account is involved?">${escapeHtml(form.details)}</textarea></label>
+    <label class="file-field"><span>Attachments</span><input id="supportTicketFiles" type="file" multiple accept="image/*,.pdf,.txt,.csv,.zip" /></label>
+    <div class="settings-actions"><button class="primary-button" data-action="submit-support-ticket">Create ticket</button><button class="secondary-button" data-action="cancel-support-ticket">Cancel</button></div>
+  </section>`;
+}
+
+function supportTicketDetailTemplate(ticket, admin = false) {
+  if (!ticket) return `<section class="support-compose"><div class="empty-state">Select a ticket or create a new request.</div></section>`;
+  const detail = state.supportTicketDetail?.ticket?.id === ticket.id ? state.supportTicketDetail : null;
+  const messages = detail?.messages || [];
+  return `<section class="support-thread">
+    <header><div><h2>${escapeHtml(ticket.subject)}</h2><p>${escapeHtml(ticket.id)} - ${escapeHtml(ticket.category)} - ${escapeHtml(ticket.priority)}</p>${admin && ticket.requesterEmail ? `<p>${escapeHtml(ticket.requesterName || "Requester")} - ${escapeHtml(ticket.requesterEmail)}</p>` : ""}</div><button class="secondary-button" data-ticket-open="${escapeHtml(ticket.id)}">Open</button></header>
+    ${admin ? `<div class="support-staff-controls"><label><span>Status</span><select data-support-reply="status">${["Open", "Waiting on customer", "In progress", "Resolved", "Closed"].map((value) => `<option value="${value}" ${state.supportReply.status === value ? "selected" : ""}>${value}</option>`).join("")}</select></label><label><span>Priority</span><select data-support-reply="priority">${["Low", "Normal", "High", "Urgent"].map((value) => `<option value="${value}" ${state.supportReply.priority === value ? "selected" : ""}>${value}</option>`).join("")}</select></label><label><span>Owner</span><input data-support-reply="owner" value="${escapeHtml(state.supportReply.owner || "Support")}" /></label><button class="secondary-button" data-action="update-support-ticket">Update ticket</button></div>` : ""}
+    <div class="support-message-list">${messages.length ? messages.map((message) => `<article class="support-message ${message.visibility === "internal" ? "internal" : ""}"><div><strong>${escapeHtml(message.userName || "Support")}</strong><small>${escapeHtml(message.userRole || "reader")} - ${new Date(message.createdAt).toLocaleString()}${message.visibility === "internal" ? " - internal note" : ""}</small></div><p>${escapeHtml(message.body || "")}</p>${message.attachments?.length ? `<div class="support-attachments">${message.attachments.map((file) => `<a href="${escapeHtml(file.url)}" target="_blank" rel="noopener noreferrer">${icon("link", 13)}${escapeHtml(file.name)}</a>`).join("")}</div>` : ""}</article>`).join("") : `<div class="empty-state">Click Open to load this ticket conversation.</div>`}</div>
+    <div class="support-reply-box"><label><span>${admin ? "Reply or internal note" : "Reply"}</span><textarea data-support-reply="body" rows="4" placeholder="Write a reply...">${escapeHtml(state.supportReply.body || "")}</textarea></label>${admin ? `<label><span>Visibility</span><select data-support-reply="visibility"><option value="public" ${state.supportReply.visibility !== "internal" ? "selected" : ""}>Public reply</option><option value="internal" ${state.supportReply.visibility === "internal" ? "selected" : ""}>Internal note</option></select></label>` : ""}<label class="file-field"><span>Attachments</span><input id="supportReplyFiles" type="file" multiple accept="image/*,.pdf,.txt,.csv,.zip" /></label><div class="settings-actions"><button class="primary-button" data-action="submit-support-reply">Send reply</button></div></div>
+  </section>`;
 }
 
 function supportCenterTemplate() {
@@ -6064,6 +6167,20 @@ function bindInputs() {
     field.addEventListener("input", update);
     field.addEventListener("change", update);
   });
+  document.querySelectorAll("[data-support-form]").forEach((field) => {
+    const update = (event) => {
+      state.supportTicketForm[event.target.dataset.supportForm] = event.target.value;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-support-reply]").forEach((field) => {
+    const update = (event) => {
+      state.supportReply[event.target.dataset.supportReply] = event.target.value;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
   document.querySelectorAll("[data-production-form]").forEach((field) => {
     const update = (event) => {
       const [group, key] = event.target.dataset.productionForm.split(".");
@@ -6249,6 +6366,7 @@ document.addEventListener("click", async (event) => {
   const credentialProvider = target.dataset.credentialProvider;
   const credentialKey = target.dataset.credentialKey;
   const sendNewsletter = target.dataset.sendNewsletter;
+  const ticketOpen = target.dataset.ticketOpen;
   const exportType = target.dataset.exportType;
   const inviteToken = target.dataset.inviteToken;
   const draftNoteStatus = target.dataset.draftNoteStatus;
@@ -6265,6 +6383,17 @@ document.addEventListener("click", async (event) => {
   if (installerStep) {
     state.installerStep = installerStep;
     render();
+  }
+
+  if (ticketOpen) {
+    try {
+      await loadSupportTicketDetail(ticketOpen);
+      state.supportCreating = false;
+    } catch (error) {
+      state.supportMessage = error.message;
+    }
+    render();
+    return;
   }
 
   if (featurePreset) {
@@ -7737,16 +7866,39 @@ document.addEventListener("click", async (event) => {
       state.loginOpen = true;
       state.loginMessage = "Sign in before creating a support request.";
     } else {
-      try {
-        await apiRequest("/api/support/tickets", {
-          method: "POST",
-          body: JSON.stringify({ subject: "New support request", category: "Account", priority: "Normal" }),
-        });
-        await loadSupportTickets();
-        state.supportMessage = "Support ticket created and saved.";
-      } catch (error) {
-        state.supportMessage = error.message;
-      }
+      state.supportCreating = true;
+      state.supportSelectedTicketId = "";
+      state.supportTicketDetail = null;
+      state.supportMessage = "";
+    }
+    render();
+  }
+  if (action === "cancel-support-ticket") {
+    state.supportCreating = false;
+    state.supportTicketForm = { subject: "", category: "Account", priority: "Normal", details: "" };
+    render();
+  }
+  if (action === "submit-support-ticket") {
+    try {
+      await submitSupportTicket();
+    } catch (error) {
+      state.supportMessage = error.message;
+    }
+    render();
+  }
+  if (action === "submit-support-reply") {
+    try {
+      await submitSupportReply();
+    } catch (error) {
+      state.supportMessage = error.message;
+    }
+    render();
+  }
+  if (action === "update-support-ticket") {
+    try {
+      await updateSupportTicketStatus();
+    } catch (error) {
+      state.supportMessage = error.message;
     }
     render();
   }

@@ -2169,6 +2169,76 @@ function csv_response(string $filename, array $rows): void
     exit;
 }
 
+function support_is_staff(array $session): bool
+{
+    return in_array((string) ($session['user']['role'] ?? ''), ['admin', 'moderator'], true);
+}
+
+function public_support_ticket(array $row): array
+{
+    return [
+        'id' => $row['id'],
+        'userId' => $row['user_id'],
+        'subject' => $row['subject'],
+        'category' => $row['category'],
+        'priority' => $row['priority'],
+        'status' => $row['status'],
+        'owner' => $row['owner'],
+        'details' => $row['details'],
+        'createdAt' => $row['created_at'],
+        'updatedAt' => $row['updated_at'],
+        'requesterName' => $row['requester_name'] ?? '',
+        'requesterEmail' => $row['requester_email'] ?? '',
+    ];
+}
+
+function support_ticket_for_session(PDO $pdo, string $ticketId, array $session): ?array
+{
+    $stmt = $pdo->prepare('SELECT support_tickets.*, users.name AS requester_name, users.email AS requester_email FROM support_tickets LEFT JOIN users ON users.id = support_tickets.user_id WHERE support_tickets.id = ?');
+    $stmt->execute([$ticketId]);
+    $ticket = $stmt->fetch();
+    if (!$ticket) return null;
+    if (!support_is_staff($session) && $ticket['user_id'] !== $session['user']['id']) return null;
+    return $ticket;
+}
+
+function support_upload_attachments(PDO $pdo, string $ticketId, ?string $messageId, string $userId): array
+{
+    $uploaded = [];
+    $files = $_FILES['attachments'] ?? null;
+    if (!$files) return [];
+    $names = is_array($files['name']) ? $files['name'] : [$files['name']];
+    $tmpNames = is_array($files['tmp_name']) ? $files['tmp_name'] : [$files['tmp_name']];
+    $errors = is_array($files['error']) ? $files['error'] : [$files['error']];
+    $sizes = is_array($files['size']) ? $files['size'] : [$files['size']];
+    $types = is_array($files['type']) ? $files['type'] : [$files['type']];
+    $allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/csv', 'application/zip'];
+    $relativeDir = 'uploads/support/' . gmdate('Y/m');
+    $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+    if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
+    foreach ($names as $index => $name) {
+        if (($errors[$index] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) continue;
+        if (($errors[$index] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) json_response(['error' => 'UPLOAD_FAILED', 'message' => 'One attachment could not be uploaded.'], 400);
+        $size = (int) ($sizes[$index] ?? 0);
+        if ($size > 10 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Support attachments must be 10 MB or smaller.'], 413);
+        $tmp = (string) ($tmpNames[$index] ?? '');
+        if (!is_uploaded_file($tmp)) continue;
+        $mime = mime_content_type($tmp) ?: (string) ($types[$index] ?? 'application/octet-stream');
+        if (!in_array($mime, $allowed, true)) json_response(['error' => 'UNSUPPORTED_ATTACHMENT', 'message' => 'Use JPG, PNG, WebP, GIF, PDF, TXT, CSV, or ZIP attachments.'], 400);
+        $extension = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
+        $safeExtension = preg_replace('/[^a-z0-9]/', '', $extension) ?: 'bin';
+        $filename = uuid_value('SUP-') . '.' . $safeExtension;
+        $target = $absoluteDir . '/' . $filename;
+        if (!move_uploaded_file($tmp, $target)) json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not save a support attachment.'], 500);
+        $id = uuid_value('SFA-');
+        $url = '/' . $relativeDir . '/' . $filename;
+        $pdo->prepare('INSERT INTO support_ticket_attachments (id, ticket_id, message_id, user_id, original_name, url, mime_type, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, $ticketId, $messageId, $userId, substr((string) $name, 0, 180), $url, $mime, $size, now_iso()]);
+        $uploaded[] = ['id' => $id, 'name' => (string) $name, 'url' => $url, 'mimeType' => $mime, 'size' => $size];
+    }
+    return $uploaded;
+}
+
 function production_readiness(array $installer, array $providers): array
 {
     return [
@@ -4174,19 +4244,100 @@ function handle_api(string $path, string $method): void
     if ($path === '/api/support/tickets') {
         $session = require_auth();
         if ($method === 'GET') {
-            $stmt = $session['user']['role'] === 'admin'
-                ? $pdo->query('SELECT * FROM support_tickets ORDER BY created_at DESC')
-                : (function () use ($pdo, $session) { $s = $pdo->prepare('SELECT * FROM support_tickets WHERE user_id = ? ORDER BY created_at DESC'); $s->execute([$session['user']['id']]); return $s; })();
-            json_response(['tickets' => $stmt->fetchAll()]);
+            $stmt = support_is_staff($session)
+                ? $pdo->query('SELECT support_tickets.*, users.name AS requester_name, users.email AS requester_email FROM support_tickets LEFT JOIN users ON users.id = support_tickets.user_id ORDER BY support_tickets.updated_at DESC')
+                : (function () use ($pdo, $session) { $s = $pdo->prepare('SELECT support_tickets.*, users.name AS requester_name, users.email AS requester_email FROM support_tickets LEFT JOIN users ON users.id = support_tickets.user_id WHERE support_tickets.user_id = ? ORDER BY support_tickets.updated_at DESC'); $s->execute([$session['user']['id']]); return $s; })();
+            json_response(['tickets' => array_map('public_support_ticket', $stmt->fetchAll())]);
         }
         if ($method === 'POST') {
-            $body = read_json();
-            $id = 'TKT-' . random_int(1000, 9999);
+            $body = str_starts_with((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'multipart/form-data') ? $_POST : read_json();
+            $subject = trim((string) ($body['subject'] ?? ''));
+            $details = trim((string) ($body['details'] ?? ''));
+            if ($subject === '' || $details === '') json_response(['error' => 'INVALID_TICKET', 'message' => 'Subject and problem details are required.'], 400);
+            $id = uuid_value('TKT-');
             $now = now_iso();
             $pdo->prepare("INSERT INTO support_tickets (id, user_id, subject, category, priority, status, owner, details, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'Open', 'Support', ?, ?, ?)")
-                ->execute([$id, $session['user']['id'], substr((string) ($body['subject'] ?? 'Support request'), 0, 200), substr((string) ($body['category'] ?? 'General'), 0, 80), substr((string) ($body['priority'] ?? 'Normal'), 0, 40), substr((string) ($body['details'] ?? ''), 0, 2000), $now, $now]);
-            json_response(['ticket' => ['id' => $id]], 201);
+                ->execute([$id, $session['user']['id'], substr($subject, 0, 200), substr((string) ($body['category'] ?? 'General'), 0, 80), substr((string) ($body['priority'] ?? 'Normal'), 0, 40), substr($details, 0, 4000), $now, $now]);
+            $messageId = uuid_value('STM-');
+            $pdo->prepare("INSERT INTO support_ticket_messages (id, ticket_id, user_id, visibility, body, created_at) VALUES (?, ?, ?, 'public', ?, ?)")
+                ->execute([$messageId, $id, $session['user']['id'], substr($details, 0, 4000), $now]);
+            support_upload_attachments($pdo, $id, $messageId, $session['user']['id']);
+            $ticket = support_ticket_for_session($pdo, $id, $session);
+            json_response(['ticket' => public_support_ticket($ticket)], 201);
         }
+    }
+
+    if (preg_match('#^/api/support/tickets/([^/]+)$#', $path, $m)) {
+        $session = require_auth();
+        $ticketId = urldecode($m[1]);
+        $ticket = support_ticket_for_session($pdo, $ticketId, $session);
+        if (!$ticket) json_response(['error' => 'NOT_FOUND', 'message' => 'Support ticket not found.'], 404);
+        if ($method === 'GET') {
+            $messages = $pdo->prepare('SELECT support_ticket_messages.*, users.name AS user_name, users.role AS user_role FROM support_ticket_messages LEFT JOIN users ON users.id = support_ticket_messages.user_id WHERE ticket_id = ? AND (visibility = ? OR ? = 1) ORDER BY created_at ASC');
+            $staff = support_is_staff($session) ? 1 : 0;
+            $messages->execute([$ticketId, 'public', $staff]);
+            $messageRows = $messages->fetchAll();
+            $attachments = $pdo->prepare('SELECT * FROM support_ticket_attachments WHERE ticket_id = ? ORDER BY created_at ASC');
+            $attachments->execute([$ticketId]);
+            $byMessage = [];
+            foreach ($attachments->fetchAll() as $attachment) {
+                $byMessage[$attachment['message_id'] ?: 'ticket'][] = [
+                    'id' => $attachment['id'],
+                    'name' => $attachment['original_name'],
+                    'url' => $attachment['url'],
+                    'mimeType' => $attachment['mime_type'],
+                    'size' => (int) $attachment['size'],
+                    'createdAt' => $attachment['created_at'],
+                ];
+            }
+            json_response([
+                'ticket' => public_support_ticket($ticket),
+                'messages' => array_map(fn($row) => [
+                    'id' => $row['id'],
+                    'ticketId' => $row['ticket_id'],
+                    'userId' => $row['user_id'],
+                    'userName' => $row['user_name'] ?? 'Support',
+                    'userRole' => $row['user_role'] ?? '',
+                    'visibility' => $row['visibility'],
+                    'body' => $row['body'],
+                    'createdAt' => $row['created_at'],
+                    'attachments' => $byMessage[$row['id']] ?? [],
+                ], $messageRows),
+            ]);
+        }
+        if ($method === 'PATCH') {
+            if (!support_is_staff($session)) json_response(['error' => 'FORBIDDEN', 'message' => 'Only support staff can update ticket status.'], 403);
+            $body = read_json();
+            $statuses = ['Open', 'Waiting on customer', 'In progress', 'Resolved', 'Closed'];
+            $priorities = ['Low', 'Normal', 'High', 'Urgent'];
+            $status = in_array($body['status'] ?? $ticket['status'], $statuses, true) ? (string) ($body['status'] ?? $ticket['status']) : $ticket['status'];
+            $priority = in_array($body['priority'] ?? $ticket['priority'], $priorities, true) ? (string) ($body['priority'] ?? $ticket['priority']) : $ticket['priority'];
+            $owner = substr((string) ($body['owner'] ?? $ticket['owner']), 0, 120) ?: 'Support';
+            $pdo->prepare('UPDATE support_tickets SET status = ?, priority = ?, owner = ?, updated_at = ? WHERE id = ?')
+                ->execute([$status, $priority, $owner, now_iso(), $ticketId]);
+            $updated = support_ticket_for_session($pdo, $ticketId, $session);
+            json_response(['ticket' => public_support_ticket($updated)]);
+        }
+    }
+
+    if ($method === 'POST' && preg_match('#^/api/support/tickets/([^/]+)/messages$#', $path, $m)) {
+        $session = require_auth();
+        $ticketId = urldecode($m[1]);
+        $ticket = support_ticket_for_session($pdo, $ticketId, $session);
+        if (!$ticket) json_response(['error' => 'NOT_FOUND', 'message' => 'Support ticket not found.'], 404);
+        $body = str_starts_with((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'multipart/form-data') ? $_POST : read_json();
+        $text = trim((string) ($body['body'] ?? ''));
+        if ($text === '' && empty($_FILES['attachments'])) json_response(['error' => 'EMPTY_REPLY', 'message' => 'Write a reply or attach a file.'], 400);
+        $visibility = support_is_staff($session) && ($body['visibility'] ?? '') === 'internal' ? 'internal' : 'public';
+        $messageId = uuid_value('STM-');
+        $now = now_iso();
+        $pdo->prepare('INSERT INTO support_ticket_messages (id, ticket_id, user_id, visibility, body, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$messageId, $ticketId, $session['user']['id'], $visibility, substr($text, 0, 4000), $now]);
+        support_upload_attachments($pdo, $ticketId, $messageId, $session['user']['id']);
+        $nextStatus = support_is_staff($session) ? 'Waiting on customer' : 'Open';
+        $pdo->prepare('UPDATE support_tickets SET status = CASE WHEN status = ? THEN status ELSE ? END, owner = ?, updated_at = ? WHERE id = ?')
+            ->execute(['Closed', $nextStatus, support_is_staff($session) ? ($session['user']['name'] ?? 'Support') : $ticket['owner'], $now, $ticketId]);
+        json_response(['ok' => true], 201);
     }
 
     if ($method === 'GET' && $path === '/api/admin/analytics') {

@@ -286,6 +286,28 @@
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS support_ticket_messages (
+    id TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    visibility TEXT NOT NULL DEFAULT 'public'
+      CHECK (visibility IN ('public', 'internal')),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS support_ticket_attachments (
+    id TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+    message_id TEXT REFERENCES support_ticket_messages(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    original_name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS account_deletion_requests (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -803,6 +825,8 @@
   CREATE INDEX IF NOT EXISTS idx_gifts_recipient_status ON gift_memberships(recipient_email, status);
   CREATE INDEX IF NOT EXISTS idx_discount_codes_active ON discount_codes(active, code);
   CREATE INDEX IF NOT EXISTS idx_tickets_user_created ON support_tickets(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON support_ticket_messages(ticket_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket ON support_ticket_attachments(ticket_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_moderation_status_created ON moderation_cases(status, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_security_tokens_user_type ON security_tokens(user_id, type, expires_at);
   CREATE INDEX IF NOT EXISTS idx_ad_campaigns_placement_status ON ad_campaigns(placement, status);
