@@ -1,6 +1,7 @@
 data/*.sqlite
 data/*.sqlite-*
 uploads/*
+storage/*
 .env
 .env.*
 !.env.example
