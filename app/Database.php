@@ -32,6 +32,12 @@ final class Database
         self::ensureColumn('users', 'username', 'TEXT COLLATE NOCASE');
         self::$pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL AND username != ''");
         self::ensureColumn('users', 'avatar_url', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('users', 'headline', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('users', 'bio', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('users', 'website', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('users', 'location', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('users', 'social_links_json', "TEXT NOT NULL DEFAULT '{}'");
+        self::ensureColumn('users', 'expertise_json', "TEXT NOT NULL DEFAULT '[]'");
         self::ensureColumn('feature_flags', 'rollout_percent', "INTEGER NOT NULL DEFAULT 100");
         self::ensureColumn('feature_flags', 'roles_json', "TEXT NOT NULL DEFAULT '[]'");
         self::ensureColumn('feature_flags', 'starts_at', 'TEXT');

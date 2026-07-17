@@ -5,6 +5,12 @@
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
     username TEXT UNIQUE COLLATE NOCASE,
     avatar_url TEXT NOT NULL DEFAULT '',
+    headline TEXT NOT NULL DEFAULT '',
+    bio TEXT NOT NULL DEFAULT '',
+    website TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    social_links_json TEXT NOT NULL DEFAULT '{}',
+    expertise_json TEXT NOT NULL DEFAULT '[]',
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'reader'
       CHECK (role IN ('reader', 'subscriber', 'writer', 'moderator', 'admin')),

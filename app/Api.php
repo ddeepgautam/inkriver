@@ -42,6 +42,26 @@ function username_error(string $username): ?string
     return null;
 }
 
+function store_profile_avatar_upload(string $fieldName = 'avatar'): string
+{
+    if (empty($_FILES[$fieldName]) || !is_uploaded_file($_FILES[$fieldName]['tmp_name'])) return '';
+    $file = $_FILES[$fieldName];
+    if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) json_response(['error' => 'UPLOAD_FAILED', 'message' => 'The profile photo upload failed.'], 400);
+    if ((int) $file['size'] > 4 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Profile photos must be 4 MB or smaller.'], 413);
+    $info = getimagesize($file['tmp_name']);
+    if (!$info) json_response(['error' => 'INVALID_IMAGE', 'message' => 'Only valid image files can be uploaded.'], 400);
+    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    $mime = $info['mime'] ?? '';
+    if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_IMAGE', 'message' => 'Use JPG, PNG, WebP, or GIF for profile photos.'], 400);
+    $relativeDir = 'uploads/avatars/' . gmdate('Y/m');
+    $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+    if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
+    $storedName = uuid_value('avatar-') . '.' . $allowed[$mime];
+    $target = $absoluteDir . '/' . $storedName;
+    if (!move_uploaded_file($file['tmp_name'], $target)) json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not save the profile photo.'], 500);
+    return '/' . $relativeDir . '/' . $storedName;
+}
+
 function feature_flag_active_for_row(array $row, ?array $session = null): bool
 {
     if (empty($row['enabled'])) return false;
@@ -2884,24 +2904,11 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'POST' && $path === '/api/me/avatar') {
         $session = require_auth();
-        if (empty($_FILES['file']) || !is_uploaded_file($_FILES['file']['tmp_name'])) {
+        if (!empty($_FILES['file']) && empty($_FILES['avatar'])) $_FILES['avatar'] = $_FILES['file'];
+        if (empty($_FILES['avatar']) || !is_uploaded_file($_FILES['avatar']['tmp_name'])) {
             json_response(['error' => 'NO_FILE', 'message' => 'Choose a profile photo to upload.'], 400);
         }
-        $file = $_FILES['file'];
-        if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) json_response(['error' => 'UPLOAD_FAILED', 'message' => 'The upload failed.'], 400);
-        if ((int) $file['size'] > 4 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Profile photos must be 4 MB or smaller.'], 413);
-        $info = getimagesize($file['tmp_name']);
-        if (!$info) json_response(['error' => 'INVALID_IMAGE', 'message' => 'Only valid image files can be uploaded.'], 400);
-        $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
-        $mime = $info['mime'] ?? '';
-        if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_IMAGE', 'message' => 'Use JPG, PNG, WebP, or GIF.'], 400);
-        $relativeDir = 'uploads/avatars/' . gmdate('Y/m');
-        $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
-        if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
-        $storedName = uuid_value('avatar-') . '.' . $allowed[$mime];
-        $target = $absoluteDir . '/' . $storedName;
-        if (!move_uploaded_file($file['tmp_name'], $target)) json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not save the profile photo.'], 500);
-        $url = '/' . $relativeDir . '/' . $storedName;
+        $url = store_profile_avatar_upload('avatar');
         $now = now_iso();
         $pdo->prepare('UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ?')->execute([$url, $now, $session['user']['id']]);
         audit_log($session['user']['id'], 'account.avatar_updated', 'user', $session['user']['id']);
@@ -2979,8 +2986,9 @@ function handle_api(string $path, string $method): void
         $now = now_iso();
         $pdo->prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')->execute([$now, $now, $row['id']]);
         $row['last_login_at'] = $now;
-        $token = create_session_for_user($row['id']);
-        set_session_cookie($token);
+        $sessionDays = !empty($body['rememberMe']) ? 30 : 1;
+        $token = create_session_for_user($row['id'], $sessionDays);
+        set_session_cookie($token, $sessionDays);
         audit_log($row['id'], 'auth.login', 'user', $row['id']);
         if (!empty($securityRow['login_alerts_enabled'])) {
             send_email_message($row['email'], 'New InkRiver sign-in', [
@@ -3902,27 +3910,51 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'POST' && $path === '/api/admin/users') {
         $session = require_auth(['admin']);
-        $body = read_json();
+        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? ''));
+        $body = str_contains($contentType, 'multipart/form-data') ? $_POST : read_json();
         $name = trim((string) ($body['name'] ?? ''));
         $email = strtolower(trim((string) ($body['email'] ?? '')));
-        $password = (string) ($body['password'] ?? '');
+        $username = clean_username_value((string) ($body['username'] ?? ''));
+        $password = (string) ($body['password'] ?? $body['temporaryPassword'] ?? '');
+        $headline = substr(trim((string) ($body['headline'] ?? '')), 0, 140);
+        $bio = substr(trim((string) ($body['bio'] ?? $body['about'] ?? '')), 0, 2000);
+        $website = trim((string) ($body['website'] ?? ''));
+        $location = substr(trim((string) ($body['location'] ?? '')), 0, 120);
+        $expertise = array_values(array_filter(array_unique(array_map(
+            fn($item) => substr(trim((string) $item), 0, 50),
+            preg_split('/[\n,]+/', (string) ($body['expertiseText'] ?? ''), -1, PREG_SPLIT_NO_EMPTY) ?: []
+        ))));
+        $socialLinks = [];
+        foreach (['x', 'linkedin', 'facebook', 'instagram', 'youtube'] as $key) {
+            $value = trim((string) ($body[$key] ?? ''));
+            if ($value !== '') $socialLinks[$key] = substr($value, 0, 240);
+        }
         $roles = ['reader', 'subscriber', 'writer', 'moderator', 'admin'];
         $statuses = ['active', 'suspended'];
         $role = in_array($body['role'] ?? 'reader', $roles, true) ? (string) ($body['role'] ?? 'reader') : 'reader';
         $status = in_array($body['status'] ?? 'active', $statuses, true) ? (string) ($body['status'] ?? 'active') : 'active';
         $subscription = substr((string) ($body['subscription'] ?? 'Free'), 0, 120) ?: 'Free';
+        $emailVerified = !isset($body['emailVerified']) || filter_var($body['emailVerified'], FILTER_VALIDATE_BOOLEAN);
         if ($name === '' || strlen($name) > 80) json_response(['error' => 'INVALID_NAME', 'message' => 'Enter a name up to 80 characters.'], 400);
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_EMAIL', 'message' => 'Enter a valid email address.'], 400);
+        if ($error = username_error($username)) json_response(['error' => 'INVALID_USERNAME', 'message' => $error], 400);
+        if ($website !== '' && !filter_var($website, FILTER_VALIDATE_URL)) json_response(['error' => 'INVALID_WEBSITE', 'message' => 'Enter a valid website URL, including https://.'], 400);
         $passwordError = password_strength_error($password);
         if ($passwordError) json_response(['error' => 'WEAK_PASSWORD', 'message' => $passwordError], 400);
         $exists = $pdo->prepare("SELECT id FROM users WHERE email = ? AND status != 'deleted'");
         $exists->execute([$email]);
         if ($exists->fetch()) json_response(['error' => 'EMAIL_EXISTS', 'message' => 'A user with this email already exists.'], 409);
+        if ($username !== '') {
+            $usernameExists = $pdo->prepare("SELECT id FROM users WHERE username = ? AND status != 'deleted'");
+            $usernameExists->execute([$username]);
+            if ($usernameExists->fetch()) json_response(['error' => 'USERNAME_EXISTS', 'message' => 'That username is already taken.'], 409);
+        }
+        $avatarUrl = store_profile_avatar_upload('avatar');
         $id = uuid_value('USR-');
         $now = now_iso();
-        $pdo->prepare('INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)')
-            ->execute([$id, $name, $email, hash_password_value($password), $role, $subscription, $status, $now, $now]);
-        audit_log($session['user']['id'], 'admin.user_create', 'user', $id, compact('role', 'status', 'subscription'));
+        $pdo->prepare('INSERT INTO users (id, name, email, username, avatar_url, headline, bio, website, location, social_links_json, expertise_json, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, $name, $email, $username !== '' ? $username : null, $avatarUrl, $headline, $bio, $website, $location, json_encode($socialLinks), json_encode(array_slice($expertise, 0, 12)), hash_password_value($password), $role, $subscription, $status, $emailVerified ? 1 : 0, $now, $now]);
+        audit_log($session['user']['id'], 'admin.user_create', 'user', $id, compact('role', 'status', 'subscription', 'username'));
         $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
         $stmt->execute([$id]);
         json_response(['user' => public_user($stmt->fetch())], 201);

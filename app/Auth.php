@@ -20,10 +20,11 @@ function session_token_hash(string $token): string
     return hash('sha256', $token);
 }
 
-function set_session_cookie(string $token): void
+function set_session_cookie(string $token, ?int $days = null): void
 {
+    $days = max(1, min(365, $days ?? session_days()));
     setcookie('inkriver_session', $token, [
-        'expires' => time() + session_days() * 86400,
+        'expires' => time() + $days * 86400,
         'path' => '/',
         'secure' => is_production(),
         'httponly' => true,
@@ -42,12 +43,13 @@ function clear_session_cookie(): void
     ]);
 }
 
-function create_session_for_user(string $userId): string
+function create_session_for_user(string $userId, ?int $days = null): string
 {
     $pdo = Database::pdo();
     $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
     $now = now_iso();
-    $expires = gmdate('Y-m-d\TH:i:s.v\Z', time() + session_days() * 86400);
+    $days = max(1, min(365, $days ?? session_days()));
+    $expires = gmdate('Y-m-d\TH:i:s.v\Z', time() + $days * 86400);
     $stmt = $pdo->prepare('INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at, last_seen_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
     $stmt->execute([uuid_value(), $userId, session_token_hash($token), $expires, $now, $now, $_SERVER['REMOTE_ADDR'] ?? '', substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 500)]);
     return $token;

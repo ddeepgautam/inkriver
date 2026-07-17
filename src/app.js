@@ -975,6 +975,29 @@ function emptyPublicationForm() {
   return { id: "", name: "", slug: "", description: "", logoUrl: "", status: "active" };
 }
 
+function emptyAdminCreateUserForm() {
+  return {
+    name: "",
+    username: "",
+    email: "",
+    temporaryPassword: "",
+    role: "reader",
+    status: "active",
+    subscription: "Free",
+    emailVerified: "yes",
+    headline: "",
+    bio: "",
+    website: "",
+    location: "",
+    expertiseText: "",
+    x: "",
+    linkedin: "",
+    facebook: "",
+    instagram: "",
+    youtube: "",
+  };
+}
+
 function populatePublicationForm(publication) {
   state.editingPublicationId = publication.id || publication.slug;
   state.publicationForm = {
@@ -1482,6 +1505,31 @@ async function deleteUser(userId) {
   render();
 }
 
+async function submitAdminCreateUser() {
+  state.adminCreateUserMessage = "";
+  const formData = new FormData();
+  Object.entries(state.adminCreateUserForm).forEach(([key, value]) => {
+    formData.append(key === "temporaryPassword" ? "password" : key, value ?? "");
+  });
+  formData.set("emailVerified", state.adminCreateUserForm.emailVerified === "yes" ? "1" : "0");
+  const file = document.getElementById("adminUserAvatar")?.files?.[0];
+  if (file) formData.append("avatar", file);
+  try {
+    const payload = await apiRequest("/api/admin/users", {
+      method: "POST",
+      body: formData,
+    });
+    state.users = [payload.user, ...state.users.filter((user) => user.id !== payload.user.id)];
+    state.adminCreateUserForm = emptyAdminCreateUserForm();
+    state.adminCreateUserMessage = `User created: ${payload.user.email}`;
+    state.userMessage = state.adminCreateUserMessage;
+    setRoute("/admin/users");
+  } catch (error) {
+    state.adminCreateUserMessage = error.message;
+    render();
+  }
+}
+
 const creatorSeed = {
   calendarView: "calendar",
   calendarItems: [
@@ -1571,7 +1619,7 @@ const state = {
   loginOpen: false,
   loginMessage: "",
   authMode: "login",
-  authForm: { name: "", email: "", password: "", twoFactorCode: "" },
+  authForm: { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false },
   authPasswordVisible: false,
   authBusy: false,
   sessionReady: false,
@@ -1664,6 +1712,8 @@ const state = {
   installerStep: "server",
   importPreview: null,
   adminModal: { type: "", fields: {} },
+  adminCreateUserForm: emptyAdminCreateUserForm(),
+  adminCreateUserMessage: "",
   accountForm: { name: "", email: "", username: "", currentPassword: "", newPassword: "", confirmPassword: "" },
   userSearch: "",
   userMessage: "",
@@ -2109,8 +2159,37 @@ async function runServerSearch(includeSuggestions = false) {
   render();
 }
 
+function userProfileFromUser(user, fallbackSlug = "") {
+  const socialLinks = user.socialLinks || {};
+  const socialEntry = Object.entries(socialLinks).find(([, value]) => String(value || "").trim());
+  const expertise = Array.isArray(user.expertise) && user.expertise.length
+    ? user.expertise
+    : state.recommendation.selectedInterests?.length && user.id === state.user?.id
+      ? state.recommendation.selectedInterests
+      : [user.role === "writer" ? "Writing" : "Reading", "Publishing"];
+  return {
+    slug: user.username || fallbackSlug || slugifyName(user.name),
+    name: user.name,
+    bio: user.bio || user.headline || `InkRiver ${user.role || "reader"} profile.`,
+    expertise: expertise.slice(0, 5),
+    followers: Math.max(0, Object.values(state.following || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0)),
+    badge: user.role === "admin" ? "Administrator" : user.role === "moderator" ? "Moderator" : user.role === "writer" ? "Writer" : "Reader",
+    website: user.website || "",
+    social: socialEntry ? `${socialEntry[0]}: ${socialEntry[1]}` : (user.username ? user.username : ""),
+    publication: user.headline || user.location || "InkRiver",
+    avatarUrl: user.avatarUrl || "",
+    location: user.location || "",
+  };
+}
+
 function publicProfiles() {
   const profiles = { ...defaultProfiles };
+  state.users
+    .filter((user) => user.username)
+    .forEach((user) => {
+      profiles[user.username] = userProfileFromUser(user, user.username);
+    });
+  if (state.user?.username) profiles[state.user.username] = userProfileFromUser(state.user, state.user.username);
   publishedStories().forEach((story) => {
     const slug = slugifyName(story.author);
     const existing = profiles[slug] || {};
@@ -2125,6 +2204,8 @@ function publicProfiles() {
       website: existing.website || "",
       social: existing.social || "",
       publication: story.publication || existing.publication || "InkRiver",
+      avatarUrl: existing.avatarUrl || "",
+      location: existing.location || "",
     };
   });
   return profiles;
@@ -2154,18 +2235,7 @@ function publicCuratedLists() {
 
 function profileForSlug(slug) {
   if (state.user?.username && state.user.username.toLowerCase() === String(slug || "").toLowerCase()) {
-    return {
-      slug: state.user.username,
-      name: state.user.name,
-      bio: `InkRiver ${state.user.role} profile.`,
-      expertise: state.recommendation.selectedInterests.slice(0, 5),
-      followers: Object.values(state.following).reduce((sum, items) => sum + items.length, 0),
-      badge: state.user.role === "writer" ? "Writer" : "Reader",
-      website: "",
-      social: `@${state.user.username}`,
-      publication: "InkRiver",
-      avatarUrl: state.user.avatarUrl || "",
-    };
+    return userProfileFromUser(state.user, state.user.username);
   }
   const profiles = publicProfiles();
   if (profiles[slug]) return { slug, ...profiles[slug] };
@@ -2654,7 +2724,7 @@ function applyAuthenticatedUser(user, newAccount = false) {
   state.onboardingSelection = new Set(state.recommendation.selectedInterests);
   state.onboardingOpen = newAccount && !state.recommendation.completedOnboarding;
   state.loginOpen = false;
-  state.authForm = { name: "", email: "", password: "", twoFactorCode: "" };
+  state.authForm = { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false };
 }
 
 async function submitAuthentication() {
@@ -2814,8 +2884,7 @@ async function logoutUser() {
   state.onboardingSelection = new Set(state.recommendation.selectedInterests);
   state.loginMessage = "Signed out.";
   state.loginOpen = false;
-  window.history.replaceState({}, "", "/");
-  render();
+  setRoute("/");
 }
 
 function storyUrl(story) {
@@ -2891,6 +2960,10 @@ function setRoute(to) {
     state.editingBlogId = "";
     state.blogForm = emptyBlogForm();
     state.blogMessage = "";
+  }
+  if (to === "/admin/users/new") {
+    state.adminCreateUserForm = emptyAdminCreateUserForm();
+    state.adminCreateUserMessage = "";
   }
   if (to === "/") state.activeTopic = "For you";
   if (to.startsWith("/category/")) {
@@ -2979,8 +3052,10 @@ function appTemplate() {
             ? adminRouteTemplate()
             : state.path.startsWith("/dashboard")
               ? dashboardTemplate()
+            : state.path.startsWith("/become-author")
+                ? becomeAuthorTemplate()
               : state.path.startsWith("/write")
-                ? writeTemplate()
+                ? ["writer", "admin"].includes(state.user?.role) ? writeTemplate() : becomeAuthorTemplate()
                 : state.path.startsWith("/pricing")
                   ? pricingTemplate()
                   : homeTemplate()
@@ -3022,6 +3097,7 @@ function adminRouteTemplate() {
   }
   if (state.path.startsWith("/admin/blogs/categories")) return adminCategoriesTemplate();
   if (state.path.startsWith("/admin/blogs")) return adminBlogsTemplate();
+  if (state.path === "/admin/users/new") return adminCreateUserTemplate();
   if (state.path.startsWith("/admin/users")) return adminUsersTemplate();
   if (state.path.startsWith("/admin/settings")) return adminSettingsTemplate();
   if (state.path.startsWith("/admin/seo")) return adminSeoTemplate();
@@ -3160,7 +3236,7 @@ function profileTemplate(profile) {
         <div class="profile-intro">
           <div class="profile-title-row"><div><h1>${escapeHtml(profile.name)}</h1><span class="profile-badge">${icon("check", 13)}${escapeHtml(profile.badge)}</span></div><button class="primary-button ${isFollowing("writers", profile.name) ? "following" : ""}" data-follow-type="writers" data-follow-value="${escapeHtml(profile.name)}">${followLabel("writers", profile.name)}</button></div>
           <p>${escapeHtml(profile.bio)}</p>
-          <div class="profile-meta"><strong>${followerCount.toLocaleString("en-IN")} followers</strong><span>${stories.length} stories</span><span>${escapeHtml(profile.publication)}</span></div>
+          <div class="profile-meta"><strong>${followerCount.toLocaleString("en-IN")} followers</strong><span>${stories.length} stories</span><span>${escapeHtml(profile.publication)}</span>${profile.location ? `<span>${escapeHtml(profile.location)}</span>` : ""}</div>
           <div class="profile-links">${profile.website ? `<a href="${profile.website}" target="_blank" rel="noopener noreferrer">${icon("link", 14)}Website</a>` : ""}${profile.social ? `<span>${escapeHtml(profile.social)}</span>` : ""}</div>
         </div>
       </section>
@@ -3262,7 +3338,7 @@ function homeTemplate(selectedCategory = null) {
               <h1>${selectedCategory ? escapeHtml(selectedCategory.name) : "Ideas worth returning to."}</h1>
               ${selectedCategory?.description ? `<p class="category-intro">${escapeHtml(selectedCategory.description)}</p>` : ""}
             </div>
-            <button class="primary-button" data-route="/write">${icon("pen")}Start writing</button>
+            <button class="primary-button" data-route="/become-author">${icon("pen")}Start writing</button>
           </div>
           <div class="topic-strip" aria-label="Topic filters">
             <button class="topic-chip ${activeTopic === "For you" ? "active" : ""}" data-route="/">For you</button>
@@ -3687,6 +3763,54 @@ function currencyControlTemplate(context) {
       </div>
       <button class="secondary-button" data-action="refresh-rates">Refresh rates</button>
     </div>
+  `;
+}
+
+function becomeAuthorTemplate() {
+  const signedInWriter = ["writer", "admin"].includes(state.user?.role);
+  return `
+    <main class="become-author-page">
+      <section class="author-program-hero">
+        <div>
+          <span class="eyebrow">InkRiver author program</span>
+          <h1>Build a serious writing home for readers who return.</h1>
+          <p>Publish thoughtful stories, grow a following, work with editorial tools, and use reader memberships, newsletters, comments, analytics, and distribution features from one focused workspace.</p>
+          <div class="author-program-actions">
+            ${signedInWriter
+              ? `<button class="primary-button" data-route="/write">${icon("pen", 16)}Open writer studio</button>`
+              : state.user
+                ? `<button class="primary-button" data-route="/support">${icon("comment", 16)}Request author access</button>`
+                : `<button class="primary-button" data-action="open-login">${icon("users", 16)}Join and request access</button>`}
+            <button class="secondary-button" data-route="/about">${icon("link", 16)}Learn about InkRiver</button>
+          </div>
+        </div>
+        <aside class="author-program-card">
+          <strong>Built for disciplined publishing</strong>
+          <span>Drafts, SEO, media, AI assistance, scheduling, analytics, comments, newsletters, subscriptions, and editorial review live together.</span>
+          <div><b>01</b><small>Create your account</small></div>
+          <div><b>02</b><small>Set up your profile and topics</small></div>
+          <div><b>03</b><small>Publish after review and start building an audience</small></div>
+        </aside>
+      </section>
+      <section class="author-benefit-grid">
+        ${[
+          ["pen", "Professional editor", "Write drafts with formatting, quotes, links, images, tables, SEO controls, AI suggestions, collaboration notes, and revisions."],
+          ["users", "Reader growth", "Readers can follow writers, topics, publications, tags, and lists, while recommendations learn from saves, reading progress, and interests."],
+          ["trend", "Creator analytics", "Track impressions, read completion, saves, follows, subscriber conversions, sources, devices, geography, and article-level performance."],
+          ["mail", "Newsletter tools", "Plan newsletters, segment audiences, schedule sends, and review delivery performance from the creator workspace."],
+          ["shield", "Trust and safety", "Use verification signals, disclosures, corrections, citations, reporting, moderation workflows, and account security controls."],
+          ["card", "Membership options", "Offer premium access, gift memberships, discounts, reader support tools, and payout records when platform payment providers are configured."]
+        ].map(([iconName, title, copy]) => `<article>${icon(iconName, 20)}<h2>${title}</h2><p>${copy}</p></article>`).join("")}
+      </section>
+      <section class="author-program-flow">
+        <div><h2>How author access works</h2><p>InkRiver keeps author tools behind account access so publishing permissions, subscriptions, moderation, analytics, and payouts remain tied to a verified profile.</p></div>
+        <div class="author-steps">
+          <article><strong>Create or sign in</strong><span>Start as a reader, complete your profile, add a photo, and choose the topics you want to write about.</span></article>
+          <article><strong>Request author access</strong><span>Share your background, preferred topics, website, and social profiles so the editorial team can review fit.</span></article>
+          <article><strong>Publish with tools</strong><span>Once approved, your dashboard opens the writer studio, publication workflows, scheduling, analytics, comments, and audience tools.</span></article>
+        </div>
+      </section>
+    </main>
   `;
 }
 
@@ -4732,6 +4856,58 @@ function adminUsersTemplate() {
   );
 }
 
+function adminCreateUserTemplate() {
+  const form = state.adminCreateUserForm;
+  const socialFields = [
+    ["x", "X / Twitter"],
+    ["linkedin", "LinkedIn"],
+    ["facebook", "Facebook"],
+    ["instagram", "Instagram"],
+    ["youtube", "YouTube"],
+  ];
+  return adminShellTemplate(
+    "Create user",
+    "Create a full account profile with login access, role, subscription, public profile, social links, and profile photo.",
+    `<form class="admin-create-user-page" id="adminCreateUserForm">
+      ${state.adminCreateUserMessage ? `<div class="payment-message create-user-message">${escapeHtml(state.adminCreateUserMessage)}</div>` : ""}
+      <section class="work-panel create-user-panel">
+        <div class="panel-title">${icon("lock")}<h2>Account access</h2></div>
+        <div class="settings-form-grid">
+          <label><span>Full name</span><input data-admin-create-user="name" value="${escapeHtml(form.name)}" maxlength="80" autocomplete="off" required /></label>
+          <label><span>Username</span><input data-admin-create-user="username" value="${escapeHtml(form.username)}" maxlength="30" placeholder="simple_username" autocomplete="off" /></label>
+          <label><span>Email address</span><input data-admin-create-user="email" type="email" value="${escapeHtml(form.email)}" maxlength="254" autocomplete="off" required /></label>
+          <label><span>Temporary password</span><input data-admin-create-user="temporaryPassword" type="password" value="${escapeHtml(form.temporaryPassword)}" minlength="10" maxlength="128" autocomplete="new-password" required /></label>
+          <label><span>Role</span><select data-admin-create-user="role">${Object.keys(roleMap).map((role) => `<option value="${role}" ${form.role === role ? "selected" : ""}>${role}</option>`).join("")}</select></label>
+          <label><span>Status</span><select data-admin-create-user="status">${["active", "suspended"].map((status) => `<option value="${status}" ${form.status === status ? "selected" : ""}>${status}</option>`).join("")}</select></label>
+          <label><span>Subscription</span><select data-admin-create-user="subscription">${subscriptionOptions().map((plan) => `<option value="${escapeHtml(plan)}" ${form.subscription === plan ? "selected" : ""}>${escapeHtml(plan)}</option>`).join("")}</select></label>
+          <label><span>Email verification</span><select data-admin-create-user="emailVerified"><option value="yes" ${form.emailVerified === "yes" ? "selected" : ""}>Mark verified</option><option value="no" ${form.emailVerified === "no" ? "selected" : ""}>Require verification</option></select></label>
+        </div>
+      </section>
+      <section class="work-panel create-user-panel">
+        <div class="panel-title">${icon("users")}<h2>Public profile</h2></div>
+        <div class="create-user-profile-grid">
+          <label class="file-field"><span>Profile photo</span><input id="adminUserAvatar" type="file" accept="image/jpeg,image/png,image/webp,image/gif" /></label>
+          <label><span>Headline</span><input data-admin-create-user="headline" value="${escapeHtml(form.headline)}" maxlength="140" placeholder="Editor, analyst, founder, educator..." /></label>
+          <label><span>Location</span><input data-admin-create-user="location" value="${escapeHtml(form.location)}" maxlength="120" placeholder="City, country" /></label>
+          <label><span>Website</span><input data-admin-create-user="website" type="url" value="${escapeHtml(form.website)}" placeholder="https://example.com" /></label>
+          <label class="wide-field"><span>About</span><textarea data-admin-create-user="bio" rows="6" maxlength="2000" placeholder="Short biography, credentials, writing focus, and background">${escapeHtml(form.bio)}</textarea></label>
+          <label class="wide-field"><span>Expertise</span><textarea data-admin-create-user="expertiseText" rows="3" placeholder="Marketing, AI, Product strategy, Leadership">${escapeHtml(form.expertiseText)}</textarea></label>
+        </div>
+      </section>
+      <section class="work-panel create-user-panel">
+        <div class="panel-title">${icon("link")}<h2>Social profiles</h2></div>
+        <div class="settings-form-grid">${socialFields.map(([key, label]) => `<label><span>${label}</span><input data-admin-create-user="${key}" value="${escapeHtml(form[key])}" placeholder="${key === "linkedin" ? "https://linkedin.com/in/name" : "username or profile URL"}" /></label>`).join("")}</div>
+      </section>
+      <div class="create-user-submit-bar">
+        <span>${escapeHtml(state.adminCreateUserMessage || "The saved details will populate the user's account and public profile.")}</span>
+        <button class="secondary-button" type="button" data-route="/admin/users">Cancel</button>
+        <button class="primary-button" type="submit">${icon("users", 16)}Create user</button>
+      </div>
+    </form>`,
+    `<button class="secondary-button" data-route="/admin/users">${icon("close", 16)}Back to users</button>`,
+  );
+}
+
 function adminSettingsTemplate() {
   return adminShellTemplate(
     "Platform settings",
@@ -4848,7 +5024,7 @@ function userManagementTemplate() {
           <span>Search users</span>
           <input id="userSearch" value="${state.userSearch}" placeholder="Search by name, email, or user ID" />
         </label>
-        <button class="primary-button" data-action="create-admin-user">${icon("users", 15)}Create user</button>
+        <button class="primary-button" data-route="/admin/users/new">${icon("users", 15)}Create user</button>
         <div class="user-counts">
           <span><strong>${state.users.length}</strong><em>Total users</em></span>
           <span><strong>${activeCount}</strong><em>Active</em></span>
@@ -5596,6 +5772,7 @@ function loginTemplate() {
           <label><span>Email address</span><input id="authEmail" name="email" type="email" autocomplete="email" maxlength="254" value="${escapeHtml(state.authForm.email)}" required /></label>
           <label><span>Password</span><div class="password-field"><input id="authPassword" name="password" type="${state.authPasswordVisible ? "text" : "password"}" autocomplete="${state.authMode === "register" ? "new-password" : "current-password"}" minlength="10" maxlength="128" required /><button type="button" class="password-toggle" data-action="toggle-auth-password" aria-label="${state.authPasswordVisible ? "Hide password" : "Show password"}">${state.authPasswordVisible ? "Hide" : "Show"}</button></div></label>
           ${state.authMode === "login" ? `<label><span>Authenticator or recovery code</span><input id="authTwoFactorCode" name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="20" value="${escapeHtml(state.authForm.twoFactorCode || "")}" placeholder="Only needed when 2FA is enabled" /></label>` : ""}
+          ${state.authMode === "login" ? `<label class="auth-remember"><input id="authRememberMe" type="checkbox" ${state.authForm.rememberMe ? "checked" : ""} /><span>Remember me on this device</span></label>` : ""}
           ${state.authMode === "register" ? `<small>Use at least 10 characters with uppercase, lowercase, and a number.</small>` : ""}
           <button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait…" : state.authMode === "register" ? "Create secure account" : "Sign in"}</button>
         </form>
@@ -5852,6 +6029,19 @@ function bindInputs() {
     event.preventDefault();
     submitAuthentication();
   });
+  const adminCreateUserForm = document.getElementById("adminCreateUserForm");
+  adminCreateUserForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitAdminCreateUser();
+  });
+  document.querySelectorAll("[data-admin-create-user]").forEach((field) => {
+    field.addEventListener("input", (event) => {
+      state.adminCreateUserForm[event.target.dataset.adminCreateUser] = event.target.value;
+    });
+    field.addEventListener("change", (event) => {
+      state.adminCreateUserForm[event.target.dataset.adminCreateUser] = event.target.value;
+    });
+  });
   const resetPasswordForm = document.getElementById("resetPasswordForm");
   resetPasswordForm?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -5875,6 +6065,9 @@ function bindInputs() {
     document.getElementById(id)?.addEventListener("input", (event) => {
       state.authForm[key] = event.target.value;
     });
+  });
+  document.getElementById("authRememberMe")?.addEventListener("change", (event) => {
+    state.authForm.rememberMe = event.target.checked;
   });
   const searchInput = document.getElementById("searchInput");
   if (searchInput) {
@@ -6432,7 +6625,7 @@ document.addEventListener("click", async (event) => {
   if (action === "create-discount") return openAdminModal("discount", { discountType: "percent", discountValue: "10", audience: "All readers" });
   if (action === "add-provider-credential") return openAdminModal("credential", { environment: "production" });
   if (credentialProvider && credentialKey) return openAdminModal("credential", { provider: credentialProvider, key: credentialKey, environment: "production" });
-  if (action === "create-admin-user") return openAdminModal("user", { role: "reader", subscription: "Free", status: "active" });
+  if (action === "create-admin-user") return setRoute("/admin/users/new");
   if (action === "configure-ip-intelligence") return openAdminModal("geoip", {});
   if (action === "add-translation-language") return openAdminModal("translationLanguage", {});
   if (action === "create-payout") return openAdminModal("payout", {});
