@@ -1,5 +1,5 @@
-const CACHE = "inkriver-v24-support-system";
-const CORE = ["/", "/index.html", "/src/app.js?v=20260717-support-system", "/src/styles.css?v=20260717-support-system", "/manifest.webmanifest", "/src/icon.svg"];
+const CACHE = "inkriver-v25-form-polish";
+const CORE = ["/", "/index.html", "/src/app.js?v=20260717-form-polish", "/src/styles.css?v=20260717-form-polish", "/manifest.webmanifest", "/src/icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));
