@@ -1673,6 +1673,31 @@ button {
   color: #fff;
 }
 
+.admin-subnav {
+  display: grid;
+  gap: 4px;
+  margin: -2px 0 5px 40px;
+}
+
+.admin-subnav button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.admin-subnav button.active,
+.admin-subnav button:hover {
+  background: var(--soft);
+  color: var(--accent-strong);
+}
+
 .admin-sidebar-footer {
   display: grid;
   gap: 12px;
@@ -2287,7 +2312,6 @@ button {
   top: 88px;
 }
 
-.editor-title-fields,
 .editor-panel,
 .rich-editor-shell,
 .post-seo-panel {
@@ -2299,15 +2323,21 @@ button {
 .editor-title-fields {
   display: grid;
   gap: 12px;
-  padding: 20px;
+  padding: 4px 0 18px;
+  border: 0;
+  background: transparent;
 }
 
 .post-title-input,
 .post-excerpt-input {
   width: 100%;
+  min-height: 0;
+  padding: 0;
   border: 0;
   outline: 0;
-  background: transparent;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none;
   color: var(--ink);
 }
 
@@ -2331,8 +2361,8 @@ button {
   align-items: center;
   min-width: 0;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--input);
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
   font-size: 13px;
 }
@@ -3026,6 +3056,10 @@ button {
   background: var(--accent);
 }
 
+.onboarding-progress.plans span:nth-child(-n + 2) {
+  background: var(--accent);
+}
+
 .onboarding-heading {
   display: flex;
   align-items: flex-start;
@@ -3057,6 +3091,61 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-top: 22px;
+}
+
+.onboarding-plans-modal {
+  width: min(960px, 100%);
+}
+
+.onboarding-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.onboarding-plan-card {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.onboarding-plan-card.free {
+  background: var(--soft);
+}
+
+.onboarding-plan-card > div {
+  display: grid;
+  gap: 4px;
+}
+
+.onboarding-plan-card strong {
+  font-family: var(--serif);
+  font-size: 22px;
+}
+
+.onboarding-plan-card span,
+.onboarding-plan-card li {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.onboarding-plan-card ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-plan-card li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .onboarding-interest {
@@ -5330,6 +5419,54 @@ button:disabled {
   background: var(--surface);
   color: var(--ink);
 }
+.production-cleanup-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.production-cleanup-toolbar .checkbox-field {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--soft);
+}
+.production-log-list article {
+  gap: 10px;
+}
+.production-record-check {
+  width: auto;
+  min-width: 22px;
+}
+.production-record-check input {
+  width: 16px;
+  min-height: 16px;
+}
+.seo-audit-page {
+  display: grid;
+  gap: 18px;
+}
+.seo-audit-table b {
+  justify-self: start;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+.good-score {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  color: var(--accent-strong);
+}
+.okay-score {
+  background: color-mix(in srgb, #d19b42 16%, var(--surface));
+  color: #8a570e;
+}
+.poor-score {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  color: var(--danger);
+}
 .installer-grid,
 .export-grid {
   display: grid;
@@ -5487,7 +5624,8 @@ button:disabled {
   .support-form-grid,
   .support-staff-controls,
   .author-benefit-grid,
-  .create-user-profile-grid { grid-template-columns: 1fr; }
+  .create-user-profile-grid,
+  .onboarding-plan-grid { grid-template-columns: 1fr; }
   .become-author-page { padding: 28px 16px 52px; }
   .author-program-hero h1 { font-size: 40px; }
   .create-user-submit-bar {

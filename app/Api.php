@@ -151,8 +151,16 @@ function provider_config_value(string $envKey, string $provider, string $key, ?s
     $env = env_value($envKey);
     if ($env !== null) return $env;
     try {
-        $stmt = Database::pdo()->prepare('SELECT value_encrypted FROM provider_credentials WHERE provider = ? AND key = ? AND enabled = 1');
-        $stmt->execute([$provider, $key]);
+        $providerPrefix = strtoupper($provider) . '_';
+        $shortEnvKey = str_starts_with($envKey, $providerPrefix) ? substr($envKey, strlen($providerPrefix)) : $envKey;
+        $keyCandidates = array_values(array_unique(array_filter([
+            $key,
+            strtolower($envKey),
+            strtolower($shortEnvKey),
+        ])));
+        $placeholders = implode(',', array_fill(0, count($keyCandidates), '?'));
+        $stmt = Database::pdo()->prepare("SELECT value_encrypted FROM provider_credentials WHERE provider = ? AND enabled = 1 AND key IN ($placeholders) ORDER BY CASE key WHEN ? THEN 0 ELSE 1 END LIMIT 1");
+        $stmt->execute(array_merge([$provider], $keyCandidates, [$key]));
         $row = $stmt->fetch();
         if ($row) {
             $value = decrypt_secret_value((string) $row['value_encrypted']);
@@ -2942,6 +2950,10 @@ function handle_api(string $path, string $method): void
         $now = now_iso();
         $pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'reader', 'Free', 'active', ?, ?)")
             ->execute([$id, $name, $email, hash_password_value($password), $now, $now]);
+        if (!empty($body['authorIntent'])) {
+            $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+                ->execute([$id, 'author-intent', json_encode(['requested' => true, 'status' => 'needs_paid_subscription', 'requestedAt' => $now], JSON_UNESCAPED_SLASHES), $now]);
+        }
         $token = create_session_for_user($id);
         set_session_cookie($token);
         audit_log($id, 'auth.register', 'user', $id);
@@ -2999,6 +3011,23 @@ function handle_api(string $path, string $method): void
             ]);
         }
         json_response(['user' => public_user($row)]);
+    }
+
+    if ($method === 'POST' && $path === '/api/me/author-intent') {
+        $session = require_auth();
+        $now = now_iso();
+        $isPaid = !in_array((string) ($session['user']['subscription'] ?? 'Free'), ['Free', 'Staff'], true);
+        $status = $isPaid ? 'writer_access_enabled' : 'needs_paid_subscription';
+        $value = ['requested' => true, 'status' => $status, 'requestedAt' => $now, 'subscription' => $session['user']['subscription']];
+        $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
+            ->execute([$session['user']['id'], 'author-intent', json_encode($value, JSON_UNESCAPED_SLASHES), $now]);
+        if ($isPaid && in_array($session['user']['role'], ['reader', 'subscriber'], true)) {
+            $pdo->prepare("UPDATE users SET role = 'writer', updated_at = ? WHERE id = ?")->execute([$now, $session['user']['id']]);
+            audit_log($session['user']['id'], 'author_access_enabled', 'user', $session['user']['id']);
+        }
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
+        $stmt->execute([$session['user']['id']]);
+        json_response(['user' => public_user($stmt->fetch()), 'author' => $value, 'needsSubscription' => !$isPaid]);
     }
 
     if ($method === 'POST' && $path === '/api/auth/passkeys/challenge') {
@@ -3452,6 +3481,60 @@ function handle_api(string $path, string $method): void
             }
             json_response(['jobId' => enqueue_background_job($type, is_array($body['payload'] ?? null) ? $body['payload'] : [])], 201);
         }
+    }
+
+    if ($method === 'DELETE' && $path === '/api/admin/production-records') {
+        $session = require_auth(['admin']);
+        $body = read_json();
+        $type = preg_replace('/[^a-z_-]/', '', strtolower((string) ($body['type'] ?? '')));
+        $ids = array_values(array_filter(array_map('strval', is_array($body['ids'] ?? null) ? $body['ids'] : [])));
+        $all = !empty($body['all']);
+        $cleared = 0;
+        if ($type === 'deployment') {
+            if ($ids) {
+                $stmt = $pdo->prepare('DELETE FROM deployment_updates WHERE id = ?');
+                foreach ($ids as $id) {
+                    $stmt->execute([$id]);
+                    $cleared += $stmt->rowCount();
+                }
+            } elseif ($all) {
+                $cleared = $pdo->exec("DELETE FROM deployment_updates WHERE status IN ('success', 'failed', 'rolled_back')");
+            }
+        } elseif ($type === 'jobs') {
+            if ($ids) {
+                $stmt = $pdo->prepare('DELETE FROM background_jobs WHERE id = ? AND status IN (\'completed\', \'failed\', \'cancelled\')');
+                foreach ($ids as $id) {
+                    $stmt->execute([$id]);
+                    $cleared += $stmt->rowCount();
+                }
+            } elseif ($all) {
+                $cleared = $pdo->exec("DELETE FROM background_jobs WHERE status IN ('completed', 'failed', 'cancelled')");
+            }
+        } elseif ($type === 'imports') {
+            if ($ids) {
+                $stmt = $pdo->prepare("DELETE FROM content_imports WHERE id = ? AND status IN ('processed', 'failed', 'rolled_back')");
+                foreach ($ids as $id) {
+                    $stmt->execute([$id]);
+                    $cleared += $stmt->rowCount();
+                }
+            } elseif ($all) {
+                $cleared = $pdo->exec("DELETE FROM content_imports WHERE status IN ('processed', 'failed', 'rolled_back')");
+            }
+        } elseif ($type === 'checkout') {
+            if ($ids) {
+                $stmt = $pdo->prepare('DELETE FROM checkout_recovery_events WHERE payment_id = ?');
+                foreach ($ids as $id) {
+                    $stmt->execute([$id]);
+                    $cleared += $stmt->rowCount();
+                }
+            } elseif ($all) {
+                $cleared = $pdo->exec('DELETE FROM checkout_recovery_events');
+            }
+        } else {
+            json_response(['error' => 'INVALID_RECORD_TYPE', 'message' => 'Choose deployment, jobs, imports, or checkout records.'], 400);
+        }
+        audit_log($session['user']['id'], 'admin.production_records_clear', 'production', $type, ['ids' => $ids, 'all' => $all, 'cleared' => (int) $cleared]);
+        json_response(['cleared' => (int) $cleared, 'type' => $type]);
     }
 
     if ($method === 'POST' && $path === '/api/admin/jobs/run') {

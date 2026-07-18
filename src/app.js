@@ -1188,6 +1188,11 @@ async function hydratePlatformState() {
     await loadSecuritySessions();
     await loadSecuritySettings();
     await loadSupportTickets();
+    if (state.authorIntent && state.isMember && !["writer", "admin"].includes(state.user.role)) {
+      await requestAuthorAccess(false);
+    } else if (state.authorIntent && !state.isMember) {
+      state.authorMessage = "Author path saved. Choose a paid subscription to activate writer access and earning tools.";
+    }
     if (["writer", "admin"].includes(state.user.role)) {
       await loadCreatorAnalytics();
       await loadWriterPayouts();
@@ -1622,8 +1627,11 @@ const state = {
   authForm: { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false },
   authPasswordVisible: false,
   authBusy: false,
+  authorIntent: sessionStorage.getItem("inkriver-author-intent") === "1",
+  authorMessage: "",
   sessionReady: false,
   onboardingOpen: Boolean(initialUser && !initialRecommendation.completedOnboarding),
+  onboardingStep: "interests",
   onboardingSelection: new Set(initialRecommendation.selectedInterests),
   onboardingMessage: "",
   recommendation: initialRecommendation,
@@ -1700,6 +1708,7 @@ const state = {
     emailTemplates: [], newsletters: [], featureFlags: [], taxSettings: { gstin: "", taxRate: 18, invoicePrefix: "INV" },
     seoAudit: [], editorialAssignments: [], imports: [], abandonedCheckouts: [], jobs: [], installer: {}, deployment: {}, newsletterLinks: {}, newsletterSuppressions: 0,
   },
+  productionCleanupSelected: { deployment: new Set(), jobs: new Set(), imports: new Set(), checkout: new Set() },
   featureFlags: {},
   productionForms: {
     newsletter: { title: "", subject: "", contentHtml: "", audience: "all", scheduledAt: "" },
@@ -2565,10 +2574,11 @@ async function startGatewayPayment(plan, purchase = {}) {
               body: JSON.stringify({ paymentId: order.paymentId, ...result }),
             });
             if (purchase.metadata?.kind !== "gift") applyAuthenticatedUser(verified.user, false);
+            if (state.authorIntent && purchase.metadata?.kind !== "gift") await requestAuthorAccess(false);
             state.checkoutPlan = null;
             state.paymentMessage = purchase.metadata?.kind === "gift"
               ? "Payment verified. The gift membership is scheduled."
-              : "Payment verified. Membership is active.";
+              : state.authorIntent ? "Payment verified. Membership is active and writer access is being enabled." : "Payment verified. Membership is active.";
             setRoute("/dashboard");
           } catch (error) {
             state.paymentMessage = error.message;
@@ -2735,9 +2745,10 @@ async function submitAuthentication() {
     const registering = state.authMode === "register";
     const payload = await apiRequest(`/api/auth/${registering ? "register" : "login"}`, {
       method: "POST",
-      body: JSON.stringify(state.authForm),
+      body: JSON.stringify({ ...state.authForm, authorIntent: state.authorIntent }),
     });
     applyAuthenticatedUser(payload.user, registering);
+    if (state.authorIntent) await requestAuthorAccess(false);
     await hydratePlatformState();
     await loadRecommendationFeed();
     state.loginMessage = registering ? "Account created securely." : "Signed in successfully.";
@@ -2751,6 +2762,38 @@ async function submitAuthentication() {
   } finally {
     state.authBusy = false;
   }
+}
+
+async function requestAuthorAccess(showRender = true) {
+  if (!state.user) {
+    state.authorIntent = true;
+    sessionStorage.setItem("inkriver-author-intent", "1");
+    state.authMode = "register";
+    state.loginOpen = true;
+    state.loginMessage = "Create or sign in to continue the author path. A paid membership is required before writer access is enabled.";
+    if (showRender) render();
+    return;
+  }
+  state.authorIntent = true;
+  sessionStorage.setItem("inkriver-author-intent", "1");
+  try {
+    const payload = await apiRequest("/api/me/author-intent", { method: "POST", body: "{}" });
+    if (payload.user) {
+      state.user = payload.user;
+      state.role = payload.user.role;
+      state.isMember = !["Free", "Staff"].includes(payload.user.subscription);
+    }
+    state.authorMessage = payload.needsSubscription
+      ? "Author path saved. Choose a paid subscription to activate writer access and earning tools."
+      : "Author access is active. Your writer studio is ready.";
+    if (!payload.needsSubscription) {
+      state.authorIntent = false;
+      sessionStorage.removeItem("inkriver-author-intent");
+    }
+  } catch (error) {
+    state.authorMessage = error.message;
+  }
+  if (showRender) render();
 }
 
 async function loginWithPasskey() {
@@ -2918,6 +2961,7 @@ function icon(name, size = 17) {
     share: '<circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><path d="m8.6 10.8 6.8-4.6"></path><path d="m8.6 13.2 6.8 4.6"></path>',
     link: '<path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"></path>',
     check: '<path d="m20 6-11 11-5-5"></path>',
+    refresh: '<path d="M21 12a9 9 0 0 1-15.4 6.4L3 16"></path><path d="M3 21v-5h5"></path><path d="M3 12A9 9 0 0 1 18.4 5.6L21 8"></path><path d="M21 3v5h-5"></path>',
     spark: '<path d="M12 3 14 9l6 3-6 3-2 6-2-6-6-3 6-3Z"></path>',
     trend: '<path d="m3 17 6-6 4 4 7-8"></path><path d="M14 7h6v6"></path>',
     money: '<circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path><path d="M12 8v8"></path>',
@@ -3100,6 +3144,7 @@ function adminRouteTemplate() {
   if (state.path === "/admin/users/new") return adminCreateUserTemplate();
   if (state.path.startsWith("/admin/users")) return adminUsersTemplate();
   if (state.path.startsWith("/admin/settings")) return adminSettingsTemplate();
+  if (state.path.startsWith("/admin/seo/audit")) return adminSeoAuditTemplate();
   if (state.path.startsWith("/admin/seo")) return adminSeoTemplate();
   if (state.path.startsWith("/admin/creator")) return creatorStudioTemplate();
   if (state.path.startsWith("/admin/moderation")) return moderationCenterTemplate();
@@ -3776,11 +3821,12 @@ function becomeAuthorTemplate() {
           <h1>Build a serious writing home for readers who return.</h1>
           <p>Publish thoughtful stories, grow a following, work with editorial tools, and use reader memberships, newsletters, comments, analytics, and distribution features from one focused workspace.</p>
           <div class="author-program-actions">
+            ${state.authorMessage ? `<div class="payment-message author-message">${escapeHtml(state.authorMessage)}</div>` : ""}
             ${signedInWriter
               ? `<button class="primary-button" data-route="/write">${icon("pen", 16)}Open writer studio</button>`
               : state.user
-                ? `<button class="primary-button" data-route="/support">${icon("comment", 16)}Request author access</button>`
-                : `<button class="primary-button" data-action="open-login">${icon("users", 16)}Join and request access</button>`}
+                ? `<button class="primary-button" data-action="begin-author-flow">${icon("card", 16)}Activate author path</button>`
+                : `<button class="primary-button" data-action="begin-author-flow">${icon("users", 16)}Join and request access</button>`}
             <button class="secondary-button" data-route="/about">${icon("link", 16)}Learn about InkRiver</button>
           </div>
         </div>
@@ -3806,8 +3852,8 @@ function becomeAuthorTemplate() {
         <div><h2>How author access works</h2><p>InkRiver keeps author tools behind account access so publishing permissions, subscriptions, moderation, analytics, and payouts remain tied to a verified profile.</p></div>
         <div class="author-steps">
           <article><strong>Create or sign in</strong><span>Start as a reader, complete your profile, add a photo, and choose the topics you want to write about.</span></article>
-          <article><strong>Request author access</strong><span>Share your background, preferred topics, website, and social profiles so the editorial team can review fit.</span></article>
-          <article><strong>Publish with tools</strong><span>Once approved, your dashboard opens the writer studio, publication workflows, scheduling, analytics, comments, and audience tools.</span></article>
+          <article><strong>Choose a paid membership</strong><span>Author access and earning tools are only activated for paid subscribers.</span></article>
+          <article><strong>Publish with tools</strong><span>After the paid plan is active, your dashboard opens the writer studio, publication workflows, scheduling, analytics, comments, and audience tools.</span></article>
         </div>
       </section>
     </main>
@@ -4453,6 +4499,20 @@ function publicationInviteTemplate(token) {
   </main>`;
 }
 
+function cleanupSelection(type) {
+  return state.productionCleanupSelected[type] || (state.productionCleanupSelected[type] = new Set());
+}
+
+function productionCleanupToolbar(type, label, records = []) {
+  const selected = cleanupSelection(type);
+  const selectable = records.map((item) => item.id || item.payment_id).filter(Boolean);
+  return `<div class="production-cleanup-toolbar">
+    <label class="checkbox-field"><input type="checkbox" data-production-select-all="${type}" ${selectable.length && selectable.every((id) => selected.has(id)) ? "checked" : ""} ${selectable.length ? "" : "disabled"} /><span>Select all</span></label>
+    <button class="secondary-button" data-clear-production="${type}" ${selected.size ? "" : "disabled"}>Clear selected ${selected.size ? `(${selected.size})` : ""}</button>
+    <button class="secondary-button danger-button" data-clear-production-all="${type}" ${selectable.length ? "" : "disabled"}>Clear old ${escapeHtml(label)}</button>
+  </div>`;
+}
+
 function productionSuiteTemplate() {
   const suite = state.productionSuite;
   const tax = suite.taxSettings || {};
@@ -4478,7 +4538,7 @@ function productionSuiteTemplate() {
   const deploymentBranch = forms.deployment.branch || deployment.branch || "main";
   const deploymentFiles = deployment.changedFiles || [];
   const deploymentRecent = deployment.recent || [];
-  return adminShellTemplate("Production suite", "Operate newsletters, cron jobs, SEO audits, imports, invoices, feature flags, abandoned checkout recovery, and exports from one production control room.", `
+  return adminShellTemplate("Production suite", "Operate newsletters, cron jobs, imports, invoices, feature flags, abandoned checkout recovery, deployment updates, and exports from one production control room.", `
     <section class="production-grid">
       <article class="work-panel production-panel wide-panel">
         <div class="panel-title">${icon("spark")}<h2>Production installer</h2></div>
@@ -4509,8 +4569,9 @@ function productionSuiteTemplate() {
         <div class="compact-list">
           ${deploymentFiles.length ? deploymentFiles.slice(0, 20).map((file) => `<article><span><strong>${escapeHtml(file.path || "")}</strong><small>${escapeHtml(file.status || "")}</small></span></article>`).join("") : `<div class="empty-state">No remote changed files detected yet.</div>`}
         </div>
-        <div class="compact-list">
-          ${deploymentRecent.map((item) => `<article><span><strong>${escapeHtml(item.status)} - ${escapeHtml(item.branch || "")}</strong><small>${escapeHtml((item.afterCommit || item.beforeCommit || "").slice(0, 12))} - ${item.updatedAt ? new Date(item.updatedAt).toLocaleString("en-IN") : ""}</small>${item.error ? `<small>${escapeHtml(item.error)}</small>` : ""}${item.log ? `<small class="deployment-log">${escapeHtml(String(item.log).slice(-900))}</small>` : ""}</span></article>`).join("") || `<div class="empty-state">No deployment attempts recorded.</div>`}
+        ${productionCleanupToolbar("deployment", "deployment messages", deploymentRecent)}
+        <div class="compact-list production-log-list">
+          ${deploymentRecent.map((item) => `<article><label class="production-record-check"><input type="checkbox" data-production-select="deployment" value="${escapeHtml(item.id)}" ${cleanupSelection("deployment").has(item.id) ? "checked" : ""} /></label><span><strong>${escapeHtml(item.status)} - ${escapeHtml(item.branch || "")}</strong><small>${escapeHtml((item.afterCommit || item.beforeCommit || "").slice(0, 12))} - ${item.updatedAt ? new Date(item.updatedAt).toLocaleString("en-IN") : ""}</small>${item.error ? `<small>${escapeHtml(item.error)}</small>` : ""}${item.log ? `<small class="deployment-log">${escapeHtml(String(item.log).slice(-900))}</small>` : ""}</span></article>`).join("") || `<div class="empty-state">No deployment attempts recorded.</div>`}
         </div>
       </article>
 
@@ -4588,23 +4649,21 @@ function productionSuiteTemplate() {
         <label class="wide-field"><span>Import content</span><textarea data-production-form="import.content" rows="8" placeholder='JSON array, CSV with title/contentHtml columns, or WordPress/Medium RSS XML'>${escapeHtml(forms.import.content)}</textarea></label>
         <div class="settings-actions"><button class="secondary-button" data-action="preview-content-import">Preview import</button><button class="primary-button" data-action="run-content-import">Import stories</button></div>
         ${state.importPreview ? `<div class="installer-guide"><strong>${Number(state.importPreview.count || 0)} stories detected</strong><p>${Number(state.importPreview.duplicates || 0)} duplicate slugs found. Duplicate mode: ${escapeHtml(state.importPreview.duplicateMode || forms.import.duplicateMode)}. ${(state.importPreview.sample || []).map((item) => escapeHtml(item.title || "Untitled")).join(", ")}</p></div>` : ""}
-        <div class="compact-list">${suite.imports.map((item) => { const meta = safeJson(item.metadata_json, {}); return `<article><span><strong>${escapeHtml(item.source_type)}</strong><small>${meta.rolledBackAt ? "rolled back" : escapeHtml(item.status)} - ${Number(item.imported_count || 0)} imported${meta.skippedDuplicates ? ` - ${Number(meta.skippedDuplicates)} skipped` : ""}</small></span>${item.status === "processed" && !meta.rolledBackAt ? `<button class="secondary-button danger-button" data-rollback-import="${item.id}">Rollback</button>` : ""}</article>`; }).join("") || `<div class="empty-state">No import jobs yet.</div>`}</div>
-      </article>
-
-      <article class="work-panel production-panel wide-panel">
-        <div class="panel-title">${icon("search")}<h2>SEO audit</h2></div>
-        <div class="ops-table compact-ops"><div class="ops-table-head"><span>Story</span><span>Issues</span><span>Score</span></div>${suite.seoAudit.map((row) => `<div class="ops-table-row"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml((row.issues || []).join(", ") || "Clean")}</span><b>${Number(row.score || 0)}</b></div>`).join("") || `<div class="empty-state">No published stories found for audit.</div>`}</div>
+        ${productionCleanupToolbar("imports", "import messages", suite.imports)}
+        <div class="compact-list production-log-list">${suite.imports.map((item) => { const meta = safeJson(item.metadata_json, {}); return `<article><label class="production-record-check"><input type="checkbox" data-production-select="imports" value="${escapeHtml(item.id)}" ${cleanupSelection("imports").has(item.id) ? "checked" : ""} /></label><span><strong>${escapeHtml(item.source_type)}</strong><small>${meta.rolledBackAt ? "rolled back" : escapeHtml(item.status)} - ${Number(item.imported_count || 0)} imported${meta.skippedDuplicates ? ` - ${Number(meta.skippedDuplicates)} skipped` : ""}</small></span>${item.status === "processed" && !meta.rolledBackAt ? `<button class="secondary-button danger-button" data-rollback-import="${item.id}">Rollback</button>` : ""}</article>`; }).join("") || `<div class="empty-state">No import jobs yet.</div>`}</div>
       </article>
 
       <article class="work-panel production-panel">
         <div class="panel-title">${icon("gauge")}<h2>Cron dashboard</h2></div>
         <div class="settings-actions"><button class="primary-button" data-action="run-production-jobs">Run due jobs</button><button class="secondary-button" data-action="queue-payout-job">Queue payouts</button></div>
-        <div class="compact-list">${suite.jobs.map((job) => `<article><span><strong>${escapeHtml(job.type)}</strong><small>${escapeHtml(job.status)}${job.run_at ? ` - ${new Date(job.run_at).toLocaleString("en-IN")}` : ""}</small></span></article>`).join("") || `<div class="empty-state">No background jobs queued.</div>`}</div>
+        ${productionCleanupToolbar("jobs", "job messages", suite.jobs.filter((job) => ["completed", "failed", "cancelled"].includes(job.status)))}
+        <div class="compact-list production-log-list">${suite.jobs.map((job) => `<article><label class="production-record-check"><input type="checkbox" data-production-select="jobs" value="${escapeHtml(job.id)}" ${cleanupSelection("jobs").has(job.id) ? "checked" : ""} ${["completed", "failed", "cancelled"].includes(job.status) ? "" : "disabled"} /></label><span><strong>${escapeHtml(job.type)}</strong><small>${escapeHtml(job.status)}${job.run_at ? ` - ${new Date(job.run_at).toLocaleString("en-IN")}` : ""}</small>${job.last_error ? `<small>${escapeHtml(job.last_error)}</small>` : ""}</span></article>`).join("") || `<div class="empty-state">No background jobs queued.</div>`}</div>
       </article>
 
       <article class="work-panel production-panel">
         <div class="panel-title">${icon("card")}<h2>Abandoned checkout recovery</h2></div>
-        <div class="compact-list">${suite.abandonedCheckouts.map((item) => `<article><span><strong>${escapeHtml(item.payment_id)}</strong><small>${escapeHtml(item.event_type)} - ${new Date(item.created_at).toLocaleString("en-IN")}</small></span></article>`).join("") || `<div class="empty-state">No checkout recovery events yet.</div>`}</div>
+        ${productionCleanupToolbar("checkout", "checkout messages", suite.abandonedCheckouts)}
+        <div class="compact-list production-log-list">${suite.abandonedCheckouts.map((item) => `<article><label class="production-record-check"><input type="checkbox" data-production-select="checkout" value="${escapeHtml(item.payment_id)}" ${cleanupSelection("checkout").has(item.payment_id) ? "checked" : ""} /></label><span><strong>${escapeHtml(item.payment_id)}</strong><small>${escapeHtml(item.event_type)} - ${new Date(item.created_at).toLocaleString("en-IN")}</small></span></article>`).join("") || `<div class="empty-state">No checkout recovery events yet.</div>`}</div>
       </article>
 
       <article class="work-panel production-panel wide-panel">
@@ -4810,6 +4869,7 @@ function adminShellTemplate(title, description, content, actions = "") {
               <span class="admin-nav-icon">${icon(iconName, 18)}</span>
               <span>${label}</span>
             </button>
+            ${route === "/admin/seo" ? `<div class="admin-subnav"><button class="${state.path === "/admin/seo/audit" ? "active" : ""}" data-route="/admin/seo/audit">${icon("search", 14)}<span>SEO audit</span></button></div>` : ""}
           `).join("")}
         </nav>
         <div class="admin-sidebar-footer">
@@ -5448,6 +5508,29 @@ function adminSeoTemplate() {
   );
 }
 
+function adminSeoAuditTemplate() {
+  const rows = state.productionSuite.seoAudit || [];
+  const average = rows.length ? Math.round(rows.reduce((sum, row) => sum + Number(row.score || 0), 0) / rows.length) : 0;
+  const issueCount = rows.reduce((sum, row) => sum + (row.issues || []).length, 0);
+  return adminShellTemplate(
+    "SEO audit",
+    "Review story-level search issues, metadata quality, and optimization scores from the Site SEO workspace.",
+    `<section class="seo-audit-page">
+      <div class="operations-summary">
+        <article><span>Audited stories</span><strong>${rows.length}</strong></article>
+        <article><span>Average score</span><strong>${average}</strong></article>
+        <article><span>Total issues</span><strong>${issueCount}</strong></article>
+        <article><span>Clean stories</span><strong>${rows.filter((row) => !(row.issues || []).length).length}</strong></article>
+      </div>
+      <div class="work-panel">
+        <div class="panel-title">${icon("search")}<h2>Story SEO audit</h2></div>
+        <div class="ops-table compact-ops seo-audit-table"><div class="ops-table-head"><span>Story</span><span>Issues</span><span>Score</span></div>${rows.map((row) => `<div class="ops-table-row"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml((row.issues || []).join(", ") || "Clean")}</span><b class="${Number(row.score || 0) >= 80 ? "good-score" : Number(row.score || 0) >= 50 ? "okay-score" : "poor-score"}">${Number(row.score || 0)}</b></div>`).join("") || `<div class="empty-state">No published stories found for audit.</div>`}</div>
+      </div>
+    </section>`,
+    `<div class="admin-header-actions"><button class="secondary-button" data-route="/admin/seo">${icon("gauge", 16)}SEO settings</button><button class="secondary-button" data-action="refresh-production-suite">${icon("refresh", 16)}Refresh audit</button></div>`,
+  );
+}
+
 function siteSeoField(label, key, value) {
   return `<label><span>${label}</span><input data-site-seo="${key}" value="${escapeHtml(value)}" /></label>`;
 }
@@ -5766,7 +5849,7 @@ function loginTemplate() {
           <button class="${state.authMode === "register" ? "active" : ""}" data-auth-mode="register">Create account</button>
         </div>
         <h2 id="login-title">${state.authMode === "register" ? "Create your InkRiver account" : "Welcome back"}</h2>
-        <p>${state.authMode === "register" ? "New accounts start with the reader role. Staff permissions can only be granted by an administrator." : "Sign in to access your personal dashboard, reading history, subscriptions, and saved stories."}</p>
+        <p>${state.authorIntent ? "You are continuing the author path. A paid membership is required before writer access and earning tools are enabled." : state.authMode === "register" ? "New accounts start with the reader role. Staff permissions can only be granted by an administrator." : "Sign in to access your personal dashboard, reading history, subscriptions, and saved stories."}</p>
         <form class="auth-form" id="authForm">
           ${state.authMode === "register" ? `<label><span>Full name</span><input id="authName" name="name" autocomplete="name" maxlength="80" value="${escapeHtml(state.authForm.name)}" required /></label>` : ""}
           <label><span>Email address</span><input id="authEmail" name="email" type="email" autocomplete="email" maxlength="254" value="${escapeHtml(state.authForm.email)}" required /></label>
@@ -5846,6 +5929,7 @@ function adminModalTemplate() {
 
 function onboardingTemplate() {
   const selectedCount = state.onboardingSelection.size;
+  if (state.onboardingStep === "plans") return onboardingPlansTemplate();
   return `
     <div class="modal-backdrop onboarding-backdrop" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
       <section class="onboarding-modal">
@@ -5875,7 +5959,34 @@ function onboardingTemplate() {
             <strong>${selectedCount} selected</strong>
             <span>${escapeHtml(state.onboardingMessage || (selectedCount < 3 ? `Choose ${3 - selectedCount} more to continue` : "Your first personalized feed is ready"))}</span>
           </div>
-          <button class="primary-button" data-action="complete-onboarding" ${selectedCount < 3 ? "disabled" : ""}>Build my feed ${icon("trend", 16)}</button>
+          <button class="primary-button" data-action="complete-onboarding" ${selectedCount < 3 ? "disabled" : ""}>Continue ${icon("trend", 16)}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function onboardingPlansTemplate() {
+  const paidPlans = state.plans.filter((plan) => Number(plan.price || 0) > 0);
+  return `
+    <div class="modal-backdrop onboarding-backdrop" role="dialog" aria-modal="true" aria-labelledby="onboarding-plans-title">
+      <section class="onboarding-modal onboarding-plans-modal">
+        <div class="onboarding-progress plans"><span></span><span></span><span></span></div>
+        <div class="onboarding-heading">
+          <span class="onboarding-mark">${icon("card", 22)}</span>
+          <div>
+            <small>Membership options</small>
+            <h2 id="onboarding-plans-title">${state.authorIntent ? "Choose a paid plan to activate author access" : "Choose how you want to read"}</h2>
+            <p>${state.authorIntent ? "Author and earning tools require an active paid membership. You can still continue as a free reader and upgrade later." : "Paid plans unlock member stories and support the publishing community. You can also continue with the free reader plan."}</p>
+          </div>
+        </div>
+        <div class="onboarding-plan-grid">
+          ${paidPlans.map((plan) => `<article class="onboarding-plan-card"><div><strong>${escapeHtml(plan.name)}</strong><span>${formatMoneyFromINR(plan.price)} / ${escapeHtml(plan.period)}</span></div><ul>${plan.features.slice(0, 4).map((feature) => `<li>${icon("check", 13)}${escapeHtml(feature)}</li>`).join("")}</ul><button class="primary-button" data-onboarding-plan="${escapeHtml(plan.id)}">Choose ${escapeHtml(plan.name)}</button></article>`).join("")}
+          <article class="onboarding-plan-card free"><div><strong>Free reader</strong><span>No paid membership now</span></div><ul><li>${icon("check", 13)}Personalized feed</li><li>${icon("check", 13)}Saved stories and reading history</li><li>${icon("check", 13)}Upgrade later from your dashboard</li></ul><button class="secondary-button" data-action="skip-onboarding-plan">Continue free</button></article>
+        </div>
+        <div class="onboarding-footer">
+          <div><strong>${state.authorIntent ? "Paid plan required for author access" : "Membership is optional"}</strong><span>${escapeHtml(state.onboardingMessage || "You can change plans anytime from the membership dashboard.")}</span></div>
+          <button class="secondary-button" data-action="skip-onboarding-plan">Skip for now</button>
         </div>
       </section>
     </div>
@@ -6442,6 +6553,29 @@ function bindInputs() {
       updateUser(event.target.dataset.userRole, { role: event.target.value });
     });
   });
+  document.querySelectorAll("[data-production-select]").forEach((field) => {
+    field.addEventListener("change", (event) => {
+      const type = event.target.dataset.productionSelect;
+      const id = event.target.value;
+      const selection = cleanupSelection(type);
+      event.target.checked ? selection.add(id) : selection.delete(id);
+      render();
+    });
+  });
+  document.querySelectorAll("[data-production-select-all]").forEach((field) => {
+    field.addEventListener("change", (event) => {
+      const type = event.target.dataset.productionSelectAll;
+      const selection = cleanupSelection(type);
+      selection.clear();
+      let source = [];
+      if (type === "deployment") source = state.productionSuite.deployment?.recent || [];
+      if (type === "jobs") source = (state.productionSuite.jobs || []).filter((job) => ["completed", "failed", "cancelled"].includes(job.status));
+      if (type === "imports") source = state.productionSuite.imports || [];
+      if (type === "checkout") source = state.productionSuite.abandonedCheckouts || [];
+      if (event.target.checked) source.map((item) => item.id || item.payment_id).filter(Boolean).forEach((id) => selection.add(id));
+      render();
+    });
+  });
   document.querySelectorAll("[data-user-subscription]").forEach((select) => {
     select.addEventListener("change", (event) => {
       updateUser(event.target.dataset.userSubscription, { subscription: event.target.value });
@@ -6480,6 +6614,7 @@ document.addEventListener("click", async (event) => {
   const notInterested = target.dataset.notInterested;
   const interestTopic = target.dataset.interestTopic;
   const onboardingInterest = target.dataset.onboardingInterest;
+  const onboardingPlan = target.dataset.onboardingPlan;
   const followType = target.dataset.followType;
   const followValue = target.dataset.followValue;
   const resumeStory = target.dataset.resumeStory;
@@ -6949,7 +7084,36 @@ document.addEventListener("click", async (event) => {
         body: JSON.stringify({ limit: 20 }),
       });
       await loadProductionSuite();
-      state.userMessage = `${payload.processed || 0} production jobs processed.`;
+      const completed = Number(payload.completed || 0);
+      const failed = Number(payload.failed || 0);
+      state.userMessage = `${completed + failed} production jobs processed (${completed} completed, ${failed} failed).`;
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    render();
+  }
+
+  if (action === "refresh-production-suite") {
+    await loadProductionSuite();
+    state.userMessage = "Production data refreshed.";
+    render();
+  }
+
+  const clearType = target.dataset.clearProduction;
+  const clearAllType = target.dataset.clearProductionAll;
+  if (clearType || clearAllType) {
+    const type = clearType || clearAllType;
+    const selection = cleanupSelection(type);
+    const all = Boolean(clearAllType);
+    if (!all && !selection.size) return;
+    try {
+      const payload = await apiRequest("/api/admin/production-records", {
+        method: "DELETE",
+        body: JSON.stringify({ type, all, ids: all ? [] : [...selection] }),
+      });
+      selection.clear();
+      await loadProductionSuite();
+      state.userMessage = `${payload.cleared || 0} production record${payload.cleared === 1 ? "" : "s"} cleared.`;
     } catch (error) {
       state.userMessage = error.message;
     }
@@ -7330,6 +7494,16 @@ document.addEventListener("click", async (event) => {
       : state.onboardingSelection.add(onboardingInterest);
     state.onboardingMessage = "";
     render();
+  }
+  if (onboardingPlan) {
+    const plan = state.plans.find((item) => item.id === onboardingPlan);
+    if (plan) {
+      state.checkoutPlan = plan;
+      state.onboardingOpen = false;
+      state.onboardingStep = "interests";
+      state.paymentMessage = state.authorIntent ? "Complete a paid membership to activate author access." : "";
+      render();
+    }
   }
   if (interactiveStory && interactiveId && interactiveOption !== undefined) {
     const key = `${interactiveStory}:${interactiveId}`;
@@ -7774,6 +7948,9 @@ document.addEventListener("click", async (event) => {
     state.draftPreview = !state.draftPreview;
     render();
   }
+  if (action === "begin-author-flow") {
+    await requestAuthorAccess(true);
+  }
   if (action === "publish-writer-story") {
     await saveWriterStory("published");
   }
@@ -7793,6 +7970,13 @@ document.addEventListener("click", async (event) => {
     await logoutUser();
   }
   if (action === "complete-onboarding") {
+    if (state.onboardingStep === "plans") {
+      state.onboardingOpen = false;
+      state.onboardingStep = "interests";
+      state.onboardingMessage = "";
+      setRoute("/");
+      return;
+    }
     if (state.onboardingSelection.size < 3) {
       state.onboardingMessage = "Choose at least three interests to continue.";
       render();
@@ -7805,12 +7989,18 @@ document.addEventListener("click", async (event) => {
         if (!state.onboardingSelection.has(topicName)) updateInterestPreference(topicName, false, "onboarding");
       });
       state.recommendation.completedOnboarding = true;
-      state.onboardingOpen = false;
+      state.onboardingStep = "plans";
       state.onboardingMessage = "";
       state.recommendationMessage = "Your feed is ready and will keep learning from your reading activity.";
       persistRecommendationProfile();
-      setRoute("/");
+      render();
     }
+  }
+  if (action === "skip-onboarding-plan") {
+    state.onboardingOpen = false;
+    state.onboardingStep = "interests";
+    state.onboardingMessage = "";
+    setRoute("/");
   }
   if (action === "reset-recommendations") {
     resetRecommendationProfile();
