@@ -6,6 +6,10 @@ require_once __DIR__ . '/app/Api.php';
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
+if (str_starts_with($path, '/.well-known/oauth-') || $path === '/.well-known/openid-configuration' || str_starts_with($path, '/oauth/')) {
+    handle_oauth($path, $method);
+}
+
 if (str_starts_with($path, '/api/')) {
     handle_api($path, $method);
 }

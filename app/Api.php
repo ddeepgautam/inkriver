@@ -895,13 +895,21 @@ function first_admin_session_for_mcp(): ?array
 function mcp_authorize_session(): array
 {
     $session = current_session();
-    if ($session && in_array($session['user']['role'], ['writer', 'admin'], true)) return $session;
+    if ($session && ($session['user']['role'] ?? '') === 'admin') return $session;
     $header = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? '');
     if (!$header && function_exists('apache_request_headers')) {
         $headers = apache_request_headers();
         $header = (string) ($headers['Authorization'] ?? $headers['authorization'] ?? '');
     }
     $provided = preg_match('/Bearer\s+(.+)/i', $header, $m) ? trim($m[1]) : trim((string) ($_GET['token'] ?? ''));
+    if ($provided !== '') {
+        $stmt = Database::pdo()->prepare("SELECT users.*, oauth_access_tokens.client_id, oauth_access_tokens.scope FROM oauth_access_tokens JOIN users ON users.id = oauth_access_tokens.user_id WHERE oauth_access_tokens.token_hash = ? AND oauth_access_tokens.expires_at > ? AND oauth_access_tokens.revoked_at IS NULL AND users.status = 'active' LIMIT 1");
+        $stmt->execute([hash('sha256', $provided), now_iso()]);
+        if ($row = $stmt->fetch()) {
+            if (($row['role'] ?? '') !== 'admin') throw new RuntimeException('Only administrator accounts can use InkRiver MCP publishing.');
+            return ['user' => public_user($row), 'sessionId' => 'oauth-mcp', 'raw' => $row];
+        }
+    }
     $expected = provider_config_value('MCP_API_TOKEN', 'mcp', 'api_token', '');
     if (!$expected || !$provided || !hash_equals((string) $expected, $provided)) throw new RuntimeException('A valid MCP bearer token is required.');
     $tokenSession = first_admin_session_for_mcp();
@@ -915,6 +923,192 @@ function mcp_json_response(array $payload, int $status = 200): never
     foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);
     echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
+}
+
+function oauth_metadata_response(array $payload, int $status = 200): never
+{
+    http_response_code($status);
+    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);
+    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+function oauth_client_secret_hash(string $secret): string
+{
+    return hash('sha256', $secret);
+}
+
+function oauth_validate_redirect_uri(array $client, string $redirectUri): bool
+{
+    $uris = parse_json_field($client['redirect_uris_json'] ?? '[]', []);
+    return is_array($uris) && in_array($redirectUri, $uris, true);
+}
+
+function oauth_pkce_valid(?string $verifier, ?string $challenge, ?string $method): bool
+{
+    if (!$challenge) return true;
+    if (!$verifier) return false;
+    if (strtoupper((string) $method) === 'S256') {
+        return hash_equals($challenge, rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '='));
+    }
+    return hash_equals($challenge, $verifier);
+}
+
+function oauth_error_redirect(string $redirectUri, string $error, string $description = '', string $state = ''): never
+{
+    $params = ['error' => $error];
+    if ($description !== '') $params['error_description'] = $description;
+    if ($state !== '') $params['state'] = $state;
+    redirect_response($redirectUri . (str_contains($redirectUri, '?') ? '&' : '?') . http_build_query($params));
+}
+
+function oauth_authorize_params(): array
+{
+    return [
+        'response_type' => (string) ($_REQUEST['response_type'] ?? ''),
+        'client_id' => (string) ($_REQUEST['client_id'] ?? ''),
+        'redirect_uri' => (string) ($_REQUEST['redirect_uri'] ?? ''),
+        'scope' => (string) ($_REQUEST['scope'] ?? 'mcp:publish'),
+        'state' => (string) ($_REQUEST['state'] ?? ''),
+        'code_challenge' => (string) ($_REQUEST['code_challenge'] ?? ''),
+        'code_challenge_method' => (string) ($_REQUEST['code_challenge_method'] ?? ''),
+    ];
+}
+
+function oauth_login_page(array $params, string $message = ''): never
+{
+    http_response_code(200);
+    foreach (security_headers() + ['Content-Type' => 'text/html; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);
+    $hidden = '';
+    foreach ($params as $key => $value) $hidden .= '<input type="hidden" name="' . htmlspecialchars($key, ENT_QUOTES) . '" value="' . htmlspecialchars((string) $value, ENT_QUOTES) . '">';
+    $error = $message ? '<div class="oauth-error">' . htmlspecialchars($message, ENT_QUOTES) . '</div>' : '';
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect InkRiver MCP</title><style>body{margin:0;font-family:Inter,system-ui,sans-serif;background:#f6f4ee;color:#1b1b18;display:grid;min-height:100dvh;place-items:center}.box{width:min(440px,92vw);background:#fff;border:1px solid #ded8cc;border-radius:12px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.08)}h1{margin:0 0 8px;font-family:Georgia,serif}.note{color:#6d6a62;line-height:1.5}.oauth-error{padding:12px;border:1px solid #c94b4b;background:#fff1f1;color:#8a1f1f;border-radius:8px;margin:14px 0}label{display:grid;gap:6px;margin-top:14px;font-size:13px;font-weight:700}input{min-height:44px;border:1px solid #d8d1c4;border-radius:8px;padding:0 12px;font:inherit}button{width:100%;min-height:46px;margin-top:18px;border:0;border-radius:8px;background:#176b48;color:white;font-weight:800;cursor:pointer}</style></head><body><main class="box"><h1>Connect InkRiver MCP</h1><p class="note">Sign in with an administrator account to allow this MCP client to publish and manage blog drafts.</p>' . $error . '<form method="post" action="/oauth/authorize">' . $hidden . '<label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Authorize admin access</button></form></main></body></html>';
+    exit;
+}
+
+function oauth_issue_code(array $params, array $user): never
+{
+    if (($user['role'] ?? '') !== 'admin') oauth_error_redirect($params['redirect_uri'], 'access_denied', 'Only administrator accounts can connect InkRiver MCP.', $params['state']);
+    $code = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    Database::pdo()->prepare('INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        ->execute([hash('sha256', $code), $params['client_id'], $user['id'], $params['redirect_uri'], substr($params['scope'] ?: 'mcp:publish', 0, 200), $params['code_challenge'] ?: null, $params['code_challenge_method'] ?: null, gmdate('Y-m-d\TH:i:s.v\Z', time() + 600), now_iso()]);
+    audit_log($user['id'], 'oauth.mcp_authorize', 'oauth_client', $params['client_id']);
+    $query = ['code' => $code];
+    if ($params['state'] !== '') $query['state'] = $params['state'];
+    redirect_response($params['redirect_uri'] . (str_contains($params['redirect_uri'], '?') ? '&' : '?') . http_build_query($query));
+}
+
+function handle_oauth(string $path, string $method): void
+{
+    $origin = rtrim((string) (env_value('APP_ORIGIN') ?: env_value('APP_URL') ?: app_url('/')), '/');
+    if ($method === 'GET' && ($path === '/.well-known/oauth-protected-resource' || $path === '/.well-known/oauth-protected-resource/mcp')) {
+        oauth_metadata_response([
+            'resource' => $origin . '/mcp',
+            'authorization_servers' => [$origin],
+            'bearer_methods_supported' => ['header'],
+            'resource_documentation' => $origin . '/mcp',
+        ]);
+    }
+    if ($method === 'GET' && ($path === '/.well-known/oauth-authorization-server' || $path === '/.well-known/oauth-authorization-server/mcp' || $path === '/.well-known/openid-configuration')) {
+        oauth_metadata_response([
+            'issuer' => $origin,
+            'authorization_endpoint' => $origin . '/oauth/authorize',
+            'token_endpoint' => $origin . '/oauth/token',
+            'registration_endpoint' => $origin . '/oauth/register',
+            'response_types_supported' => ['code'],
+            'grant_types_supported' => ['authorization_code', 'refresh_token'],
+            'code_challenge_methods_supported' => ['S256', 'plain'],
+            'token_endpoint_auth_methods_supported' => ['client_secret_post', 'client_secret_basic', 'none'],
+            'scopes_supported' => ['mcp:publish'],
+        ]);
+    }
+    if ($method === 'POST' && $path === '/oauth/register') {
+        $body = read_json();
+        $clientId = uuid_value('mcp-client-');
+        $clientSecret = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+        $redirectUris = is_array($body['redirect_uris'] ?? null) ? array_values(array_map('strval', $body['redirect_uris'])) : [];
+        if (!$redirectUris && !empty($body['redirect_uri'])) $redirectUris = [(string) $body['redirect_uri']];
+        if (!$redirectUris) oauth_metadata_response(['error' => 'invalid_client_metadata', 'error_description' => 'redirect_uris is required.'], 400);
+        Database::pdo()->prepare('INSERT INTO oauth_clients (client_id, client_secret_hash, client_name, redirect_uris_json, scope, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$clientId, oauth_client_secret_hash($clientSecret), substr((string) ($body['client_name'] ?? 'MCP Client'), 0, 180), json_encode($redirectUris, JSON_UNESCAPED_SLASHES), 'mcp:publish', now_iso(), now_iso()]);
+        oauth_metadata_response([
+            'client_id' => $clientId,
+            'client_secret' => $clientSecret,
+            'client_id_issued_at' => time(),
+            'client_secret_expires_at' => 0,
+            'redirect_uris' => $redirectUris,
+            'grant_types' => ['authorization_code', 'refresh_token'],
+            'response_types' => ['code'],
+            'scope' => 'mcp:publish',
+            'token_endpoint_auth_method' => 'client_secret_post',
+        ], 201);
+    }
+    if (($method === 'GET' || $method === 'POST') && $path === '/oauth/authorize') {
+        $params = oauth_authorize_params();
+        $stmt = Database::pdo()->prepare('SELECT * FROM oauth_clients WHERE client_id = ?');
+        $stmt->execute([$params['client_id']]);
+        $client = $stmt->fetch();
+        if (!$client || $params['response_type'] !== 'code' || !oauth_validate_redirect_uri($client, $params['redirect_uri'])) {
+            oauth_login_page($params, 'This OAuth request is invalid or uses an unregistered redirect URL.');
+        }
+        if ($method === 'POST') {
+            $email = strtolower(trim((string) ($_POST['email'] ?? '')));
+            $password = (string) ($_POST['password'] ?? '');
+            $userStmt = Database::pdo()->prepare("SELECT * FROM users WHERE email = ? AND status = 'active' LIMIT 1");
+            $userStmt->execute([$email]);
+            $user = $userStmt->fetch();
+            if (!$user || !verify_password_value($password, (string) $user['password_hash'])) oauth_login_page($params, 'Invalid email or password.');
+            if (($user['role'] ?? '') !== 'admin') oauth_login_page($params, 'You are not allowed to connect InkRiver MCP. Only administrator accounts can perform this task.');
+            $sessionToken = create_session_for_user($user['id']);
+            set_session_cookie($sessionToken);
+            oauth_issue_code($params, public_user($user));
+        }
+        $session = current_session();
+        if (!$session) oauth_login_page($params);
+        if (($session['user']['role'] ?? '') !== 'admin') oauth_login_page($params, 'You are not allowed to connect InkRiver MCP. Only administrator accounts can perform this task.');
+        oauth_issue_code($params, $session['user']);
+    }
+    if ($method === 'POST' && $path === '/oauth/token') {
+        $body = $_POST ?: read_json();
+        $grantType = (string) ($body['grant_type'] ?? '');
+        $clientId = (string) ($body['client_id'] ?? '');
+        $clientSecret = (string) ($body['client_secret'] ?? '');
+        if (!$clientId && preg_match('/Basic\s+(.+)/i', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''), $m)) {
+            [$clientId, $clientSecret] = array_pad(explode(':', base64_decode($m[1]) ?: '', 2), 2, '');
+        }
+        $stmt = Database::pdo()->prepare('SELECT * FROM oauth_clients WHERE client_id = ?');
+        $stmt->execute([$clientId]);
+        $client = $stmt->fetch();
+        if (!$client) oauth_metadata_response(['error' => 'invalid_client'], 401);
+        if (($client['client_secret_hash'] ?? '') && !hash_equals((string) $client['client_secret_hash'], oauth_client_secret_hash($clientSecret))) oauth_metadata_response(['error' => 'invalid_client'], 401);
+        if ($grantType === 'authorization_code') {
+            $code = (string) ($body['code'] ?? '');
+            $redirectUri = (string) ($body['redirect_uri'] ?? '');
+            $codeStmt = Database::pdo()->prepare('SELECT * FROM oauth_authorization_codes WHERE code_hash = ? AND client_id = ? AND used_at IS NULL AND expires_at > ? LIMIT 1');
+            $codeStmt->execute([hash('sha256', $code), $clientId, now_iso()]);
+            $row = $codeStmt->fetch();
+            if (!$row || $row['redirect_uri'] !== $redirectUri || !oauth_pkce_valid((string) ($body['code_verifier'] ?? ''), $row['code_challenge'] ?? null, $row['code_challenge_method'] ?? null)) oauth_metadata_response(['error' => 'invalid_grant'], 400);
+            Database::pdo()->prepare('UPDATE oauth_authorization_codes SET used_at = ? WHERE code_hash = ?')->execute([now_iso(), $row['code_hash']]);
+            $accessToken = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+            $refreshToken = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+            Database::pdo()->prepare('INSERT INTO oauth_access_tokens (token_hash, refresh_token_hash, client_id, user_id, scope, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                ->execute([hash('sha256', $accessToken), hash('sha256', $refreshToken), $clientId, $row['user_id'], $row['scope'], gmdate('Y-m-d\TH:i:s.v\Z', time() + 3600), now_iso()]);
+            oauth_metadata_response(['access_token' => $accessToken, 'token_type' => 'Bearer', 'expires_in' => 3600, 'refresh_token' => $refreshToken, 'scope' => $row['scope']]);
+        }
+        if ($grantType === 'refresh_token') {
+            $refresh = (string) ($body['refresh_token'] ?? '');
+            $tokenStmt = Database::pdo()->prepare('SELECT * FROM oauth_access_tokens WHERE refresh_token_hash = ? AND client_id = ? AND revoked_at IS NULL LIMIT 1');
+            $tokenStmt->execute([hash('sha256', $refresh), $clientId]);
+            $row = $tokenStmt->fetch();
+            if (!$row) oauth_metadata_response(['error' => 'invalid_grant'], 400);
+            $accessToken = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+            Database::pdo()->prepare('UPDATE oauth_access_tokens SET token_hash = ?, expires_at = ?, created_at = ?, revoked_at = NULL WHERE refresh_token_hash = ? AND client_id = ?')
+                ->execute([hash('sha256', $accessToken), gmdate('Y-m-d\TH:i:s.v\Z', time() + 3600), now_iso(), $row['refresh_token_hash'], $clientId]);
+            oauth_metadata_response(['access_token' => $accessToken, 'token_type' => 'Bearer', 'expires_in' => 3600, 'refresh_token' => $refresh, 'scope' => $row['scope']]);
+        }
+        oauth_metadata_response(['error' => 'unsupported_grant_type'], 400);
+    }
+    oauth_metadata_response(['error' => 'not_found'], 404);
 }
 
 function mcp_tool_result(mixed $value): array

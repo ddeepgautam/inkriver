@@ -814,6 +814,42 @@
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS oauth_clients (
+    client_id TEXT PRIMARY KEY,
+    client_secret_hash TEXT,
+    client_name TEXT NOT NULL DEFAULT 'MCP Client',
+    redirect_uris_json TEXT NOT NULL DEFAULT '[]',
+    grant_types_json TEXT NOT NULL DEFAULT '["authorization_code","refresh_token"]',
+    response_types_json TEXT NOT NULL DEFAULT '["code"]',
+    scope TEXT NOT NULL DEFAULT 'mcp:publish',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    redirect_uri TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'mcp:publish',
+    code_challenge TEXT,
+    code_challenge_method TEXT,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    token_hash TEXT PRIMARY KEY,
+    refresh_token_hash TEXT UNIQUE,
+    client_id TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL DEFAULT 'mcp:publish',
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
   CREATE INDEX IF NOT EXISTS idx_users_role_status ON users(role, status);
@@ -862,3 +898,5 @@
   CREATE INDEX IF NOT EXISTS idx_moderation_dictionary_kind ON moderation_dictionary(kind, action);
   CREATE INDEX IF NOT EXISTS idx_pwa_sync_user_status ON pwa_sync_queue(user_id, status);
   CREATE INDEX IF NOT EXISTS idx_deployment_updates_created ON deployment_updates(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_oauth_codes_client_expires ON oauth_authorization_codes(client_id, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user_expires ON oauth_access_tokens(user_id, expires_at);
