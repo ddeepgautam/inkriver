@@ -725,9 +725,10 @@ function persistBlogs() {
   persistAdminDocument("stories", state.stories);
 }
 
-async function uploadBlogImage(file) {
+async function uploadBlogImage(file, mode = "featured") {
   if (!file) return;
-  state.mediaMessage = "Uploading image...";
+  const inline = mode === "inline";
+  state.mediaMessage = inline ? "Uploading inline image..." : "Uploading image...";
   render();
   try {
     const formData = new FormData();
@@ -741,9 +742,16 @@ async function uploadBlogImage(file) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.message || "Image upload failed.");
     state.mediaAssets = [payload.asset, ...state.mediaAssets.filter((asset) => asset.id !== payload.asset.id)];
-    state.blogForm.imageUrl = payload.asset.url;
-    state.blogForm.seo.socialImage = state.blogForm.seo.socialImage || payload.asset.url;
-    state.mediaMessage = "Image uploaded and attached to this post.";
+    if (inline) {
+      state.blogForm.contentHtml += `<figure><img src="${escapeHtml(payload.asset.url)}" alt="${escapeHtml(state.blogForm.title || file.name)}" loading="lazy" decoding="async" /></figure><p><br></p>`;
+      state.adminModal = { type: "", fields: {} };
+      state.userMessage = "Inline image uploaded and inserted.";
+      state.mediaMessage = "";
+    } else {
+      state.blogForm.imageUrl = payload.asset.url;
+      state.blogForm.seo.socialImage = state.blogForm.seo.socialImage || payload.asset.url;
+      state.mediaMessage = "Image uploaded and attached to this post.";
+    }
   } catch (error) {
     state.mediaMessage = error.message;
   }
@@ -5263,22 +5271,26 @@ function interactiveEditorTemplate() {
     <section class="editor-panel interactive-editor-panel">
       <div class="interactive-editor-heading">
         <div class="panel-title">${icon("comment")}<h2>Interactive blocks</h2></div>
-        <div>
-          <button class="secondary-button" data-add-interactive="poll">Add poll</button>
-          <button class="secondary-button" data-add-interactive="survey">Add survey</button>
-          <button class="secondary-button" data-add-interactive="quiz">Add quiz</button>
+        <div class="interactive-add-actions">
+          <button class="secondary-button" data-add-interactive="poll">${icon("chart", 15)}Add poll</button>
+          <button class="secondary-button" data-add-interactive="survey">${icon("comment", 15)}Add survey</button>
+          <button class="secondary-button" data-add-interactive="quiz">${icon("check", 15)}Add quiz</button>
         </div>
       </div>
       <p class="settings-note">Polls, surveys, and quizzes appear after the article body and store each reader's response.</p>
       <div class="interactive-editor-list">
         ${state.blogForm.interactiveBlocks.length ? state.blogForm.interactiveBlocks.map((block, index) => `
-          <article class="interactive-editor-row">
-            <div class="interactive-editor-type">${block.type}</div>
-            <label><span>Question</span><input data-interactive-field="${index}:question" value="${escapeHtml(block.question)}" /></label>
-            <label><span>Options, one per line</span><textarea data-interactive-field="${index}:options">${escapeHtml(block.options.join("\n"))}</textarea></label>
-            ${block.type === "quiz" ? `<label><span>Correct option</span><select data-interactive-field="${index}:correctIndex">${block.options.map((option, optionIndex) => `<option value="${optionIndex}" ${block.correctIndex === optionIndex ? "selected" : ""}>${optionIndex + 1}. ${escapeHtml(option)}</option>`).join("")}</select></label><label><span>Answer explanation</span><textarea data-interactive-field="${index}:explanation">${escapeHtml(block.explanation || "")}</textarea></label>` : ""}
-            ${block.type === "survey" ? `<label class="checkbox-field"><input type="checkbox" data-interactive-field="${index}:multiple" ${block.multiple ? "checked" : ""} /><span>Allow multiple answers</span></label>` : ""}
-            <button class="secondary-button danger-button" data-remove-interactive="${index}">Remove</button>
+          <article class="interactive-editor-card ${escapeHtml(block.type)}">
+            <header class="interactive-editor-card-header">
+              <span class="interactive-editor-type">${icon(block.type === "poll" ? "chart" : block.type === "survey" ? "comment" : "check", 15)}${block.type}</span>
+              <button class="secondary-button danger-button" data-remove-interactive="${index}">Remove</button>
+            </header>
+            <div class="interactive-editor-fields">
+              <label class="wide-field"><span>Question</span><input data-interactive-field="${index}:question" value="${escapeHtml(block.question)}" /></label>
+              <label class="wide-field"><span>Options, one per line</span><textarea data-interactive-field="${index}:options">${escapeHtml(block.options.join("\n"))}</textarea></label>
+              ${block.type === "quiz" ? `<label><span>Correct option</span><select data-interactive-field="${index}:correctIndex">${block.options.map((option, optionIndex) => `<option value="${optionIndex}" ${block.correctIndex === optionIndex ? "selected" : ""}>${optionIndex + 1}. ${escapeHtml(option)}</option>`).join("")}</select></label><label><span>Answer explanation</span><textarea data-interactive-field="${index}:explanation">${escapeHtml(block.explanation || "")}</textarea></label>` : ""}
+              ${block.type === "survey" ? `<label class="checkbox-field interactive-check"><input type="checkbox" data-interactive-field="${index}:multiple" ${block.multiple ? "checked" : ""} /><span>Allow multiple answers</span></label>` : ""}
+            </div>
           </article>
         `).join("") : `<div class="empty-state">No interactive blocks yet. Add a poll, survey, or quiz to invite reader participation.</div>`}
       </div>
@@ -5916,11 +5928,18 @@ function adminModalTemplate() {
   };
   const config = configs[type];
   if (!config) return "";
+  const editorImageExtras = type === "editorImage" ? `<div class="editor-image-choice">
+    <label class="file-field inline-upload-card"><span>Upload image</span><input id="editorInlineImageFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" /></label>
+    <div class="image-choice-divider"><span></span><b>or</b><span></span></div>
+    <p class="settings-note">Paste an image URL below to insert an externally hosted image.</p>
+    ${state.mediaMessage ? `<div class="payment-message">${escapeHtml(state.mediaMessage)}</div>` : ""}
+  </div>` : "";
   return `<div class="modal-backdrop" role="dialog" aria-modal="true">
     <section class="checkout-modal admin-form-modal">
       <button class="close-button" data-action="close-admin-modal" aria-label="Close">${icon("close")}</button>
       <h2>${escapeHtml(config.title)}</h2>
       ${fields._summary ? `<p class="settings-note">${escapeHtml(fields._summary)}</p>` : ""}
+      ${editorImageExtras}
       <div class="settings-form-grid">${config.fields.map(([key, label]) => `<label><span>${escapeHtml(label)}</span><input data-modal-field="${key}" value="${escapeHtml(fields[key] || "")}" /></label>`).join("")}</div>
       <div class="settings-actions"><button class="primary-button" data-action="${config.action}">Save</button><button class="secondary-button" data-action="close-admin-modal">Cancel</button></div>
     </section>
@@ -6163,6 +6182,9 @@ function bindInputs() {
   });
   document.getElementById("blogImageFile")?.addEventListener("change", (event) => {
     uploadBlogImage(event.target.files?.[0]);
+  });
+  document.getElementById("editorInlineImageFile")?.addEventListener("change", (event) => {
+    uploadBlogImage(event.target.files?.[0], "inline");
   });
   document.querySelectorAll("[data-media-url]").forEach((button) => {
     button.addEventListener("click", () => {

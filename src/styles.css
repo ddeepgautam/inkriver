@@ -2322,10 +2322,11 @@ button {
 
 .editor-title-fields {
   display: grid;
-  gap: 12px;
-  padding: 4px 0 18px;
+  gap: 10px;
+  padding: 0 0 18px;
   border: 0;
   background: transparent;
+  box-shadow: none;
 }
 
 .post-title-input,
@@ -2345,6 +2346,7 @@ button {
   font-family: var(--serif);
   font-size: 34px;
   font-weight: 750;
+  line-height: 1.08;
 }
 
 .post-excerpt-input {
@@ -2360,27 +2362,32 @@ button {
   display: flex;
   align-items: center;
   min-width: 0;
-  border: 1px solid var(--line);
+  width: fit-content;
+  max-width: 100%;
+  border: 0;
   border-radius: 0;
   background: transparent;
   color: var(--muted);
   font-size: 13px;
+  box-shadow: none;
 }
 
 .slug-editor span {
-  padding-left: 11px;
+  padding: 0;
   white-space: nowrap;
 }
 
 .slug-editor input {
+  width: min(360px, 46vw);
   min-width: 0;
   flex: 1;
-  min-height: 40px;
+  min-height: 24px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--ink);
-  padding: 0 11px 0 2px;
+  padding: 0 0 0 2px;
+  box-shadow: none;
 }
 
 .rich-editor-toolbar {
@@ -3758,14 +3765,63 @@ button:disabled {
 .history-main small, .history-status { color: var(--muted); font-size: 11px; }
 .history-state { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 50%; background: var(--soft); color: var(--muted); font-size: 10px; font-weight: 850; }
 .history-state.complete { background: var(--soft-2); color: var(--accent); }
-.interactive-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.interactive-editor-heading > div:last-child { display: flex; flex-wrap: wrap; gap: 7px; }
-.interactive-editor-list { display: grid; gap: 10px; margin-top: 14px; }
-.interactive-editor-row { display: grid; grid-template-columns: 90px minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px; align-items: end; padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
-.interactive-editor-row label { display: grid; gap: 5px; }
-.interactive-editor-row label span, .interactive-editor-type { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
-.interactive-editor-row input, .interactive-editor-row textarea, .interactive-editor-row select { width: 100%; min-height: 40px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); }
-.interactive-editor-row textarea { min-height: 78px; resize: vertical; }
+.interactive-editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.interactive-add-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.interactive-add-actions .secondary-button { min-height: 40px; }
+.interactive-editor-list { display: grid; gap: 12px; margin-top: 16px; }
+.interactive-editor-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--soft));
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+}
+.interactive-editor-card.survey { border-left-color: #6d7f3f; }
+.interactive-editor-card.quiz { border-left-color: #b7791f; }
+.interactive-editor-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.interactive-editor-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent-dark);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+.interactive-editor-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 12px; align-items: end; }
+.interactive-editor-fields label { display: grid; gap: 6px; }
+.interactive-editor-fields label span { color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+.interactive-editor-fields input, .interactive-editor-fields textarea, .interactive-editor-fields select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--ink);
+}
+.interactive-editor-fields textarea { min-height: 96px; resize: vertical; }
+.interactive-editor-fields .wide-field { align-self: stretch; }
+.interactive-check { min-height: 44px; align-self: center; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.editor-image-choice { display: grid; gap: 12px; margin: 12px 0; }
+.inline-upload-card {
+  min-height: 86px;
+  justify-content: center;
+  border: 1px dashed var(--accent);
+  background: var(--soft-2);
+  text-align: center;
+  cursor: pointer;
+}
+.image-choice-divider { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; }
+.image-choice-divider span { height: 1px; background: var(--line); }
 
 @media (max-width: 980px) {
   .header-inner {
@@ -4105,16 +4161,18 @@ button:disabled {
   .slug-editor {
     align-items: stretch;
     flex-direction: column;
+    width: 100%;
   }
 
   .slug-editor span {
-    padding: 9px 11px 0;
+    padding: 0;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .slug-editor input {
-    padding-left: 11px;
+    width: 100%;
+    padding-left: 0;
   }
 
   .rich-blog-editor {
@@ -4482,10 +4540,9 @@ button:disabled {
     padding-left: 10px;
   }
 
-  .interactive-editor-row {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-  }
+  .interactive-add-actions { justify-content: flex-start; }
+  .interactive-editor-card-header { align-items: stretch; flex-direction: column; }
+  .interactive-editor-fields { grid-template-columns: 1fr; }
 }
 
 .workspace-tabs,
