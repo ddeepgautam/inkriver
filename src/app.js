@@ -1674,6 +1674,7 @@ const state = {
     email: false,
     push: false,
     geoip: false,
+    mcp: false,
   },
   paymentPolicy: { paypalIndiaRestriction: { restricted: false, adminExempt: false, signals: [] } },
   pushPublicKey: "",
@@ -5612,7 +5613,7 @@ function subscriptionManagerTemplate() {
 
 function gatewaySettingsTemplate() {
   const credentialRows = state.providerCredentials || [];
-  const providerTests = ["razorpay", "paypal", "payu", "cashfree", "openai", "email", "push", "geoip", "google", "facebook"];
+  const providerTests = ["razorpay", "paypal", "payu", "cashfree", "openai", "email", "push", "geoip", "mcp", "google", "facebook"];
   const credentialPresets = [
     ["razorpay", "key_id"], ["razorpay", "key_secret"],
     ["paypal", "client_id"], ["paypal", "client_secret"], ["paypal", "webhook_id"],
@@ -5620,6 +5621,7 @@ function gatewaySettingsTemplate() {
     ["cashfree", "client_id"], ["cashfree", "client_secret"],
     ["openai", "api_key"], ["email", "api_url"], ["email", "api_key"],
     ["push", "api_url"], ["push", "api_key"],
+    ["mcp", "api_token"], ["mcp", "user_email"],
     ["google", "client_id"], ["google", "client_secret"],
     ["facebook", "app_id"], ["facebook", "app_secret"],
     ["geoip", "api_url"], ["geoip", "api_key"],
@@ -5668,6 +5670,11 @@ function gatewaySettingsTemplate() {
           <small>Used to enforce the strict rule that PayPal is hidden from Indian readers, including likely VPN or proxy traffic. Admins are exempt.</small>
           <div class="gateway-status ${state.providerStatus.geoip ? "ready" : "needs-key"}"><strong>${state.providerStatus.geoip ? "GeoIP configured" : "GeoIP credentials missing"}</strong><span>IP_INTELLIGENCE_API_URL and IP_INTELLIGENCE_API_KEY, or geoip.api_url and geoip.api_key</span></div>
           <button class="secondary-button" data-action="configure-ip-intelligence">Add IP intelligence API</button>
+        </fieldset>
+        <fieldset class="gateway-fieldset">
+          <legend>MCP publishing</legend>
+          <small>Connect ChatGPT, Claude, or another MCP client to automate draft creation, SEO, media, paywall, scheduling, and publishing.</small>
+          <div class="gateway-status ${state.providerStatus.mcp ? "ready" : "needs-key"}"><strong>${state.providerStatus.mcp ? "MCP token configured" : "MCP token missing"}</strong><span>MCP_API_TOKEN, or mcp.api_token in the encrypted vault. Optional mcp.user_email chooses the admin/writer identity.</span></div>
         </fieldset>
       </div>
       <section class="credential-vault">

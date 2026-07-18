@@ -28,7 +28,8 @@ function redirect_response(string $location, array $headers = []): never
 function read_json(): array
 {
     $raw = file_get_contents('php://input') ?: '';
-    if (strlen($raw) > 1024 * 1024) json_response(['error' => 'REQUEST_TOO_LARGE', 'message' => 'Request body is too large.'], 413);
+    $maxBytes = max(1024 * 1024, (int) (env_value('JSON_REQUEST_MAX_BYTES', '12582912') ?? '12582912'));
+    if (strlen($raw) > $maxBytes) json_response(['error' => 'REQUEST_TOO_LARGE', 'message' => 'Request body is too large.'], 413);
     $decoded = json_decode($raw, true);
     return is_array($decoded) ? $decoded : [];
 }

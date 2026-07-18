@@ -80,6 +80,17 @@ AI and communication:
 - `WEB_PUSH_API_URL`
 - `WEB_PUSH_API_KEY`
 
+MCP publishing automation:
+
+- `MCP_API_TOKEN` - bearer token required by `/mcp` for ChatGPT, Claude, or other MCP clients.
+- `MCP_USER_EMAIL` - optional active admin/writer email used as the publishing identity when the request uses the MCP bearer token.
+- `JSON_REQUEST_MAX_BYTES=12582912` - optional JSON request size limit; useful for base64 image uploads.
+
+You can also store these in the encrypted admin API-key vault as:
+
+- `mcp.api_token`
+- `mcp.user_email`
+
 Webhook URLs:
 
 - `https://your-domain.com/api/webhooks/razorpay`
@@ -104,6 +115,72 @@ Uploads:
 
 - Uploaded images are stored under `/uploads/YYYY/MM/`.
 - Ensure the PHP process can write to the `uploads` directory.
+
+## MCP Blog Publishing
+
+InkRiver exposes a Streamable HTTP-style MCP JSON-RPC endpoint at:
+
+```text
+https://your-domain.com/mcp
+```
+
+Configure your MCP client with an `Authorization: Bearer YOUR_MCP_API_TOKEN` header. Browser sessions for signed-in admins/writers can also call it, but external ChatGPT/Claude connections should use the bearer token.
+
+Supported MCP methods:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+- `resources/list`
+- `resources/read`
+- `ping`
+
+Publishing tools:
+
+- `get_blog_editor_schema` - returns every supported new-blog field, SEO key, status, and interactive block shape.
+- `list_categories` - returns available blog categories/topics.
+- `list_publications` - returns available publications.
+- `list_blogs` - returns existing story ids/slugs/statuses for updates.
+- `upload_blog_image` - accepts `sourceUrl` or `dataBase64`, stores the image, and returns a URL.
+- `create_or_update_blog` - fills the blog editor fields and saves, schedules, or publishes the story.
+
+`create_or_update_blog` supports title, slug, excerpt/dek, `contentHtml`, author/byline, publication, category/topic, tags, read time, visual tone, featured image URL, inline images, member-only paywall (`premium` or `memberOnly`), ads/earning toggles, detailed `seo`, and `interactiveBlocks` for polls, surveys, and quizzes. Set `status` to `draft`, `review`, `approved`, `scheduled`, or `published`; include `scheduledAt` for scheduled posts.
+
+Example MCP `tools/call` payload:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "create_or_update_blog",
+    "arguments": {
+      "title": "How AI Search Changes Content Strategy",
+      "slug": "ai-search-content-strategy",
+      "dek": "A practical guide to planning content for AI-assisted discovery.",
+      "contentHtml": "<h2>Why it matters</h2><p>AI search changes how readers discover useful editorial work.</p>",
+      "topic": "AI",
+      "tags": ["AI search", "SEO", "content strategy"],
+      "premium": true,
+      "status": "draft",
+      "seo": {
+        "focusKeyphrase": "AI search content strategy",
+        "additionalKeyphrases": "AI SEO, generative search, content planning",
+        "seoTitle": "AI Search Content Strategy Guide",
+        "metaDescription": "Learn how to plan content for AI search, generative answers, and modern reader discovery."
+      },
+      "interactiveBlocks": [
+        {
+          "type": "poll",
+          "question": "Where is AI search affecting your work most?",
+          "options": ["Research", "SEO", "Editorial planning", "Analytics"]
+        }
+      ]
+    }
+  }
+}
+```
 
 ## Local Run
 

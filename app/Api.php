@@ -24,6 +24,7 @@ function provider_status(): array
         'email' => (bool) (provider_config_value('EMAIL_API_URL', 'email', 'api_url') && provider_config_value('EMAIL_API_KEY', 'email', 'api_key')),
         'push' => (bool) ((provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key') && provider_config_value('VAPID_PRIVATE_KEY', 'push', 'vapid_private_key')) || (provider_config_value('WEB_PUSH_API_URL', 'push', 'api_url') && provider_config_value('WEB_PUSH_API_KEY', 'push', 'api_key'))),
         'geoip' => (bool) (provider_config_value('IP_INTELLIGENCE_API_URL', 'geoip', 'api_url') && provider_config_value('IP_INTELLIGENCE_API_KEY', 'geoip', 'api_key')),
+        'mcp' => (bool) provider_config_value('MCP_API_TOKEN', 'mcp', 'api_token'),
     ];
 }
 
@@ -696,6 +697,465 @@ function can_manage_publication_content(array $session, string $publication): bo
 {
     if (($session['user']['role'] ?? '') === 'admin') return true;
     return in_array(publication_member_role($publication, (string) ($session['user']['id'] ?? '')), ['owner', 'editor'], true);
+}
+
+function story_slug_from_title(string $value): string
+{
+    return trim(preg_replace('/[^a-z0-9]+/', '-', strtolower($value)), '-');
+}
+
+function default_post_seo_payload(array $story = []): array
+{
+    return [
+        'focusKeyphrase' => '',
+        'additionalKeyphrases' => '',
+        'seoTitle' => (string) ($story['title'] ?? ''),
+        'metaDescription' => (string) ($story['dek'] ?? ''),
+        'canonicalUrl' => '',
+        'robotsIndex' => true,
+        'robotsFollow' => true,
+        'maxSnippet' => -1,
+        'maxImagePreview' => 'large',
+        'maxVideoPreview' => -1,
+        'cornerstone' => false,
+        'schemaPageType' => 'WebPage',
+        'schemaArticleType' => 'Article',
+        'breadcrumbTitle' => (string) ($story['title'] ?? ''),
+        'socialTitle' => (string) ($story['title'] ?? ''),
+        'socialDescription' => (string) ($story['dek'] ?? ''),
+        'socialImage' => (string) ($story['imageUrl'] ?? ''),
+    ];
+}
+
+function sanitize_story_html(string $html): string
+{
+    $html = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? '';
+    $html = preg_replace('#<style\b[^>]*>.*?</style>#is', '', $html) ?? '';
+    $allowed = '<p><br><strong><b><em><i><u><s><blockquote><ul><ol><li><a><h2><h3><h4><figure><figcaption><img><table><thead><tbody><tr><th><td>';
+    return trim(strip_tags($html, $allowed));
+}
+
+function story_body_from_html(string $html): array
+{
+    $text = trim(preg_replace('/\s+/', ' ', html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8')) ?? '');
+    if ($text === '') return [];
+    $parts = preg_split('/(?<=[.!?])\s+(?=[A-Z0-9])/u', $text) ?: [$text];
+    $chunks = [];
+    $buffer = '';
+    foreach ($parts as $part) {
+        $part = trim($part);
+        if ($part === '') continue;
+        $buffer = trim($buffer . ' ' . $part);
+        if (strlen($buffer) >= 220) {
+            $chunks[] = $buffer;
+            $buffer = '';
+        }
+    }
+    if ($buffer !== '') $chunks[] = $buffer;
+    return array_slice($chunks ?: [$text], 0, 200);
+}
+
+function normalize_interactive_blocks(array $blocks): array
+{
+    $normalized = [];
+    foreach (array_slice($blocks, 0, 30) as $index => $block) {
+        if (!is_array($block)) continue;
+        $type = in_array(($block['type'] ?? ''), ['poll', 'survey', 'quiz'], true) ? (string) $block['type'] : 'poll';
+        $options = array_values(array_filter(array_map(fn($item) => trim((string) $item), is_array($block['options'] ?? null) ? $block['options'] : [])));
+        if (count($options) < 2) continue;
+        $normalized[] = [
+            'id' => substr((string) ($block['id'] ?? $type . '-' . uuid_value()), 0, 120),
+            'type' => $type,
+            'question' => substr(trim((string) ($block['question'] ?? 'Reader question')), 0, 500),
+            'options' => array_slice($options, 0, 20),
+            'multiple' => $type === 'survey' ? (bool) ($block['multiple'] ?? true) : (bool) ($block['multiple'] ?? false),
+            'correctIndex' => $type === 'quiz' ? max(0, min(count($options) - 1, (int) ($block['correctIndex'] ?? 0))) : null,
+            'explanation' => $type === 'quiz' ? substr((string) ($block['explanation'] ?? ''), 0, 1000) : '',
+        ];
+    }
+    return $normalized;
+}
+
+function append_inline_images_to_html(string $html, array $images): string
+{
+    foreach (array_slice($images, 0, 30) as $image) {
+        if (!is_array($image)) continue;
+        $url = trim((string) ($image['url'] ?? ''));
+        if (!preg_match('#^(https?://|/uploads/)#i', $url)) continue;
+        $alt = htmlspecialchars(substr((string) ($image['alt'] ?? ''), 0, 500), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $caption = trim((string) ($image['caption'] ?? ''));
+        $html .= '<figure><img src="' . htmlspecialchars($url, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '" alt="' . $alt . '" loading="lazy" decoding="async" />';
+        if ($caption !== '') $html .= '<figcaption>' . htmlspecialchars(substr($caption, 0, 500), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</figcaption>';
+        $html .= '</figure>';
+    }
+    return $html;
+}
+
+function create_or_update_story_from_payload(array $session, array $body, string $source = 'api'): array
+{
+    $title = trim((string) ($body['title'] ?? ''));
+    if (strlen($title) < 3) throw new RuntimeException('Enter a valid story title.');
+    $pdo = Database::pdo();
+    $stories = document_value('stories', []);
+    if (!is_array($stories)) $stories = [];
+    $updateId = trim((string) ($body['id'] ?? $body['storyId'] ?? ''));
+    $updateSlug = trim((string) ($body['updateSlug'] ?? $body['existingSlug'] ?? ''));
+    $existingIndex = null;
+    foreach ($stories as $index => $existingStory) {
+        if (!is_array($existingStory)) continue;
+        if (($updateId !== '' && ($existingStory['id'] ?? '') === $updateId) || ($updateSlug !== '' && ($existingStory['slug'] ?? '') === $updateSlug)) {
+            $existingIndex = $index;
+            break;
+        }
+    }
+    $previous = $existingIndex !== null ? $stories[$existingIndex] : null;
+    $baseSlug = story_slug_from_title((string) ($body['slug'] ?? $previous['slug'] ?? $title));
+    if ($baseSlug === '') $baseSlug = 'story-' . time();
+    $slug = $baseSlug;
+    $i = 2;
+    while (array_filter($stories, fn($story) => is_array($story) && ($story['slug'] ?? '') === $slug && ($existingIndex === null || ($story['id'] ?? '') !== ($previous['id'] ?? '')))) {
+        $slug = $baseSlug . '-' . $i++;
+    }
+    $now = now_iso();
+    $publication = substr((string) ($body['publication'] ?? $previous['publication'] ?? 'InkRiver'), 0, 120);
+    $requestedStatus = in_array(($body['status'] ?? $previous['status'] ?? 'draft'), ['draft', 'review', 'approved', 'scheduled', 'published'], true) ? (string) ($body['status'] ?? $previous['status'] ?? 'draft') : 'draft';
+    if (in_array($requestedStatus, ['approved', 'scheduled', 'published'], true) && !can_manage_publication_content($session, $publication)) {
+        $requestedStatus = 'review';
+    }
+    $contentHtml = sanitize_story_html((string) ($body['contentHtml'] ?? $body['html'] ?? $previous['contentHtml'] ?? ''));
+    $contentHtml = append_inline_images_to_html($contentHtml, is_array($body['inlineImages'] ?? null) ? $body['inlineImages'] : []);
+    $bodyText = is_array($body['body'] ?? null) ? array_values(array_map('strval', array_slice($body['body'], 0, 200))) : story_body_from_html($contentHtml);
+    if (!$bodyText && isset($body['content'])) $bodyText = array_values(array_filter(preg_split('/\n{2,}/', trim((string) $body['content'])) ?: []));
+    $imageUrl = substr((string) ($body['imageUrl'] ?? $body['featuredImageUrl'] ?? $previous['imageUrl'] ?? ''), 0, 2000);
+    $dek = substr((string) ($body['dek'] ?? $body['excerpt'] ?? $previous['dek'] ?? ''), 0, 500);
+    if ($dek === '') $dek = substr(trim(strip_tags($contentHtml)), 0, 180) ?: 'A concise editorial summary for this story.';
+    $seoInput = is_array($body['seo'] ?? null) ? $body['seo'] : [];
+    $seo = array_merge(default_post_seo_payload(['title' => $title, 'dek' => $dek, 'imageUrl' => $imageUrl]), is_array($previous['seo'] ?? null) ? $previous['seo'] : [], $seoInput);
+    $seo['seoTitle'] = trim((string) ($seo['seoTitle'] ?? '')) ?: $title;
+    $seo['metaDescription'] = trim((string) ($seo['metaDescription'] ?? '')) ?: $dek;
+    $seo['breadcrumbTitle'] = trim((string) ($seo['breadcrumbTitle'] ?? '')) ?: $title;
+    $seo['socialTitle'] = trim((string) ($seo['socialTitle'] ?? '')) ?: $title;
+    $seo['socialDescription'] = trim((string) ($seo['socialDescription'] ?? '')) ?: $dek;
+    $seo['socialImage'] = trim((string) ($seo['socialImage'] ?? '')) ?: $imageUrl;
+    $actorIsAdmin = ($session['user']['role'] ?? '') === 'admin';
+    $story = [
+        'id' => (string) ($previous['id'] ?? ('blog-' . uuid_value())),
+        'slug' => $slug,
+        'title' => $title,
+        'dek' => $dek,
+        'author' => $actorIsAdmin ? substr((string) ($body['author'] ?? $previous['author'] ?? $session['user']['name']), 0, 120) : $session['user']['name'],
+        'authorUserId' => $actorIsAdmin ? substr((string) ($body['authorUserId'] ?? $previous['authorUserId'] ?? $session['user']['id']), 0, 120) : $session['user']['id'],
+        'role' => $actorIsAdmin ? substr((string) ($body['role'] ?? $previous['role'] ?? 'Editorial desk'), 0, 120) : 'Writer',
+        'publication' => $publication,
+        'topic' => substr((string) ($body['topic'] ?? $previous['topic'] ?? 'Marketing'), 0, 80),
+        'readTime' => substr((string) ($body['readTime'] ?? $previous['readTime'] ?? '5 min read'), 0, 40),
+        'premium' => (bool) ($body['premium'] ?? $body['memberOnly'] ?? $previous['premium'] ?? false),
+        'ads' => ($body['ads'] ?? $previous['ads'] ?? true) !== false,
+        'earning' => ($body['earning'] ?? $previous['earning'] ?? true) !== false,
+        'color' => substr((string) ($body['color'] ?? $previous['color'] ?? 'mint'), 0, 30),
+        'imageUrl' => $imageUrl,
+        'tags' => is_array($body['tags'] ?? null) ? array_slice(array_values(array_map('strval', $body['tags'])), 0, 30) : (is_array($previous['tags'] ?? null) ? $previous['tags'] : []),
+        'status' => $requestedStatus,
+        'scheduledAt' => $requestedStatus === 'scheduled' ? substr((string) ($body['scheduledAt'] ?? $previous['scheduledAt'] ?? ''), 0, 80) : '',
+        'body' => $bodyText ?: [''],
+        'contentHtml' => substr($contentHtml, 0, 200000),
+        'interactiveBlocks' => normalize_interactive_blocks(is_array($body['interactiveBlocks'] ?? null) ? $body['interactiveBlocks'] : (is_array($previous['interactiveBlocks'] ?? null) ? $previous['interactiveBlocks'] : [])),
+        'seo' => $seo,
+        'claps' => (int) ($previous['claps'] ?? 0), 'comments' => (int) ($previous['comments'] ?? 0), 'reads' => (int) ($previous['reads'] ?? 0), 'revenue' => (int) ($previous['revenue'] ?? 0),
+        'publishedAt' => $requestedStatus === 'published' ? ((string) ($previous['publishedAt'] ?? '') ?: $now) : (string) ($previous['publishedAt'] ?? ''),
+        'createdAt' => (string) ($previous['createdAt'] ?? $now), 'updatedAt' => $now,
+    ];
+    if ($existingIndex !== null) $stories[$existingIndex] = $story;
+    else array_unshift($stories, $story);
+    $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
+        ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
+    record_story_revision($story, $session['user']['id'], ($existingIndex !== null ? 'Story updated' : 'Story created') . ' as ' . $story['status'] . ' via ' . $source);
+    rebuild_story_search_index($stories);
+    $translationJobId = null;
+    if ($story['status'] === 'published' && provider_status()['ai']) $translationJobId = enqueue_background_job('translations.backfill');
+    if ($story['status'] === 'scheduled' && $story['scheduledAt'] !== '') enqueue_background_job('publishing.scheduled', [], $story['scheduledAt']);
+    if ($story['status'] === 'published') create_notification($session['user']['id'], 'story_published', 'Story published', $story['title'] . ' is now live.', '/stories/' . $story['slug']);
+    audit_log($session['user']['id'], $existingIndex !== null ? 'story.update' : 'story.create', 'story', $story['slug'], ['source' => $source, 'status' => $story['status']]);
+    return ['story' => $story, 'created' => $existingIndex === null, 'translationJobId' => $translationJobId];
+}
+
+function first_admin_session_for_mcp(): ?array
+{
+    $email = provider_config_value('MCP_USER_EMAIL', 'mcp', 'user_email', '');
+    $pdo = Database::pdo();
+    if ($email) {
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND status = 'active' LIMIT 1");
+        $stmt->execute([$email]);
+        if ($row = $stmt->fetch()) return ['user' => public_user($row), 'sessionId' => 'mcp-token', 'raw' => $row];
+    }
+    $row = $pdo->query("SELECT * FROM users WHERE role = 'admin' AND status = 'active' ORDER BY created_at LIMIT 1")->fetch();
+    return $row ? ['user' => public_user($row), 'sessionId' => 'mcp-token', 'raw' => $row] : null;
+}
+
+function mcp_authorize_session(): array
+{
+    $session = current_session();
+    if ($session && in_array($session['user']['role'], ['writer', 'admin'], true)) return $session;
+    $header = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+    if (!$header && function_exists('apache_request_headers')) {
+        $headers = apache_request_headers();
+        $header = (string) ($headers['Authorization'] ?? $headers['authorization'] ?? '');
+    }
+    $provided = preg_match('/Bearer\s+(.+)/i', $header, $m) ? trim($m[1]) : trim((string) ($_GET['token'] ?? ''));
+    $expected = provider_config_value('MCP_API_TOKEN', 'mcp', 'api_token', '');
+    if (!$expected || !$provided || !hash_equals((string) $expected, $provided)) throw new RuntimeException('A valid MCP bearer token is required.');
+    $tokenSession = first_admin_session_for_mcp();
+    if (!$tokenSession) throw new RuntimeException('No active admin user is available for MCP publishing.');
+    return $tokenSession;
+}
+
+function mcp_json_response(array $payload, int $status = 200): never
+{
+    http_response_code($status);
+    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);
+    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+function mcp_tool_result(mixed $value): array
+{
+    return [
+        'content' => [['type' => 'text', 'text' => json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)]],
+        'structuredContent' => $value,
+    ];
+}
+
+function mcp_blog_editor_schema(): array
+{
+    return [
+        'statuses' => ['draft', 'review', 'approved', 'scheduled', 'published'],
+        'requiredForPublish' => ['title', 'contentHtml'],
+        'fields' => [
+            'id/storyId' => 'Existing story id when updating.',
+            'updateSlug/existingSlug' => 'Existing story slug when updating.',
+            'title' => 'Blog title.',
+            'slug' => 'Pretty URL slug. If omitted, generated from title.',
+            'dek/excerpt' => 'Short feed excerpt and meta description fallback.',
+            'contentHtml' => 'Sanitized article HTML. Supports paragraphs, headings, lists, blockquotes, links, images, figures, and tables.',
+            'body' => 'Optional plain text paragraph array.',
+            'author' => 'Admin-only display author override.',
+            'role' => 'Admin-only author role/byline label.',
+            'authorUserId' => 'Admin-only author user id override.',
+            'publication' => 'Publication name.',
+            'topic' => 'Category/topic name.',
+            'tags' => 'Array of tags.',
+            'readTime' => 'Estimated reading time label.',
+            'premium/memberOnly' => 'Boolean member-only paywall.',
+            'ads' => 'Boolean ad display toggle.',
+            'earning' => 'Boolean writer earning toggle.',
+            'color' => 'Visual tone: mint, blue, rose, or amber.',
+            'imageUrl/featuredImageUrl' => 'Featured image URL, usually from upload_blog_image.',
+            'inlineImages' => 'Array of {url, alt, caption}; appended to the article body.',
+            'interactiveBlocks' => 'Poll/survey/quiz array.',
+            'scheduledAt' => 'ISO date/time when status is scheduled.',
+            'seo' => 'Detailed SEO object.',
+        ],
+        'seoFields' => array_keys(default_post_seo_payload()),
+        'interactiveBlockShape' => [
+            'type' => 'poll | survey | quiz',
+            'question' => 'Question text',
+            'options' => ['Option one', 'Option two'],
+            'multiple' => 'true for multi-answer surveys',
+            'correctIndex' => 'zero-based correct option for quiz',
+            'explanation' => 'quiz explanation',
+        ],
+    ];
+}
+
+function mcp_tool_definitions(): array
+{
+    $storyInput = [
+        'type' => 'object',
+        'required' => ['title'],
+        'properties' => [
+            'id' => ['type' => 'string', 'description' => 'Existing story id to update.'],
+            'updateSlug' => ['type' => 'string', 'description' => 'Existing story slug to update.'],
+            'title' => ['type' => 'string'],
+            'slug' => ['type' => 'string'],
+            'dek' => ['type' => 'string'],
+            'excerpt' => ['type' => 'string'],
+            'contentHtml' => ['type' => 'string'],
+            'content' => ['type' => 'string'],
+            'body' => ['type' => 'array', 'items' => ['type' => 'string']],
+            'author' => ['type' => 'string'],
+            'role' => ['type' => 'string'],
+            'authorUserId' => ['type' => 'string'],
+            'publication' => ['type' => 'string'],
+            'topic' => ['type' => 'string'],
+            'tags' => ['type' => 'array', 'items' => ['type' => 'string']],
+            'readTime' => ['type' => 'string'],
+            'premium' => ['type' => 'boolean'],
+            'memberOnly' => ['type' => 'boolean'],
+            'ads' => ['type' => 'boolean'],
+            'earning' => ['type' => 'boolean'],
+            'color' => ['type' => 'string', 'enum' => ['mint', 'blue', 'rose', 'amber']],
+            'imageUrl' => ['type' => 'string'],
+            'featuredImageUrl' => ['type' => 'string'],
+            'inlineImages' => ['type' => 'array', 'items' => ['type' => 'object']],
+            'interactiveBlocks' => ['type' => 'array', 'items' => ['type' => 'object']],
+            'status' => ['type' => 'string', 'enum' => ['draft', 'review', 'approved', 'scheduled', 'published']],
+            'scheduledAt' => ['type' => 'string'],
+            'seo' => ['type' => 'object'],
+        ],
+    ];
+    return [
+        [
+            'name' => 'get_blog_editor_schema',
+            'description' => 'Return the full InkRiver blog editor field map, SEO fields, status options, and interactive block shape.',
+            'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+        ],
+        [
+            'name' => 'list_categories',
+            'description' => 'List available blog categories/topics for the topic field.',
+            'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+        ],
+        [
+            'name' => 'list_publications',
+            'description' => 'List active publications available for assigning a story.',
+            'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+        ],
+        [
+            'name' => 'list_blogs',
+            'description' => 'List existing blog stories for update, scheduling, or duplicate checks.',
+            'inputSchema' => ['type' => 'object', 'properties' => ['status' => ['type' => 'string'], 'limit' => ['type' => 'integer']]],
+        ],
+        [
+            'name' => 'upload_blog_image',
+            'description' => 'Store an image from a URL or base64 payload and return a URL for featuredImageUrl or inlineImages.',
+            'inputSchema' => [
+                'type' => 'object',
+                'properties' => [
+                    'sourceUrl' => ['type' => 'string'],
+                    'dataBase64' => ['type' => 'string'],
+                    'filename' => ['type' => 'string'],
+                    'altText' => ['type' => 'string'],
+                ],
+            ],
+        ],
+        [
+            'name' => 'create_or_update_blog',
+            'description' => 'Create or update a blog article, including featured image URL, inline images, category, tags, SEO metadata, paywall, polls, surveys, quizzes, draft/review/published/scheduled status.',
+            'inputSchema' => $storyInput,
+        ],
+    ];
+}
+
+function store_mcp_image_asset(array $arguments, string $userId): array
+{
+    $sourceUrl = trim((string) ($arguments['sourceUrl'] ?? ''));
+    $dataBase64 = trim((string) ($arguments['dataBase64'] ?? ''));
+    if ($sourceUrl === '' && $dataBase64 === '') throw new RuntimeException('Provide sourceUrl or dataBase64.');
+    if ($sourceUrl !== '') {
+        if (!preg_match('#^https?://#i', $sourceUrl)) throw new RuntimeException('Image URL must start with http or https.');
+        $context = stream_context_create(['http' => ['timeout' => 20, 'follow_location' => 1, 'user_agent' => 'InkRiver MCP']]);
+        $bytes = @file_get_contents($sourceUrl, false, $context, 0, 8 * 1024 * 1024 + 1);
+        $filename = basename(parse_url($sourceUrl, PHP_URL_PATH) ?: 'remote-image');
+    } else {
+        if (str_contains($dataBase64, ',')) $dataBase64 = substr($dataBase64, strpos($dataBase64, ',') + 1);
+        $bytes = base64_decode($dataBase64, true);
+        $filename = (string) ($arguments['filename'] ?? 'mcp-image');
+    }
+    if (!is_string($bytes) || $bytes === '') throw new RuntimeException('Could not read image bytes.');
+    if (strlen($bytes) > 8 * 1024 * 1024) throw new RuntimeException('Images must be 8 MB or smaller.');
+    $info = @getimagesizefromstring($bytes);
+    if (!$info) throw new RuntimeException('Only valid image files can be uploaded.');
+    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    $mime = $info['mime'] ?? '';
+    if (!isset($allowed[$mime])) throw new RuntimeException('Use JPG, PNG, WebP, or GIF.');
+    $relativeDir = 'uploads/' . gmdate('Y/m');
+    $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+    if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
+    $storedName = uuid_value('media-') . '.' . $allowed[$mime];
+    $target = $absoluteDir . '/' . $storedName;
+    if (file_put_contents($target, $bytes, LOCK_EX) === false) throw new RuntimeException('Could not save the image.');
+    $url = '/' . $relativeDir . '/' . $storedName;
+    $id = uuid_value('MED-');
+    Database::pdo()->prepare('INSERT INTO media_assets (id, uploader_user_id, original_name, stored_name, url, mime_type, size_bytes, width, height, alt_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        ->execute([$id, $userId, substr((string) ($arguments['filename'] ?? $filename), 0, 240), $storedName, $url, $mime, strlen($bytes), (int) $info[0], (int) $info[1], substr((string) ($arguments['altText'] ?? ''), 0, 500), now_iso()]);
+    $stmt = Database::pdo()->prepare('SELECT * FROM media_assets WHERE id = ?');
+    $stmt->execute([$id]);
+    enqueue_background_job('media.variants', ['mediaAssetId' => $id]);
+    audit_log($userId, 'mcp.media_upload', 'media_asset', $id);
+    return public_media_asset($stmt->fetch());
+}
+
+function mcp_call_tool(string $name, array $arguments): array
+{
+    $session = mcp_authorize_session();
+    if ($name === 'get_blog_editor_schema') return mcp_tool_result(mcp_blog_editor_schema());
+    if ($name === 'list_categories') return mcp_tool_result(['categories' => document_value('categories', [])]);
+    if ($name === 'list_publications') return mcp_tool_result(['publications' => current_publication_rows()]);
+    if ($name === 'list_blogs') {
+        $status = trim((string) ($arguments['status'] ?? ''));
+        $limit = max(1, min(100, (int) ($arguments['limit'] ?? 30)));
+        $stories = array_values(array_filter(document_value('stories', []), fn($story) => is_array($story) && ($status === '' || ($story['status'] ?? '') === $status)));
+        $stories = array_slice(array_map(fn($story) => [
+            'id' => $story['id'] ?? '',
+            'slug' => $story['slug'] ?? '',
+            'title' => $story['title'] ?? '',
+            'status' => $story['status'] ?? '',
+            'topic' => $story['topic'] ?? '',
+            'publication' => $story['publication'] ?? '',
+            'premium' => (bool) ($story['premium'] ?? false),
+            'updatedAt' => $story['updatedAt'] ?? '',
+        ], $stories), 0, $limit);
+        return mcp_tool_result(['stories' => $stories]);
+    }
+    if ($name === 'upload_blog_image') return mcp_tool_result(['asset' => store_mcp_image_asset($arguments, $session['user']['id'])]);
+    if ($name === 'create_or_update_blog') return mcp_tool_result(create_or_update_story_from_payload($session, $arguments, 'mcp'));
+    throw new RuntimeException('Unknown MCP tool: ' . $name);
+}
+
+function mcp_handle_request(array $request): ?array
+{
+    $id = $request['id'] ?? null;
+    $method = (string) ($request['method'] ?? '');
+    try {
+        $result = match ($method) {
+            'initialize' => [
+                'protocolVersion' => '2025-11-25',
+                'capabilities' => ['tools' => ['listChanged' => false], 'resources' => ['listChanged' => false]],
+                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Blog Publishing MCP', 'version' => '1.0.0'],
+                'instructions' => 'Use get_blog_editor_schema first, optionally upload images, then call create_or_update_blog with status draft, review, approved, scheduled, or published.',
+            ],
+            'ping' => new stdClass(),
+            'tools/list' => ['tools' => mcp_tool_definitions()],
+            'tools/call' => mcp_call_tool((string) ($request['params']['name'] ?? ''), is_array($request['params']['arguments'] ?? null) ? $request['params']['arguments'] : []),
+            'resources/list' => ['resources' => [['uri' => 'inkriver://blog-editor/schema', 'name' => 'InkRiver blog editor schema', 'mimeType' => 'application/json']]],
+            'resources/read' => ['contents' => [['uri' => 'inkriver://blog-editor/schema', 'mimeType' => 'application/json', 'text' => json_encode(mcp_blog_editor_schema(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)]]],
+            default => throw new RuntimeException('Unsupported MCP method: ' . $method),
+        };
+        return $id === null ? null : ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result];
+    } catch (Throwable $error) {
+        return $id === null ? null : ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32000, 'message' => $error->getMessage()]];
+    }
+}
+
+function handle_mcp(string $method): void
+{
+    if ($method === 'GET') {
+        mcp_json_response(['error' => 'METHOD_NOT_ALLOWED', 'message' => 'This MCP endpoint accepts JSON-RPC POST requests.'], 405);
+    }
+    if ($method !== 'POST') mcp_json_response(['error' => 'METHOD_NOT_ALLOWED', 'message' => 'Use POST for MCP JSON-RPC calls.'], 405);
+    $payload = read_json();
+    $isBatch = array_is_list($payload);
+    $requests = $isBatch ? $payload : [$payload];
+    $responses = [];
+    foreach ($requests as $request) {
+        if (!is_array($request)) continue;
+        $response = mcp_handle_request($request);
+        if ($response !== null) $responses[] = $response;
+    }
+    if (!$responses) {
+        http_response_code(202);
+        exit;
+    }
+    mcp_json_response($isBatch ? $responses : $responses[0]);
 }
 
 function sitemap_xml(): string
@@ -2279,6 +2739,7 @@ function production_readiness(array $installer, array $providers): array
         ['key' => 'email', 'label' => 'Email provider', 'ready' => (bool) ($providers['email'] ?? false), 'detail' => 'Required for verification, reset, newsletters, and alerts.'],
         ['key' => 'ai', 'label' => 'AI provider', 'ready' => (bool) ($providers['ai'] ?? false), 'detail' => 'Required for AI tools and translations.'],
         ['key' => 'geoip', 'label' => 'IP intelligence', 'ready' => (bool) ($providers['geoip'] ?? false), 'detail' => 'Strengthens PayPal India restriction.'],
+        ['key' => 'mcp', 'label' => 'MCP automation token', 'ready' => (bool) ($providers['mcp'] ?? false), 'detail' => 'Required for ChatGPT or Claude blog publishing automation.'],
     ];
 }
 
@@ -4697,56 +5158,11 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/stories') {
         $session = require_auth(['writer', 'admin']);
         $body = read_json();
-        $title = trim((string) ($body['title'] ?? ''));
-        if (strlen($title) < 3) json_response(['error' => 'INVALID_STORY', 'message' => 'Enter a valid story title.'], 400);
-        $stories = document_value('stories', []);
-        $baseSlug = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower((string) ($body['slug'] ?? $title))), '-');
-        if ($baseSlug === '') $baseSlug = 'story-' . time();
-        $slug = $baseSlug;
-        $i = 2;
-        while (array_filter($stories, fn($story) => ($story['slug'] ?? '') === $slug)) $slug = $baseSlug . '-' . $i++;
-        $now = now_iso();
-        $publication = substr((string) ($body['publication'] ?? 'InkRiver'), 0, 120);
-        $requestedStatus = in_array(($body['status'] ?? 'draft'), ['draft', 'review', 'approved', 'scheduled', 'published'], true) ? (string) $body['status'] : 'draft';
-        if (in_array($requestedStatus, ['approved', 'scheduled', 'published'], true) && !can_manage_publication_content($session, $publication)) {
-            $requestedStatus = 'review';
+        try {
+            json_response(create_or_update_story_from_payload($session, $body, 'api'), 201);
+        } catch (Throwable $error) {
+            json_response(['error' => 'INVALID_STORY', 'message' => $error->getMessage()], 400);
         }
-        $story = [
-            'id' => 'blog-' . uuid_value(),
-            'slug' => $slug,
-            'title' => $title,
-            'dek' => substr((string) ($body['dek'] ?? ''), 0, 500),
-            'author' => $session['user']['name'],
-            'authorUserId' => $session['user']['id'],
-            'role' => $session['user']['role'] === 'admin' ? 'Editorial desk' : 'Writer',
-            'publication' => $publication,
-            'topic' => substr((string) ($body['topic'] ?? 'Marketing'), 0, 80),
-            'readTime' => substr((string) ($body['readTime'] ?? '5 min read'), 0, 40),
-            'premium' => (bool) ($body['premium'] ?? false),
-            'ads' => ($body['ads'] ?? true) !== false,
-            'earning' => ($body['earning'] ?? true) !== false,
-            'color' => substr((string) ($body['color'] ?? 'mint'), 0, 30),
-            'imageUrl' => substr((string) ($body['imageUrl'] ?? ''), 0, 2000),
-            'tags' => is_array($body['tags'] ?? null) ? array_slice($body['tags'], 0, 30) : [],
-            'status' => $requestedStatus,
-            'scheduledAt' => $requestedStatus === 'scheduled' ? substr((string) ($body['scheduledAt'] ?? ''), 0, 80) : '',
-            'body' => is_array($body['body'] ?? null) ? array_slice($body['body'], 0, 200) : [(string) ($body['content'] ?? '')],
-            'contentHtml' => substr((string) ($body['contentHtml'] ?? ''), 0, 200000),
-            'interactiveBlocks' => is_array($body['interactiveBlocks'] ?? null) ? array_slice($body['interactiveBlocks'], 0, 30) : [],
-            'seo' => is_array($body['seo'] ?? null) ? $body['seo'] : [],
-            'claps' => 0, 'comments' => 0, 'reads' => 0, 'revenue' => 0,
-            'publishedAt' => $requestedStatus === 'published' ? $now : '',
-            'createdAt' => $now, 'updatedAt' => $now,
-        ];
-        array_unshift($stories, $story);
-        $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
-            ->execute(['stories', json_encode($stories, JSON_UNESCAPED_SLASHES), $session['user']['id'], $now]);
-        record_story_revision($story, $session['user']['id'], 'Story created as ' . $story['status']);
-        rebuild_story_search_index($stories);
-        $translationJobId = null;
-        if ($story['status'] === 'published' && provider_status()['ai']) $translationJobId = enqueue_background_job('translations.backfill');
-        if ($story['status'] === 'published') create_notification($session['user']['id'], 'story_published', 'Story published', $story['title'] . ' is now live.', '/stories/' . $story['slug']);
-        json_response(['story' => $story, 'translationJobId' => $translationJobId], 201);
     }
 
     if ($method === 'GET' && preg_match('#^/api/admin/stories/([^/]+)/revisions$#', $path, $m)) {

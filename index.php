@@ -10,6 +10,10 @@ if (str_starts_with($path, '/api/')) {
     handle_api($path, $method);
 }
 
+if ($path === '/mcp') {
+    handle_mcp($method);
+}
+
 if ($method === 'GET' && $path === '/sitemap.xml') {
     $artifact = seo_artifact_content('sitemap.xml');
     foreach (security_headers() + ['Content-Type' => $artifact['mimeType'] ?? 'application/xml; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
