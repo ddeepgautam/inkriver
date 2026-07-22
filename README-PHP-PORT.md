@@ -153,6 +153,8 @@ Publishing tools:
 - `upload_blog_image` - accepts `sourceUrl` or `dataBase64`, stores the image, and returns a URL.
 - `create_or_update_blog` - fills the blog editor fields and saves, schedules, or publishes the story.
 
+Every MCP tool declares both `inputSchema` and `outputSchema`. Tool responses include `structuredContent` matching the declared output schema so ChatGPT and Claude can reason about returned story ids, slugs, media URLs, publication/category options, and publishing status in follow-up calls.
+
 `create_or_update_blog` supports title, slug, excerpt/dek, `contentHtml`, author/byline, publication, category/topic, tags, read time, visual tone, featured image URL, inline images, member-only paywall (`premium` or `memberOnly`), ads/earning toggles, detailed `seo`, and `interactiveBlocks` for polls, surveys, and quizzes. Set `status` to `draft`, `review`, `approved`, `scheduled`, or `published`; include `scheduledAt` for scheduled posts.
 
 Example MCP `tools/call` payload:

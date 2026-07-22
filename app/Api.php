@@ -1177,6 +1177,162 @@ function mcp_blog_editor_schema(): array
     ];
 }
 
+function mcp_array_schema(array $items): array
+{
+    return ['type' => 'array', 'items' => $items];
+}
+
+function mcp_object_schema(array $properties, array $required = []): array
+{
+    $schema = ['type' => 'object', 'properties' => $properties, 'additionalProperties' => true];
+    if ($required) $schema['required'] = $required;
+    return $schema;
+}
+
+function mcp_category_schema(): array
+{
+    return mcp_object_schema([
+        'id' => ['type' => 'string'],
+        'name' => ['type' => 'string'],
+        'slug' => ['type' => 'string'],
+        'description' => ['type' => 'string'],
+        'color' => ['type' => 'string'],
+        'seoTitle' => ['type' => 'string'],
+        'metaDescription' => ['type' => 'string'],
+    ]);
+}
+
+function mcp_publication_schema(): array
+{
+    return mcp_object_schema([
+        'id' => ['type' => 'string'],
+        'slug' => ['type' => 'string'],
+        'name' => ['type' => 'string'],
+        'description' => ['type' => 'string'],
+        'logo_url' => ['type' => 'string'],
+        'status' => ['type' => 'string'],
+        'owner_user_id' => ['type' => ['string', 'null']],
+        'created_at' => ['type' => 'string'],
+        'updated_at' => ['type' => 'string'],
+    ]);
+}
+
+function mcp_blog_summary_schema(): array
+{
+    return mcp_object_schema([
+        'id' => ['type' => 'string'],
+        'slug' => ['type' => 'string'],
+        'title' => ['type' => 'string'],
+        'status' => ['type' => 'string', 'enum' => ['draft', 'review', 'approved', 'scheduled', 'published']],
+        'topic' => ['type' => 'string'],
+        'publication' => ['type' => 'string'],
+        'premium' => ['type' => 'boolean'],
+        'updatedAt' => ['type' => 'string'],
+    ], ['id', 'slug', 'title', 'status']);
+}
+
+function mcp_media_asset_schema(): array
+{
+    return mcp_object_schema([
+        'id' => ['type' => 'string'],
+        'originalName' => ['type' => 'string'],
+        'url' => ['type' => 'string'],
+        'mimeType' => ['type' => 'string'],
+        'sizeBytes' => ['type' => 'integer'],
+        'width' => ['type' => ['integer', 'null']],
+        'height' => ['type' => ['integer', 'null']],
+        'altText' => ['type' => 'string'],
+        'variants' => mcp_array_schema(mcp_object_schema([
+            'variant' => ['type' => 'string'],
+            'url' => ['type' => 'string'],
+            'mime_type' => ['type' => 'string'],
+            'width' => ['type' => 'integer'],
+            'height' => ['type' => 'integer'],
+            'size_bytes' => ['type' => 'integer'],
+        ])),
+        'createdAt' => ['type' => 'string'],
+    ], ['id', 'url', 'mimeType']);
+}
+
+function mcp_story_schema(): array
+{
+    return mcp_object_schema([
+        'id' => ['type' => 'string'],
+        'slug' => ['type' => 'string'],
+        'title' => ['type' => 'string'],
+        'dek' => ['type' => 'string'],
+        'author' => ['type' => 'string'],
+        'authorUserId' => ['type' => 'string'],
+        'role' => ['type' => 'string'],
+        'publication' => ['type' => 'string'],
+        'topic' => ['type' => 'string'],
+        'readTime' => ['type' => 'string'],
+        'premium' => ['type' => 'boolean'],
+        'ads' => ['type' => 'boolean'],
+        'earning' => ['type' => 'boolean'],
+        'color' => ['type' => 'string'],
+        'imageUrl' => ['type' => 'string'],
+        'tags' => mcp_array_schema(['type' => 'string']),
+        'status' => ['type' => 'string', 'enum' => ['draft', 'review', 'approved', 'scheduled', 'published']],
+        'scheduledAt' => ['type' => 'string'],
+        'body' => mcp_array_schema(['type' => 'string']),
+        'contentHtml' => ['type' => 'string'],
+        'interactiveBlocks' => mcp_array_schema(mcp_object_schema([
+            'id' => ['type' => 'string'],
+            'type' => ['type' => 'string', 'enum' => ['poll', 'survey', 'quiz']],
+            'question' => ['type' => 'string'],
+            'options' => mcp_array_schema(['type' => 'string']),
+            'multiple' => ['type' => 'boolean'],
+            'correctIndex' => ['type' => ['integer', 'null']],
+            'explanation' => ['type' => 'string'],
+        ])),
+        'seo' => mcp_object_schema([
+            'focusKeyphrase' => ['type' => 'string'],
+            'additionalKeyphrases' => ['type' => 'string'],
+            'seoTitle' => ['type' => 'string'],
+            'metaDescription' => ['type' => 'string'],
+            'canonicalUrl' => ['type' => 'string'],
+            'robotsIndex' => ['type' => 'boolean'],
+            'robotsFollow' => ['type' => 'boolean'],
+            'maxSnippet' => ['type' => 'integer'],
+            'maxImagePreview' => ['type' => 'string'],
+            'maxVideoPreview' => ['type' => 'integer'],
+            'cornerstone' => ['type' => 'boolean'],
+            'schemaPageType' => ['type' => 'string'],
+            'schemaArticleType' => ['type' => 'string'],
+            'breadcrumbTitle' => ['type' => 'string'],
+            'socialTitle' => ['type' => 'string'],
+            'socialDescription' => ['type' => 'string'],
+            'socialImage' => ['type' => 'string'],
+        ]),
+        'publishedAt' => ['type' => 'string'],
+        'createdAt' => ['type' => 'string'],
+        'updatedAt' => ['type' => 'string'],
+    ], ['id', 'slug', 'title', 'status']);
+}
+
+function mcp_output_schemas(): array
+{
+    return [
+        'get_blog_editor_schema' => mcp_object_schema([
+            'statuses' => mcp_array_schema(['type' => 'string']),
+            'requiredForPublish' => mcp_array_schema(['type' => 'string']),
+            'fields' => ['type' => 'object', 'additionalProperties' => ['type' => 'string']],
+            'seoFields' => mcp_array_schema(['type' => 'string']),
+            'interactiveBlockShape' => ['type' => 'object', 'additionalProperties' => true],
+        ], ['statuses', 'fields', 'seoFields']),
+        'list_categories' => mcp_object_schema(['categories' => mcp_array_schema(mcp_category_schema())], ['categories']),
+        'list_publications' => mcp_object_schema(['publications' => mcp_array_schema(mcp_publication_schema())], ['publications']),
+        'list_blogs' => mcp_object_schema(['stories' => mcp_array_schema(mcp_blog_summary_schema())], ['stories']),
+        'upload_blog_image' => mcp_object_schema(['asset' => mcp_media_asset_schema()], ['asset']),
+        'create_or_update_blog' => mcp_object_schema([
+            'story' => mcp_story_schema(),
+            'created' => ['type' => 'boolean'],
+            'translationJobId' => ['type' => ['string', 'null']],
+        ], ['story', 'created']),
+    ];
+}
+
 function mcp_tool_definitions(): array
 {
     $storyInput = [
@@ -1213,26 +1369,31 @@ function mcp_tool_definitions(): array
             'seo' => ['type' => 'object'],
         ],
     ];
+    $outputSchemas = mcp_output_schemas();
     return [
         [
             'name' => 'get_blog_editor_schema',
             'description' => 'Return the full InkRiver blog editor field map, SEO fields, status options, and interactive block shape.',
             'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+            'outputSchema' => $outputSchemas['get_blog_editor_schema'],
         ],
         [
             'name' => 'list_categories',
             'description' => 'List available blog categories/topics for the topic field.',
             'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+            'outputSchema' => $outputSchemas['list_categories'],
         ],
         [
             'name' => 'list_publications',
             'description' => 'List active publications available for assigning a story.',
             'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+            'outputSchema' => $outputSchemas['list_publications'],
         ],
         [
             'name' => 'list_blogs',
             'description' => 'List existing blog stories for update, scheduling, or duplicate checks.',
             'inputSchema' => ['type' => 'object', 'properties' => ['status' => ['type' => 'string'], 'limit' => ['type' => 'integer']]],
+            'outputSchema' => $outputSchemas['list_blogs'],
         ],
         [
             'name' => 'upload_blog_image',
@@ -1246,11 +1407,13 @@ function mcp_tool_definitions(): array
                     'altText' => ['type' => 'string'],
                 ],
             ],
+            'outputSchema' => $outputSchemas['upload_blog_image'],
         ],
         [
             'name' => 'create_or_update_blog',
             'description' => 'Create or update a blog article, including featured image URL, inline images, category, tags, SEO metadata, paywall, polls, surveys, quizzes, draft/review/published/scheduled status.',
             'inputSchema' => $storyInput,
+            'outputSchema' => $outputSchemas['create_or_update_blog'],
         ],
     ];
 }
