@@ -917,12 +917,22 @@ function mcp_authorize_session(): array
     return $tokenSession;
 }
 
-function mcp_json_response(array $payload, int $status = 200): never
+function mcp_json_response(array $payload, int $status = 200, array $headers = []): never
 {
     http_response_code($status);
-    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);
+    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] + $headers as $key => $value) header($key . ': ' . $value);
     echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
+}
+
+function mcp_unauthorized_response(string $message = 'OAuth authorization is required.'): never
+{
+    $origin = rtrim((string) (env_value('APP_ORIGIN') ?: env_value('APP_URL') ?: app_url('/')), '/');
+    mcp_json_response(
+        ['error' => 'AUTH_REQUIRED', 'message' => $message],
+        401,
+        ['WWW-Authenticate' => 'Bearer resource_metadata="' . $origin . '/.well-known/oauth-protected-resource/mcp"'],
+    );
 }
 
 function oauth_metadata_response(array $payload, int $status = 200): never
@@ -936,6 +946,11 @@ function oauth_metadata_response(array $payload, int $status = 200): never
 function oauth_client_secret_hash(string $secret): string
 {
     return hash('sha256', $secret);
+}
+
+function oauth_access_token_ttl(): int
+{
+    return max(3600, min(2592000, (int) (env_value('MCP_ACCESS_TOKEN_TTL', '604800') ?? '604800')));
 }
 
 function oauth_validate_redirect_uri(array $client, string $redirectUri): bool
@@ -1000,6 +1015,7 @@ function oauth_issue_code(array $params, array $user): never
 
 function handle_oauth(string $path, string $method): void
 {
+    $path = rtrim($path, '/') ?: '/';
     $origin = rtrim((string) (env_value('APP_ORIGIN') ?: env_value('APP_URL') ?: app_url('/')), '/');
     if ($method === 'GET' && ($path === '/.well-known/oauth-protected-resource' || $path === '/.well-known/oauth-protected-resource/mcp')) {
         oauth_metadata_response([
@@ -1092,8 +1108,8 @@ function handle_oauth(string $path, string $method): void
             $accessToken = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
             $refreshToken = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
             Database::pdo()->prepare('INSERT INTO oauth_access_tokens (token_hash, refresh_token_hash, client_id, user_id, scope, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-                ->execute([hash('sha256', $accessToken), hash('sha256', $refreshToken), $clientId, $row['user_id'], $row['scope'], gmdate('Y-m-d\TH:i:s.v\Z', time() + 3600), now_iso()]);
-            oauth_metadata_response(['access_token' => $accessToken, 'token_type' => 'Bearer', 'expires_in' => 3600, 'refresh_token' => $refreshToken, 'scope' => $row['scope']]);
+                ->execute([hash('sha256', $accessToken), hash('sha256', $refreshToken), $clientId, $row['user_id'], $row['scope'], gmdate('Y-m-d\TH:i:s.v\Z', time() + oauth_access_token_ttl()), now_iso()]);
+            oauth_metadata_response(['access_token' => $accessToken, 'token_type' => 'Bearer', 'expires_in' => oauth_access_token_ttl(), 'refresh_token' => $refreshToken, 'scope' => $row['scope']]);
         }
         if ($grantType === 'refresh_token') {
             $refresh = (string) ($body['refresh_token'] ?? '');
@@ -1103,8 +1119,8 @@ function handle_oauth(string $path, string $method): void
             if (!$row) oauth_metadata_response(['error' => 'invalid_grant'], 400);
             $accessToken = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
             Database::pdo()->prepare('UPDATE oauth_access_tokens SET token_hash = ?, expires_at = ?, created_at = ?, revoked_at = NULL WHERE refresh_token_hash = ? AND client_id = ?')
-                ->execute([hash('sha256', $accessToken), gmdate('Y-m-d\TH:i:s.v\Z', time() + 3600), now_iso(), $row['refresh_token_hash'], $clientId]);
-            oauth_metadata_response(['access_token' => $accessToken, 'token_type' => 'Bearer', 'expires_in' => 3600, 'refresh_token' => $refresh, 'scope' => $row['scope']]);
+                ->execute([hash('sha256', $accessToken), gmdate('Y-m-d\TH:i:s.v\Z', time() + oauth_access_token_ttl()), now_iso(), $row['refresh_token_hash'], $clientId]);
+            oauth_metadata_response(['access_token' => $accessToken, 'token_type' => 'Bearer', 'expires_in' => oauth_access_token_ttl(), 'refresh_token' => $refresh, 'scope' => $row['scope']]);
         }
         oauth_metadata_response(['error' => 'unsupported_grant_type'], 400);
     }
@@ -1333,9 +1349,17 @@ function mcp_handle_request(array $request): ?array
 function handle_mcp(string $method): void
 {
     if ($method === 'GET') {
-        mcp_json_response(['error' => 'METHOD_NOT_ALLOWED', 'message' => 'This MCP endpoint accepts JSON-RPC POST requests.'], 405);
+        mcp_unauthorized_response('Connect with OAuth to use the InkRiver MCP endpoint.');
     }
     if ($method !== 'POST') mcp_json_response(['error' => 'METHOD_NOT_ALLOWED', 'message' => 'Use POST for MCP JSON-RPC calls.'], 405);
+    try {
+        mcp_authorize_session();
+    } catch (Throwable $error) {
+        if (str_contains($error->getMessage(), 'Only administrator')) {
+            mcp_json_response(['error' => 'FORBIDDEN', 'message' => 'Only administrator accounts can connect and use InkRiver MCP.'], 403);
+        }
+        mcp_unauthorized_response($error->getMessage());
+    }
     $payload = read_json();
     $isBatch = array_is_list($payload);
     $requests = $isBatch ? $payload : [$payload];

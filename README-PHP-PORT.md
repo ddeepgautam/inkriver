@@ -84,6 +84,7 @@ MCP publishing automation:
 
 - `MCP_API_TOKEN` - bearer token required by `/mcp` for ChatGPT, Claude, or other MCP clients.
 - `MCP_USER_EMAIL` - optional active admin/writer email used as the publishing identity when the request uses the MCP bearer token.
+- `MCP_ACCESS_TOKEN_TTL=604800` - optional OAuth access-token lifetime in seconds for MCP clients.
 - `JSON_REQUEST_MAX_BYTES=12582912` - optional JSON request size limit; useful for base64 image uploads.
 
 You can also store these in the encrypted admin API-key vault as:
@@ -124,7 +125,15 @@ InkRiver exposes a Streamable HTTP-style MCP JSON-RPC endpoint at:
 https://your-domain.com/mcp
 ```
 
-Configure your MCP client with an `Authorization: Bearer YOUR_MCP_API_TOKEN` header. Browser sessions for signed-in admins/writers can also call it, but external ChatGPT/Claude connections should use the bearer token.
+ChatGPT and Claude should connect directly to `/mcp`. If they arrive without authorization, InkRiver returns a `401` response with a `WWW-Authenticate` header pointing to the OAuth protected-resource metadata. The client can then discover:
+
+- `/.well-known/oauth-protected-resource/mcp`
+- `/.well-known/oauth-authorization-server/mcp`
+- `/oauth/register`
+- `/oauth/authorize`
+- `/oauth/token`
+
+Only administrator accounts can complete the MCP OAuth flow. Non-admin users see a clear access-denied message. `MCP_API_TOKEN` is still available as a server-to-server bearer fallback, but OAuth is the preferred connector path.
 
 Supported MCP methods:
 

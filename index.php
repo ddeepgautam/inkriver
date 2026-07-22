@@ -14,7 +14,7 @@ if (str_starts_with($path, '/api/')) {
     handle_api($path, $method);
 }
 
-if ($path === '/mcp') {
+if (rtrim($path, '/') === '/mcp') {
     handle_mcp($method);
 }
 
