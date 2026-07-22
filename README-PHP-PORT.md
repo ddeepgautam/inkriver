@@ -129,9 +129,11 @@ ChatGPT and Claude should connect directly to `/mcp`. If they arrive without aut
 
 - `/.well-known/oauth-protected-resource/mcp`
 - `/.well-known/oauth-authorization-server/mcp`
-- `/oauth/register`
+- `/api/oauth/register`
 - `/oauth/authorize`
 - `/oauth/token`
+
+Dynamic client registration is published at `/api/oauth/register`; `/oauth/register` remains available as a compatibility alias.
 
 Only administrator accounts can complete the MCP OAuth flow. Non-admin users see a clear access-denied message. `MCP_API_TOKEN` is still available as a server-to-server bearer fallback, but OAuth is the preferred connector path.
 

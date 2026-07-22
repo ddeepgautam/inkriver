@@ -935,11 +935,11 @@ function mcp_unauthorized_response(string $message = 'OAuth authorization is req
     );
 }
 
-function oauth_metadata_response(array $payload, int $status = 200): never
+function oauth_metadata_response(array $payload, int $status = 200, array $extraHeaders = []): never
 {
     http_response_code($status);
-    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);
-    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] + $extraHeaders as $key => $value) header($key . ': ' . $value);
+    if ($status !== 204) echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -1016,6 +1016,7 @@ function oauth_issue_code(array $params, array $user): never
 function handle_oauth(string $path, string $method): void
 {
     $path = rtrim($path, '/') ?: '/';
+    if (str_starts_with($path, '/api/oauth/')) $path = '/oauth/' . substr($path, strlen('/api/oauth/'));
     $origin = rtrim((string) (env_value('APP_ORIGIN') ?: env_value('APP_URL') ?: app_url('/')), '/');
     if ($method === 'GET' && ($path === '/.well-known/oauth-protected-resource' || $path === '/.well-known/oauth-protected-resource/mcp')) {
         oauth_metadata_response([
@@ -1030,12 +1031,21 @@ function handle_oauth(string $path, string $method): void
             'issuer' => $origin,
             'authorization_endpoint' => $origin . '/oauth/authorize',
             'token_endpoint' => $origin . '/oauth/token',
-            'registration_endpoint' => $origin . '/oauth/register',
+            'registration_endpoint' => $origin . '/api/oauth/register',
             'response_types_supported' => ['code'],
             'grant_types_supported' => ['authorization_code', 'refresh_token'],
             'code_challenge_methods_supported' => ['S256', 'plain'],
             'token_endpoint_auth_methods_supported' => ['client_secret_post', 'client_secret_basic', 'none'],
+            'registration_endpoint_auth_methods_supported' => ['none'],
             'scopes_supported' => ['mcp:publish'],
+        ]);
+    }
+    if ($method === 'OPTIONS' && $path === '/oauth/register') {
+        oauth_metadata_response([], 204, [
+            'Access-Control-Allow-Origin' => '*',
+            'Access-Control-Allow-Methods' => 'POST, OPTIONS',
+            'Access-Control-Allow-Headers' => 'Authorization, Content-Type',
+            'Access-Control-Max-Age' => '86400',
         ]);
     }
     if ($method === 'POST' && $path === '/oauth/register') {
