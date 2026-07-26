@@ -97,6 +97,38 @@ assert_true(
 );
 assert_true(count($thirdBusinessPage['profiles']) === 1 && ($thirdBusinessPage['pagination']['page'] ?? 0) === 3, 'business network returns the final partial page');
 
+$pdo->exec("UPDATE business_companies SET status = 'draft' WHERE name = 'Pagination Company 24'");
+$firstAdminBusinessPage = business_admin_paginated_profiles(['page' => 1], 12);
+$founderAdminResults = business_admin_paginated_profiles(['profileType' => 'person'], 12);
+$searchedAdminResults = business_admin_paginated_profiles(['q' => 'Pagination Company 07'], 12);
+$industryAdminResults = business_admin_paginated_profiles(['profileType' => 'company', 'industry' => 'Services'], 12);
+$statusAdminResults = business_admin_paginated_profiles(['status' => 'draft'], 12);
+assert_true(
+    count($firstAdminBusinessPage['profiles']) === 12
+    && ($firstAdminBusinessPage['pagination']['total'] ?? 0) === 26
+    && ($firstAdminBusinessPage['pagination']['totalPages'] ?? 0) === 3,
+    'admin business network returns 12 combined profiles with page metadata'
+);
+assert_true(
+    count($founderAdminResults['profiles']) === 1
+    && ($founderAdminResults['profiles'][0]['profile_type'] ?? '') === 'person',
+    'admin business network filters founder profiles'
+);
+assert_true(
+    ($searchedAdminResults['pagination']['total'] ?? 0) === 1
+    && ($searchedAdminResults['profiles'][0]['display_name'] ?? '') === 'Pagination Company 07',
+    'admin business network searches profile names'
+);
+assert_true(
+    ($industryAdminResults['pagination']['total'] ?? 0) === 12,
+    'admin business network filters company profiles by industry'
+);
+assert_true(
+    ($statusAdminResults['pagination']['total'] ?? 0) === 1
+    && ($statusAdminResults['profiles'][0]['status'] ?? '') === 'draft',
+    'admin business network filters profiles by status'
+);
+
 $publicCompany = business_get_profile('company', $company['slug'], null);
 assert_true(($publicCompany['contactLocked'] ?? false) && ($publicCompany['contact_email'] ?? '') === '', 'public company contact details stay hidden');
 

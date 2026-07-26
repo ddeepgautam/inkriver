@@ -345,6 +345,71 @@ function business_admin_queue(string $kind): array
     }, $stmt->fetchAll());
 }
 
+function business_admin_counts(): array
+{
+    $pdo = Database::pdo();
+    return [
+        'profiles' => (int) $pdo->query('SELECT (SELECT COUNT(*) FROM business_companies) + (SELECT COUNT(*) FROM business_people)')->fetchColumn(),
+        'claims' => (int) $pdo->query("SELECT COUNT(*) FROM business_profile_claims WHERE status = 'pending'")->fetchColumn(),
+        'suggestions' => (int) $pdo->query("SELECT COUNT(*) FROM business_profile_suggestions WHERE status = 'pending'")->fetchColumn(),
+    ];
+}
+
+function business_admin_paginated_profiles(array $filters, int $perPage = 12): array
+{
+    $profileType = trim((string) ($filters['profileType'] ?? 'all'));
+    if (!in_array($profileType, ['all', 'company', 'person'], true)) $profileType = 'all';
+    $parts = [];
+    if ($profileType !== 'person') {
+        $parts[] = "SELECT id, slug, name AS display_name, tagline AS meta, industry, logo_url AS profile_image, 'company' AS profile_type, status, verified, CASE WHEN claimed_owner_user_id IS NULL OR claimed_owner_user_id = '' THEN 0 ELSE 1 END AS claimed, updated_at FROM business_companies";
+    }
+    if ($profileType !== 'company') {
+        $parts[] = "SELECT id, slug, full_name AS display_name, headline AS meta, '' AS industry, image_url AS profile_image, 'person' AS profile_type, status, verified, CASE WHEN claimed_owner_user_id IS NULL OR claimed_owner_user_id = '' THEN 0 ELSE 1 END AS claimed, updated_at FROM business_people";
+    }
+    $where = [];
+    $args = [];
+    $q = trim((string) ($filters['q'] ?? ''));
+    $industry = trim((string) ($filters['industry'] ?? ''));
+    $status = trim((string) ($filters['status'] ?? ''));
+    if ($q !== '') {
+        $where[] = 'display_name LIKE ?';
+        $args[] = '%' . $q . '%';
+    }
+    if ($industry !== '') {
+        $where[] = 'industry = ?';
+        $args[] = $industry;
+    }
+    if (in_array($status, ['draft', 'published', 'unpublished'], true)) {
+        $where[] = 'status = ?';
+        $args[] = $status;
+    }
+    $sourceSql = implode(' UNION ALL ', $parts);
+    $whereSql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
+    $count = Database::pdo()->prepare("SELECT COUNT(*) FROM ({$sourceSql}) profiles{$whereSql}");
+    $count->execute($args);
+    $total = (int) $count->fetchColumn();
+    $perPage = max(1, min(48, $perPage));
+    $totalPages = max(1, (int) ceil($total / $perPage));
+    $page = max(1, min($totalPages, (int) ($filters['page'] ?? 1)));
+    $offset = ($page - 1) * $perPage;
+    $stmt = Database::pdo()->prepare("SELECT * FROM ({$sourceSql}) profiles{$whereSql} ORDER BY verified DESC, updated_at DESC, display_name ASC LIMIT {$perPage} OFFSET {$offset}");
+    $stmt->execute($args);
+    $profiles = array_map(function (array $profile): array {
+        $profile['verified'] = (bool) $profile['verified'];
+        $profile['claimed'] = (bool) $profile['claimed'];
+        return $profile;
+    }, $stmt->fetchAll());
+    return [
+        'profiles' => $profiles,
+        'pagination' => [
+            'page' => $page,
+            'perPage' => $perPage,
+            'total' => $total,
+            'totalPages' => $totalPages,
+        ],
+    ];
+}
+
 function business_review_queue_item(string $kind, string $id, array $body, array $session): array
 {
     $isClaim = $kind === 'claims';
@@ -490,13 +555,22 @@ function handle_business_api(string $path, string $method): bool
         json_response(['id' => $id, 'status' => 'pending'], 201);
     }
     if ($method === 'GET' && $path === '/api/admin/business-network') {
-        $auth = require_auth(['admin', 'moderator']);
-        json_response([
-            'companies' => business_list_profiles('company', ['status' => (string) ($_GET['status'] ?? '')], $auth, true),
-            'people' => business_list_profiles('person', ['status' => (string) ($_GET['status'] ?? '')], $auth, true),
-            'claims' => business_admin_queue('claims'),
-            'suggestions' => business_admin_queue('suggestions'),
-        ]);
+        require_auth(['admin', 'moderator']);
+        $view = in_array((string) ($_GET['view'] ?? 'profiles'), ['profiles', 'claims', 'suggestions'], true) ? (string) $_GET['view'] : 'profiles';
+        $response = ['view' => $view, 'counts' => business_admin_counts()];
+        if ($view === 'profiles') {
+            $listing = business_admin_paginated_profiles($_GET, 12);
+            $response += [
+                'profiles' => $listing['profiles'],
+                'pagination' => $listing['pagination'],
+                'industries' => array_values(array_filter(array_column(Database::pdo()->query("SELECT DISTINCT industry FROM business_companies WHERE industry != '' ORDER BY industry")->fetchAll(), 'industry'))),
+            ];
+        } elseif ($view === 'claims') {
+            $response['claims'] = business_admin_queue('claims');
+        } else {
+            $response['suggestions'] = business_admin_queue('suggestions');
+        }
+        json_response($response);
     }
     if ($method === 'GET' && preg_match('#^/api/admin/business-network/(companies|founders)/([^/]+)$#', $path, $m)) {
         $auth = require_auth(['admin', 'moderator']);

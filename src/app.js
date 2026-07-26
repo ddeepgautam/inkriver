@@ -1798,8 +1798,10 @@ const state = {
   businessLinkQuery: "",
   businessLinkSuggestions: [],
   businessOverlay: { type: "", profileType: "", profileId: "", profileName: "", message: "" },
-  businessAdmin: { companies: [], people: [], claims: [], suggestions: [], loaded: false },
+  businessAdmin: { profiles: [], claims: [], suggestions: [], industries: [], counts: { profiles: 0, claims: 0, suggestions: 0 }, pagination: { page: 1, perPage: 12, total: 0, totalPages: 1 }, loaded: false },
   businessAdminView: "profiles",
+  businessAdminFilters: { q: "", profileType: "all", industry: "", status: "", page: 1 },
+  businessAdminLoading: false,
   businessMessage: "",
   privacyMessage: "",
   securityMessage: "",
@@ -3010,6 +3012,7 @@ function icon(name, size = 17) {
     upload: '<path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M5 20h14"></path>',
     chevronLeft: '<path d="m15 18-6-6 6-6"></path>',
     chevronRight: '<path d="m9 18 6-6-6-6"></path>',
+    moreVertical: '<circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="19" r="1"></circle>',
   };
   return `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.spark}</svg>`;
 }
@@ -3185,13 +3188,35 @@ async function loadMyBusinessProfiles() {
 
 async function loadBusinessAdmin() {
   if (!["admin", "moderator"].includes(state.user?.role)) return;
+  if (state.businessAdminLoading) return;
+  state.businessAdminLoading = true;
+  render();
   try {
-    const payload = await apiRequest("/api/admin/business-network");
-    state.businessAdmin = { ...payload, loaded: true };
+    const params = new URLSearchParams({ view: state.businessAdminView });
+    if (state.businessAdminView === "profiles") {
+      const filters = state.businessAdminFilters;
+      params.set("page", String(filters.page || 1));
+      if (filters.q) params.set("q", filters.q);
+      if (filters.profileType !== "all") params.set("profileType", filters.profileType);
+      if (filters.industry) params.set("industry", filters.industry);
+      if (filters.status) params.set("status", filters.status);
+    }
+    const payload = await apiRequest(`/api/admin/business-network?${params}`);
+    state.businessAdmin = {
+      ...state.businessAdmin,
+      ...payload,
+      profiles: payload.profiles || [],
+      claims: payload.claims || [],
+      suggestions: payload.suggestions || [],
+      loaded: true,
+    };
+    if (payload.pagination) state.businessAdminFilters.page = Number(payload.pagination.page || 1);
   } catch (error) {
     state.businessMessage = error.message;
+  } finally {
+    state.businessAdminLoading = false;
+    render();
   }
-  render();
 }
 
 function businessAvatar(profile, type, className = "") {
@@ -3440,7 +3465,51 @@ function businessOverlayTemplate() {
       <label><span>Your name</span><input name="name" value="${escapeHtml(state.user?.name || "")}" required /></label><label><span>Email address</span><input name="email" type="email" value="${escapeHtml(state.user?.email || "")}" required /></label>
       ${claim ? `<label><span>Your role</span><input name="role" placeholder="Founder, director, authorized representative…" required /></label><label><span>Proof URL</span><input name="proofUrl" type="url" placeholder="Company website or professional profile" /></label><label class="wide"><span>Verification details</span><textarea name="evidence" placeholder="Explain how the team can verify your relationship." required></textarea></label>` : `<label class="wide"><span>What should change?</span><textarea name="summary" placeholder="Describe the current information and the accurate replacement." required minlength="10"></textarea></label>`}
       ${overlay.message ? `<div class="form-message wide">${escapeHtml(overlay.message)}</div>` : ""}<button class="primary-button wide" type="submit">${icon("check", 15)}Submit for review</button>
-    </form></section></div>`;
+  </form></section></div>`;
+}
+
+function businessAdminPaginationTemplate() {
+  const pagination = state.businessAdmin.pagination || {};
+  const current = Number(pagination.page || 1);
+  const totalPages = Number(pagination.totalPages || 1);
+  if (totalPages <= 1) return "";
+  const pages = totalPages <= 7
+    ? Array.from({ length: totalPages }, (_, index) => index + 1)
+    : [1, current > 4 ? "start-ellipsis" : null, current - 1, current, current + 1, current < totalPages - 3 ? "end-ellipsis" : null, totalPages]
+      .filter((value, index, values) => value && (typeof value === "string" || (value > 1 && value < totalPages) || value === 1 || value === totalPages) && values.indexOf(value) === index);
+  return `<nav class="business-pagination business-admin-pagination" aria-label="Admin business profile pages">
+    <button type="button" data-business-admin-page="${current - 1}" aria-label="Previous page" ${current <= 1 ? "disabled" : ""}>${icon("chevronLeft", 14)}<span>Previous</span></button>
+    <div>${pages.map((page) => typeof page === "string"
+      ? `<span class="business-page-ellipsis" aria-hidden="true">…</span>`
+      : `<button type="button" data-business-admin-page="${page}" aria-label="Page ${page}" ${page === current ? `class="active" aria-current="page"` : ""}>${page}</button>`).join("")}</div>
+    <button type="button" data-business-admin-page="${current + 1}" aria-label="Next page" ${current >= totalPages ? "disabled" : ""}><span>Next</span>${icon("chevronRight", 14)}</button>
+  </nav>`;
+}
+
+function businessAdminProfileRow(profile, index, total) {
+  const type = profile.profile_type === "company" ? "company" : "person";
+  const avatarProfile = type === "company"
+    ? { name: profile.display_name, logo_url: profile.profile_image }
+    : { full_name: profile.display_name, image_url: profile.profile_image };
+  const actionDirection = index >= total - 2 ? "open-up" : "";
+  return `<div class="business-admin-profile-row" role="row">
+    <div class="business-admin-profile-name" role="cell">${businessAvatar(avatarProfile, type)}<span><strong>${escapeHtml(profile.display_name)}</strong><small>${escapeHtml(profile.meta || (type === "company" ? "Company profile" : "Founder profile"))}</small></span></div>
+    <div role="cell" data-label="Type"><span class="business-type-pill ${type}">${icon(type === "company" ? "gauge" : "users", 13)}${type === "company" ? "Company" : "Founder"}</span></div>
+    <div role="cell" data-label="Status"><span class="status-pill status-${escapeHtml(profile.status)}">${escapeHtml(profile.status)}</span></div>
+    <div role="cell" data-label="Ownership"><span class="business-owner-state">${profile.claimed ? `${icon("check", 13)}Claimed` : "Unclaimed"}</span></div>
+    <div role="cell" data-label="Updated"><time datetime="${escapeHtml(profile.updated_at)}">${new Date(profile.updated_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</time></div>
+    <div class="business-admin-action-cell" role="cell">
+      <details class="business-row-action-menu ${actionDirection}">
+        <summary aria-label="Actions for ${escapeHtml(profile.display_name)}">${icon("moreVertical", 20)}</summary>
+        <div role="menu">
+          <button type="button" role="menuitem" data-route="${businessProfileRoute(profile, type)}">${icon("eye", 15)}View profile</button>
+          <button type="button" role="menuitem" data-business-edit="${profile.id}" data-business-profile-type="${type}">${icon("pen", 15)}Edit profile</button>
+          <button type="button" role="menuitem" data-business-admin-status="${profile.id}" data-business-profile-type="${type}" data-next-status="${profile.status === "published" ? "unpublished" : "published"}>${icon(profile.status === "published" ? "lock" : "eye", 15)}${profile.status === "published" ? "Unpublish" : "Publish"}</button>
+          <button type="button" role="menuitem" class="danger-link" data-business-admin-delete="${profile.id}" data-business-profile-type="${type}">${icon("close", 15)}Delete profile</button>
+        </div>
+      </details>
+    </div>
+  </div>`;
 }
 
 function adminBusinessNetworkTemplate() {
@@ -3454,11 +3523,28 @@ function adminBusinessNetworkTemplate() {
   }
   const data = state.businessAdmin;
   const view = state.businessAdminView;
-  const profileRows = [...(data.companies || []).map((item) => ({ ...item, _type: "company" })), ...(data.people || []).map((item) => ({ ...item, _type: "person" }))];
+  const profileRows = data.profiles || [];
   const queue = view === "claims" ? data.claims || [] : data.suggestions || [];
-  const content = `<section class="business-admin-tabs"><button class="${view === "profiles" ? "active" : ""}" data-business-admin-view="profiles">Profiles <span>${profileRows.length}</span></button><button class="${view === "claims" ? "active" : ""}" data-business-admin-view="claims">Claims <span>${(data.claims || []).filter((item) => item.status === "pending").length}</span></button><button class="${view === "suggestions" ? "active" : ""}" data-business-admin-view="suggestions">Suggested changes <span>${(data.suggestions || []).filter((item) => item.status === "pending").length}</span></button></section>
-    ${state.businessMessage ? `<div class="form-message">${escapeHtml(state.businessMessage)}</div>` : ""}
-    ${view === "profiles" ? `<section class="admin-table-panel business-admin-table"><div class="panel-title">${icon("gauge")}<h2>Company and founder profiles</h2></div><div class="admin-table-scroll"><table><thead><tr><th>Profile</th><th>Type</th><th>Status</th><th>Ownership</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${profileRows.map((profile) => `<tr><td><strong>${escapeHtml(profile._type === "company" ? profile.name : profile.full_name)}</strong><small>${escapeHtml((profile._type === "company" ? profile.industry : profile.headline) || "")}</small></td><td>${profile._type === "company" ? "Company" : "Founder"}</td><td><span class="status-pill">${escapeHtml(profile.status)}</span></td><td>${profile.claimed ? "Claimed" : "Unclaimed"}</td><td>${new Date(profile.updated_at).toLocaleDateString("en-IN")}</td><td><div class="table-actions"><button data-route="${businessProfileRoute(profile, profile._type)}">View</button><button data-business-edit="${profile.id}" data-business-profile-type="${profile._type}">Edit</button><button data-business-admin-status="${profile.id}" data-business-profile-type="${profile._type}" data-next-status="${profile.status === "published" ? "unpublished" : "published"}">${profile.status === "published" ? "Unpublish" : "Publish"}</button><button class="danger-link" data-business-admin-delete="${profile.id}" data-business-profile-type="${profile._type}">Delete</button></div></td></tr>`).join("") || `<tr><td colspan="6">No profiles yet.</td></tr>`}</tbody></table></div></section>` : `<section class="business-review-list">${queue.map((item) => `<article><div class="business-review-head"><span><i class="status-pill">${escapeHtml(item.status)}</i><small>${new Date(item.created_at).toLocaleString("en-IN")}</small></span><strong>${escapeHtml(view === "claims" ? item.claimant_name : item.submitter_name)}</strong><a href="mailto:${escapeHtml(view === "claims" ? item.claimant_email : item.submitter_email)}">${escapeHtml(view === "claims" ? item.claimant_email : item.submitter_email)}</a></div><div class="business-review-body"><span>${escapeHtml(item.profile_type)} profile</span><p>${escapeHtml(view === "claims" ? item.evidence || item.claimant_role : item.summary)}</p>${view === "claims" && item.proof_url ? `<a href="${escapeHtml(item.proof_url)}" target="_blank" rel="noopener noreferrer">Open proof link</a>` : ""}</div>${item.status === "pending" ? `<div class="business-review-actions"><button class="secondary-button" data-business-review="${item.id}" data-review-kind="${view}" data-review-status="rejected">${icon("close", 14)}Reject</button><button class="primary-button" data-business-review="${item.id}" data-review-kind="${view}" data-review-status="approved">${icon("check", 14)}Approve${view === "suggestions" ? " suggestion" : ""}</button></div>` : ""}</article>`).join("") || `<div class="empty-state">No ${view === "claims" ? "profile claims" : "suggested changes"} yet.</div>`}</section>`}`;
+  const counts = data.counts || { profiles: 0, claims: 0, suggestions: 0 };
+  const filters = state.businessAdminFilters;
+  const content = `<section class="business-admin-tabs"><button class="${view === "profiles" ? "active" : ""}" data-business-admin-view="profiles">Profiles <span>${counts.profiles || 0}</span></button><button class="${view === "claims" ? "active" : ""}" data-business-admin-view="claims">Claims <span>${counts.claims || 0}</span></button><button class="${view === "suggestions" ? "active" : ""}" data-business-admin-view="suggestions">Suggested changes <span>${counts.suggestions || 0}</span></button></section>
+    ${state.businessMessage ? `<div class="form-message" role="status">${escapeHtml(state.businessMessage)}</div>` : ""}
+    ${view === "profiles" ? `<section class="business-admin-directory" aria-busy="${state.businessAdminLoading}">
+      <div class="business-admin-directory-head"><div><span>Profile management</span><h2>Company and founder profiles</h2><p>${Number(data.pagination?.total || 0).toLocaleString("en-IN")} matching profiles · 12 per page</p></div></div>
+      <form id="businessAdminSearchForm" class="business-admin-filters">
+        <label class="business-admin-search"><span>Search by name</span><div>${icon("search", 16)}<input id="businessAdminSearch" value="${escapeHtml(filters.q)}" placeholder="Search company or founder name" /></div></label>
+        <label><span>Profile type</span><select id="businessAdminTypeFilter"><option value="all" ${filters.profileType === "all" ? "selected" : ""}>All profiles</option><option value="company" ${filters.profileType === "company" ? "selected" : ""}>Companies</option><option value="person" ${filters.profileType === "person" ? "selected" : ""}>Founders</option></select></label>
+        <label><span>Industry</span><select id="businessAdminIndustryFilter" ${filters.profileType === "person" ? "disabled" : ""}><option value="">All industries</option>${(data.industries || []).map((industry) => `<option value="${escapeHtml(industry)}" ${filters.industry === industry ? "selected" : ""}>${escapeHtml(industry)}</option>`).join("")}</select></label>
+        <label><span>Status</span><select id="businessAdminStatusFilter"><option value="">All statuses</option>${["published", "draft", "unpublished"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${status[0].toUpperCase() + status.slice(1)}</option>`).join("")}</select></label>
+        <button class="primary-button" type="submit">${icon("search", 15)}Search</button>
+        <button class="secondary-button" type="button" data-action="clear-business-admin-filters">Reset</button>
+      </form>
+      ${state.businessAdminLoading ? `<div class="business-admin-loading" role="status">Loading business profiles…</div>` : profileRows.length ? `<div class="business-admin-profile-table" role="table" aria-label="Company and founder profiles">
+        <div class="business-admin-profile-header" role="row"><span role="columnheader">Profile</span><span role="columnheader">Type</span><span role="columnheader">Status</span><span role="columnheader">Ownership</span><span role="columnheader">Updated</span><span role="columnheader">Actions</span></div>
+        ${profileRows.map((profile, index) => businessAdminProfileRow(profile, index, profileRows.length)).join("")}
+      </div>` : `<div class="business-admin-no-results"><span>${icon("search", 24)}</span><h3>No matching profiles</h3><p>Try a different name, profile type, industry, or status.</p><button class="secondary-button" data-action="clear-business-admin-filters">Clear filters</button></div>`}
+      ${state.businessAdminLoading ? "" : businessAdminPaginationTemplate()}
+    </section>` : `<section class="business-review-list">${state.businessAdminLoading ? `<div class="business-admin-loading" role="status">Loading review queue…</div>` : queue.map((item) => `<article><div class="business-review-head"><span><i class="status-pill">${escapeHtml(item.status)}</i><small>${new Date(item.created_at).toLocaleString("en-IN")}</small></span><strong>${escapeHtml(view === "claims" ? item.claimant_name : item.submitter_name)}</strong><a href="mailto:${escapeHtml(view === "claims" ? item.claimant_email : item.submitter_email)}">${escapeHtml(view === "claims" ? item.claimant_email : item.submitter_email)}</a></div><div class="business-review-body"><span>${escapeHtml(item.profile_type)} profile</span><p>${escapeHtml(view === "claims" ? item.evidence || item.claimant_role : item.summary)}</p>${view === "claims" && item.proof_url ? `<a href="${escapeHtml(item.proof_url)}" target="_blank" rel="noopener noreferrer">Open proof link</a>` : ""}</div>${item.status === "pending" ? `<div class="business-review-actions"><button class="secondary-button" data-business-review="${item.id}" data-review-kind="${view}" data-review-status="rejected">${icon("close", 14)}Reject</button><button class="primary-button" data-business-review="${item.id}" data-review-kind="${view}" data-review-status="approved">${icon("check", 14)}Approve${view === "suggestions" ? " suggestion" : ""}</button></div>` : ""}</article>`).join("") || `<div class="empty-state">No ${view === "claims" ? "profile claims" : "suggested changes"} yet.</div>`}</section>`}`;
   return adminShellTemplate("Business network", "Manage profiles, ownership claims, private contact data, and community-suggested corrections.", content, `<div class="member-header-actions"><button class="secondary-button" data-route="/business-network">${icon("eye", 15)}View network</button><button class="secondary-button" data-action="create-founder-profile">${icon("users", 15)}Add founder</button><button class="primary-button" data-action="create-company-profile">${icon("gauge", 15)}Add company</button></div>`);
 }
 
@@ -6720,6 +6806,30 @@ function render() {
 }
 
 function bindInputs() {
+  document.getElementById("businessAdminSearch")?.addEventListener("input", (event) => {
+    state.businessAdminFilters.q = event.target.value;
+  });
+  document.getElementById("businessAdminSearchForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.businessAdminFilters.page = 1;
+    loadBusinessAdmin();
+  });
+  document.getElementById("businessAdminTypeFilter")?.addEventListener("change", (event) => {
+    state.businessAdminFilters.profileType = event.target.value;
+    if (event.target.value === "person") state.businessAdminFilters.industry = "";
+    state.businessAdminFilters.page = 1;
+    loadBusinessAdmin();
+  });
+  document.getElementById("businessAdminIndustryFilter")?.addEventListener("change", (event) => {
+    state.businessAdminFilters.industry = event.target.value;
+    state.businessAdminFilters.page = 1;
+    loadBusinessAdmin();
+  });
+  document.getElementById("businessAdminStatusFilter")?.addEventListener("change", (event) => {
+    state.businessAdminFilters.status = event.target.value;
+    state.businessAdminFilters.page = 1;
+    loadBusinessAdmin();
+  });
   document.getElementById("businessNetworkSearch")?.addEventListener("input", (event) => {
     state.businessNetwork.q = event.target.value;
   });
@@ -7266,6 +7376,11 @@ document.addEventListener("click", async (event) => {
     if (story) recordRecommendationActivity(story, "share");
   }
 
+  const activeBusinessMenu = event.target.closest(".business-row-action-menu");
+  document.querySelectorAll(".business-row-action-menu[open]").forEach((menu) => {
+    if (menu !== activeBusinessMenu) menu.removeAttribute("open");
+  });
+
   const target = event.target.closest("button");
   if (!target) return;
 
@@ -7373,6 +7488,7 @@ document.addEventListener("click", async (event) => {
   const addBusinessLink = target.dataset.addBusinessLink;
   const removeBusinessLink = target.dataset.removeBusinessLink;
   const businessAdminView = target.dataset.businessAdminView;
+  const businessAdminPage = target.dataset.businessAdminPage;
   const businessAdminStatus = target.dataset.businessAdminStatus;
   const businessAdminDelete = target.dataset.businessAdminDelete;
   const businessReview = target.dataset.businessReview;
@@ -7533,7 +7649,28 @@ document.addEventListener("click", async (event) => {
 
   if (businessAdminView) {
     state.businessAdminView = businessAdminView;
-    render();
+    if (businessAdminView === "profiles") state.businessAdminFilters.page = 1;
+    state.businessMessage = "";
+    await loadBusinessAdmin();
+    return;
+  }
+
+  if (businessAdminPage) {
+    const page = Number(businessAdminPage);
+    const totalPages = Number(state.businessAdmin.pagination?.totalPages || 1);
+    if (!Number.isInteger(page) || page < 1 || page > totalPages || page === state.businessAdminFilters.page) return;
+    state.businessAdminFilters.page = page;
+    await loadBusinessAdmin();
+    document.querySelector(".business-admin-directory")?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "start",
+    });
+    return;
+  }
+
+  if (action === "clear-business-admin-filters") {
+    state.businessAdminFilters = { q: "", profileType: "all", industry: "", status: "", page: 1 };
+    await loadBusinessAdmin();
     return;
   }
 
