@@ -27,7 +27,7 @@ Completed:
 - Push subscription storage and admin push-send endpoint.
 - Server-side recommendation training with persisted user profiles, story scores, transparent factors, feedback controls, and admin rebuild/status APIs.
 - SQLite FTS5 full-text search with filters, autocomplete, fallback search, and admin index rebuild.
-- Business Network discovery for companies and founders, linked roles, subscriber-only contact details, profile claiming, suggested corrections, and staff review workflows.
+- Business Network discovery for companies and founders with 12-profile server pagination, linked roles, subscriber-only contact details, profile claiming, suggested corrections, and staff review workflows.
 
 Remaining production services to connect with live provider credentials:
 

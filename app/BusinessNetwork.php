@@ -270,9 +270,8 @@ function business_notify_staff(string $title, string $body, string $url): void
     foreach ($stmt->fetchAll() as $user) $insert->execute([uuid_value('NOT-'), $user['id'], 'business_network', $title, $body, $url, now_iso()]);
 }
 
-function business_list_profiles(string $type, array $filters, ?array $session = null, bool $admin = false): array
+function business_profile_query_filters(array $config, array $filters, ?array $session, bool $admin): array
 {
-    $config = business_profile_config($type);
     $q = trim((string) ($filters['q'] ?? ''));
     $industry = trim((string) ($filters['industry'] ?? ''));
     $status = trim((string) ($filters['status'] ?? ($admin ? '' : 'published')));
@@ -293,10 +292,46 @@ function business_list_profiles(string $type, array $filters, ?array $session = 
         $args[] = $session['user']['id'];
         $args[] = $session['user']['id'];
     }
-    $sql = "SELECT p.* FROM {$config['table']} p" . ($where ? ' WHERE ' . implode(' AND ', $where) : '') . " ORDER BY p.verified DESC, p.updated_at DESC, p.{$config['nameColumn']} ASC LIMIT 200";
+    return ['where' => $where, 'args' => $args];
+}
+
+function business_list_profiles(string $type, array $filters, ?array $session = null, bool $admin = false): array
+{
+    $config = business_profile_config($type);
+    $query = business_profile_query_filters($config, $filters, $session, $admin);
+    $limit = max(1, min(200, (int) ($filters['limit'] ?? 200)));
+    $offset = max(0, (int) ($filters['offset'] ?? 0));
+    $whereSql = $query['where'] ? ' WHERE ' . implode(' AND ', $query['where']) : '';
+    $sql = "SELECT p.* FROM {$config['table']} p{$whereSql} ORDER BY p.verified DESC, p.updated_at DESC, p.{$config['nameColumn']} ASC LIMIT {$limit} OFFSET {$offset}";
     $stmt = Database::pdo()->prepare($sql);
-    $stmt->execute($args);
+    $stmt->execute($query['args']);
     return array_map(fn($row) => business_decode_row($row, $config['type'], $session), $stmt->fetchAll());
+}
+
+function business_paginated_profiles(string $type, array $filters, ?array $session = null, int $perPage = 12): array
+{
+    $config = business_profile_config($type);
+    $query = business_profile_query_filters($config, $filters, $session, false);
+    $whereSql = $query['where'] ? ' WHERE ' . implode(' AND ', $query['where']) : '';
+    $count = Database::pdo()->prepare("SELECT COUNT(*) FROM {$config['table']} p{$whereSql}");
+    $count->execute($query['args']);
+    $total = (int) $count->fetchColumn();
+    $perPage = max(1, min(48, $perPage));
+    $totalPages = max(1, (int) ceil($total / $perPage));
+    $page = max(1, min($totalPages, (int) ($filters['page'] ?? 1)));
+    $profiles = business_list_profiles($config['type'], array_merge($filters, [
+        'limit' => $perPage,
+        'offset' => ($page - 1) * $perPage,
+    ]), $session);
+    return [
+        'profiles' => $profiles,
+        'pagination' => [
+            'page' => $page,
+            'perPage' => $perPage,
+            'total' => $total,
+            'totalPages' => $totalPages,
+        ],
+    ];
 }
 
 function business_admin_queue(string $kind): array
@@ -366,9 +401,11 @@ function handle_business_api(string $path, string $method): bool
     }
     if ($method === 'GET' && $path === '/api/business-network') {
         $type = (string) ($_GET['type'] ?? 'companies');
+        $listing = business_paginated_profiles($type, $_GET, $session, 12);
         json_response([
             'type' => $type,
-            'profiles' => business_list_profiles($type, $_GET, $session),
+            'profiles' => $listing['profiles'],
+            'pagination' => $listing['pagination'],
             'industries' => array_values(array_filter(array_column(Database::pdo()->query("SELECT DISTINCT industry FROM business_companies WHERE status = 'published' ORDER BY industry")->fetchAll(), 'industry'))),
             'contactAccess' => business_has_contact_access($session),
         ]);

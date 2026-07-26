@@ -1630,6 +1630,7 @@ const state = {
   authForm: { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false },
   authPasswordVisible: false,
   authBusy: false,
+  pendingBusinessListing: sessionStorage.getItem("inkriver-business-listing-intent") === "1",
   authorIntent: sessionStorage.getItem("inkriver-author-intent") === "1",
   authorMessage: "",
   sessionReady: false,
@@ -1784,7 +1785,7 @@ const state = {
   supportTicketDetail: null,
   supportTicketForm: { subject: "", category: "Account", priority: "Normal", details: "" },
   supportReply: { body: "", visibility: "public", status: "Open", priority: "Normal", owner: "Support" },
-  businessNetwork: { type: "companies", profiles: [], industries: [], q: "", industry: "", loaded: false, loading: false },
+  businessNetwork: { type: "companies", profiles: [], industries: [], q: "", industry: "", page: 1, perPage: 12, total: 0, totalPages: 1, loaded: false, loading: false },
   businessProfile: null,
   businessProfileLoading: false,
   businessProfileMessage: "",
@@ -2757,6 +2758,16 @@ function applyAuthenticatedUser(user, newAccount = false) {
   state.authForm = { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false };
 }
 
+function continueBusinessListingIntent() {
+  state.pendingBusinessListing = false;
+  sessionStorage.removeItem("inkriver-business-listing-intent");
+  state.onboardingOpen = false;
+  state.dashboardSection = "business";
+  state.businessEditorType = "";
+  state.businessMessage = "";
+  setRoute("/dashboard");
+}
+
 async function submitAuthentication() {
   state.authBusy = true;
   state.loginMessage = "";
@@ -2773,7 +2784,8 @@ async function submitAuthentication() {
     await loadRecommendationFeed();
     state.loginMessage = registering ? "Account created securely." : "Signed in successfully.";
     if (payload.user.role === "admin") await loadAdminUsers();
-    if (!state.onboardingOpen) setRoute(payload.user.role === "admin" ? "/admin" : "/dashboard");
+    if (state.pendingBusinessListing) continueBusinessListingIntent();
+    else if (!state.onboardingOpen) setRoute(payload.user.role === "admin" ? "/admin" : "/dashboard");
     else render();
   } catch (error) {
     state.loginMessage = error.message;
@@ -2996,6 +3008,8 @@ function icon(name, size = 17) {
     sun: '<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path>',
     moon: '<path d="M20.9 15.2A8.6 8.6 0 0 1 8.8 3.1 8.6 8.6 0 1 0 20.9 15.2Z"></path>',
     upload: '<path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M5 20h14"></path>',
+    chevronLeft: '<path d="m15 18-6-6 6-6"></path>',
+    chevronRight: '<path d="m9 18 6-6-6-6"></path>',
   };
   return `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.spark}</svg>`;
 }
@@ -3124,9 +3138,14 @@ async function loadBusinessNetwork() {
     const params = new URLSearchParams({ type: state.businessNetwork.type });
     if (state.businessNetwork.q) params.set("q", state.businessNetwork.q);
     if (state.businessNetwork.industry && state.businessNetwork.type === "companies") params.set("industry", state.businessNetwork.industry);
+    params.set("page", String(state.businessNetwork.page || 1));
     const payload = await apiRequest(`/api/business-network?${params}`);
     state.businessNetwork.profiles = payload.profiles || [];
     state.businessNetwork.industries = payload.industries || [];
+    state.businessNetwork.page = Number(payload.pagination?.page || 1);
+    state.businessNetwork.perPage = Number(payload.pagination?.perPage || 12);
+    state.businessNetwork.total = Number(payload.pagination?.total || 0);
+    state.businessNetwork.totalPages = Number(payload.pagination?.totalPages || 1);
     state.businessNetwork.loaded = true;
   } catch (error) {
     state.businessMessage = error.message;
@@ -3199,6 +3218,38 @@ function businessNetworkCard(profile, type) {
     </button>`;
 }
 
+function businessPaginationTemplate() {
+  const current = state.businessNetwork.page;
+  const totalPages = state.businessNetwork.totalPages;
+  if (totalPages <= 1) return "";
+  const pages = totalPages <= 7
+    ? Array.from({ length: totalPages }, (_, index) => index + 1)
+    : [1, current > 4 ? "start-ellipsis" : null, current - 1, current, current + 1, current < totalPages - 3 ? "end-ellipsis" : null, totalPages]
+      .filter((value, index, values) => value && (typeof value === "string" || (value > 1 && value < totalPages) || value === 1 || value === totalPages) && values.indexOf(value) === index);
+  return `<nav class="business-pagination" aria-label="Business network pages">
+    <button type="button" data-business-page="${current - 1}" aria-label="Previous page" ${current <= 1 ? "disabled" : ""}>${icon("chevronLeft", 14)}<span>Previous</span></button>
+    <div>${pages.map((page) => typeof page === "string"
+      ? `<span class="business-page-ellipsis" aria-hidden="true">…</span>`
+      : `<button type="button" data-business-page="${page}" aria-label="Page ${page}" ${page === current ? `class="active" aria-current="page"` : ""}>${page}</button>`).join("")}</div>
+    <button type="button" data-business-page="${current + 1}" aria-label="Next page" ${current >= totalPages ? "disabled" : ""}><span>Next</span>${icon("chevronRight", 14)}</button>
+  </nav>`;
+}
+
+function businessListingCtaTemplate() {
+  return `<section class="business-listing-cta" aria-labelledby="businessListingCtaTitle">
+    <span class="business-cta-orbit orbit-one" aria-hidden="true"></span>
+    <span class="business-cta-orbit orbit-two" aria-hidden="true"></span>
+    <div class="business-cta-icon" aria-hidden="true">${icon("gauge", 26)}</div>
+    <div class="business-cta-copy">
+      <span>Join the InkRiver Business Network</span>
+      <h2 id="businessListingCtaTitle">Put your business story where the right people can find it.</h2>
+      <p>Create a trusted company or founder profile, connect your leadership graph, and manage every detail from one dashboard.</p>
+      <div><i>${icon("check", 13)}Discoverable profile</i><i>${icon("check", 13)}Linked founders & companies</i><i>${icon("check", 13)}Private member contacts</i></div>
+    </div>
+    <button type="button" class="business-cta-button" data-action="list-business-profile">List your profile ${icon("chevronRight", 16)}</button>
+  </section>`;
+}
+
 function businessNetworkTemplate() {
   const type = state.businessNetwork.type === "founders" ? "person" : "company";
   const profiles = state.businessNetwork.profiles;
@@ -3215,9 +3266,11 @@ function businessNetworkTemplate() {
         </div>
       </section>
       <section class="business-network-body">
-        <div class="business-results-head"><div><strong>${profiles.length}</strong><span>${type === "company" ? "companies" : "founders"} in the network</span></div>${type === "company" ? `<label><span>Industry</span><select id="businessIndustryFilter"><option value="">All industries</option>${state.businessNetwork.industries.map((industry) => `<option value="${escapeHtml(industry)}" ${state.businessNetwork.industry === industry ? "selected" : ""}>${escapeHtml(industry)}</option>`).join("")}</select></label>` : ""}${state.user ? `<button class="secondary-button" data-dashboard-business="${type}">${icon("pen", 15)}Create ${type === "company" ? "company" : "founder"} profile</button>` : `<button class="secondary-button" data-action="open-login">${icon("lock", 15)}Sign in to list a profile</button>`}</div>
+        <div id="businessResults" class="business-results-head"><div><strong>${state.businessNetwork.total}</strong><span>${type === "company" ? "companies" : "founders"} in the network</span></div>${type === "company" ? `<label><span>Industry</span><select id="businessIndustryFilter"><option value="">All industries</option>${state.businessNetwork.industries.map((industry) => `<option value="${escapeHtml(industry)}" ${state.businessNetwork.industry === industry ? "selected" : ""}>${escapeHtml(industry)}</option>`).join("")}</select></label>` : ""}${state.user ? `<button class="secondary-button" data-dashboard-business="${type}">${icon("pen", 15)}Create ${type === "company" ? "company" : "founder"} profile</button>` : `<button class="secondary-button" data-action="list-business-profile">${icon("lock", 15)}Sign in to list a profile</button>`}</div>
         ${state.businessMessage ? `<div class="form-message">${escapeHtml(state.businessMessage)}</div>` : ""}
         <div class="business-card-grid">${state.businessNetwork.loading ? `<div class="empty-state">Loading the business network…</div>` : profiles.length ? profiles.map((profile) => businessNetworkCard(profile, type)).join("") : `<div class="business-empty"><span>${icon("search", 28)}</span><h2>No profiles found</h2><p>Try a broader search or be the first to add a profile in this sector.</p></div>`}</div>
+        ${state.businessNetwork.loading ? "" : businessPaginationTemplate()}
+        ${businessListingCtaTemplate()}
       </section>
     </main>`;
 }
@@ -3281,6 +3334,7 @@ function businessProfilePageTemplate() {
         </aside>
       </section>
       <div class="suggest-change-link">Something outdated? <button data-business-suggest="${profile.id}" data-business-profile-type="${type}" data-business-profile-name="${escapeHtml(name)}">Suggest a change</button></div>
+      ${businessListingCtaTemplate()}
     </main>`;
 }
 
@@ -6670,10 +6724,14 @@ function bindInputs() {
     state.businessNetwork.q = event.target.value;
   });
   document.getElementById("businessNetworkSearch")?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") loadBusinessNetwork();
+    if (event.key === "Enter") {
+      state.businessNetwork.page = 1;
+      loadBusinessNetwork();
+    }
   });
   document.getElementById("businessIndustryFilter")?.addEventListener("change", (event) => {
     state.businessNetwork.industry = event.target.value;
+    state.businessNetwork.page = 1;
     loadBusinessNetwork();
   });
   document.querySelectorAll("[data-business-field]").forEach((field) => {
@@ -7306,6 +7364,7 @@ document.addEventListener("click", async (event) => {
   const featurePreset = target.dataset.featurePreset;
   const rollbackImport = target.dataset.rollbackImport;
   const businessType = target.dataset.businessType;
+  const businessPage = target.dataset.businessPage;
   const dashboardBusiness = target.dataset.dashboardBusiness;
   const businessEdit = target.dataset.businessEdit;
   const businessProfileType = target.dataset.businessProfileType;
@@ -7321,8 +7380,21 @@ document.addEventListener("click", async (event) => {
   if (businessType) {
     state.businessNetwork.type = businessType;
     state.businessNetwork.industry = "";
+    state.businessNetwork.page = 1;
     state.businessNetwork.profiles = [];
     loadBusinessNetwork();
+    return;
+  }
+
+  if (businessPage) {
+    const page = Number(businessPage);
+    if (!Number.isInteger(page) || page < 1 || page > state.businessNetwork.totalPages || page === state.businessNetwork.page) return;
+    state.businessNetwork.page = page;
+    await loadBusinessNetwork();
+    document.getElementById("businessResults")?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "start",
+    });
     return;
   }
 
@@ -7339,7 +7411,22 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "search-business-network") {
+    state.businessNetwork.page = 1;
     loadBusinessNetwork();
+    return;
+  }
+
+  if (action === "list-business-profile") {
+    if (state.user) {
+      continueBusinessListingIntent();
+    } else {
+      state.pendingBusinessListing = true;
+      sessionStorage.setItem("inkriver-business-listing-intent", "1");
+      state.authMode = "register";
+      state.loginOpen = true;
+      state.loginMessage = "Create an account or sign in to list a company or founder profile.";
+      render();
+    }
     return;
   }
 
@@ -8781,6 +8868,10 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "close-login") {
     state.loginOpen = false;
+    if (state.pendingBusinessListing) {
+      state.pendingBusinessListing = false;
+      sessionStorage.removeItem("inkriver-business-listing-intent");
+    }
     state.resetToken = "";
     state.resetPassword = "";
     if (new URLSearchParams(window.location.search).get("reset_token")) window.history.replaceState({}, "", "/");
@@ -9290,6 +9381,15 @@ async function bootstrapApp() {
     state.loginOpen = !state.user;
     state.loginMessage = "Administrator access is required.";
   }
+  if (state.user && state.pendingBusinessListing) {
+    state.pendingBusinessListing = false;
+    sessionStorage.removeItem("inkriver-business-listing-intent");
+    state.onboardingOpen = false;
+    state.dashboardSection = "business";
+    state.businessEditorType = "";
+    state.path = "/dashboard";
+    window.history.replaceState({}, "", "/dashboard");
+  }
   if (new URLSearchParams(window.location.search).get("login") === "required" && !state.user) {
     state.loginOpen = true;
     state.loginMessage = "Sign in to continue.";
@@ -9303,6 +9403,7 @@ async function bootstrapApp() {
   if (state.path.startsWith("/business-network")) loadBusinessNetwork();
   if (state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) loadBusinessProfileRoute();
   if (state.path.startsWith("/admin/business-network")) loadBusinessAdmin();
+  if (state.path.startsWith("/dashboard") && state.dashboardSection === "business") loadMyBusinessProfiles();
   if (state.user?.role === "admin") {
     await loadAdminUsers();
     await loadMediaAssets();

@@ -80,6 +80,22 @@ $company = business_save_profile('company', [
 ], $adminSession);
 assert_true(count($company['people'] ?? []) === 1, 'company links to an existing founder profile');
 assert_true(($company['logo_url'] ?? '') === '/uploads/avatars/test-company.png', 'company profile logo is stored');
+for ($index = 1; $index <= 24; $index++) {
+    business_save_profile('company', [
+        'name' => 'Pagination Company ' . str_pad((string) $index, 2, '0', STR_PAD_LEFT),
+        'industry' => $index % 2 === 0 ? 'Technology' : 'Services',
+        'tagline' => 'Pagination test profile',
+    ], $adminSession);
+}
+$firstBusinessPage = business_paginated_profiles('company', ['page' => 1], null, 12);
+$thirdBusinessPage = business_paginated_profiles('company', ['page' => 3], null, 12);
+assert_true(
+    count($firstBusinessPage['profiles']) === 12
+    && ($firstBusinessPage['pagination']['total'] ?? 0) === 25
+    && ($firstBusinessPage['pagination']['totalPages'] ?? 0) === 3,
+    'business network returns 12 profiles with total page metadata'
+);
+assert_true(count($thirdBusinessPage['profiles']) === 1 && ($thirdBusinessPage['pagination']['page'] ?? 0) === 3, 'business network returns the final partial page');
 
 $publicCompany = business_get_profile('company', $company['slug'], null);
 assert_true(($publicCompany['contactLocked'] ?? false) && ($publicCompany['contact_email'] ?? '') === '', 'public company contact details stay hidden');
