@@ -1506,8 +1506,8 @@ function mcp_handle_request(array $request): ?array
             'initialize' => [
                 'protocolVersion' => '2025-11-25',
                 'capabilities' => ['tools' => ['listChanged' => false], 'resources' => ['listChanged' => false]],
-                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Publishing and Business Network MCP', 'version' => '1.1.0'],
-                'instructions' => 'For articles, use get_blog_editor_schema before create_or_update_blog. For companies and founders, use get_business_profile_schema, resolve relationships with list_business_profiles, then call create_or_update_company or create_or_update_founder.',
+                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Publishing and Business Network MCP', 'version' => '1.2.0'],
+                'instructions' => 'For articles, use get_blog_editor_schema before create_or_update_blog. For companies and founders, use get_business_profile_schema, resolve relationships with list_business_profiles, upload logos or headshots with upload_business_profile_image, then pass the returned URL to create_or_update_company or create_or_update_founder.',
             ],
             'ping' => new stdClass(),
             'tools/list' => ['tools' => array_merge(mcp_tool_definitions(), business_mcp_tool_definitions())],

@@ -63,19 +63,23 @@ $adminSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin',
 $founder = business_save_profile('person', [
     'full_name' => 'Smoke Founder',
     'headline' => 'Founder and builder',
+    'image_url' => '/uploads/avatars/test-founder.png',
     'expertise' => ['Product', 'Operations'],
     'contact_email' => 'founder@example.com',
 ], $adminSession);
 assert_true(($founder['slug'] ?? '') === 'smoke-founder', 'founder profile slug is generated');
+assert_true(($founder['image_url'] ?? '') === '/uploads/avatars/test-founder.png', 'founder profile image is stored');
 
 $company = business_save_profile('company', [
     'name' => 'Smoke Ventures',
+    'logo_url' => '/uploads/avatars/test-company.png',
     'industry' => 'Technology',
     'tagline' => 'A test business profile',
     'contact_email' => 'hello@smoke.example',
     'people' => [['personId' => $founder['id'], 'roleTitle' => 'Founder & CEO', 'isFounder' => true]],
 ], $adminSession);
 assert_true(count($company['people'] ?? []) === 1, 'company links to an existing founder profile');
+assert_true(($company['logo_url'] ?? '') === '/uploads/avatars/test-company.png', 'company profile logo is stored');
 
 $publicCompany = business_get_profile('company', $company['slug'], null);
 assert_true(($publicCompany['contactLocked'] ?? false) && ($publicCompany['contact_email'] ?? '') === '', 'public company contact details stay hidden');
@@ -86,5 +90,16 @@ assert_true(($memberCompany['contact_email'] ?? '') === 'hello@smoke.example', '
 
 $fieldMap = business_mcp_field_map();
 assert_true(in_array('contact_email', $fieldMap['company']['fields'], true) && in_array('companies', $fieldMap['person']['fields'], true), 'MCP schema maps private contacts and founder-company relationships');
+$mcpToolNames = array_column(business_mcp_tool_definitions(), 'name');
+assert_true(in_array('upload_business_profile_image', $mcpToolNames, true), 'MCP exposes business profile image upload tool');
+$mcpImage = business_mcp_call_tool('upload_business_profile_image', [
+    'profileType' => 'founder',
+    'dataBase64' => 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'filename' => 'smoke-founder.png',
+    'altText' => 'Smoke founder headshot',
+], $adminSession);
+assert_true(($mcpImage['assignToField'] ?? '') === 'image_url' && !empty($mcpImage['asset']['url']), 'MCP uploads founder image and maps it to image_url');
+$mcpImagePath = $root . str_replace('/', DIRECTORY_SEPARATOR, (string) $mcpImage['asset']['url']);
+if (is_file($mcpImagePath)) unlink($mcpImagePath);
 
 echo "Smoke tests passed\n";

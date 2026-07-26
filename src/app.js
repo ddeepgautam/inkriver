@@ -1792,6 +1792,7 @@ const state = {
   businessEditorType: "",
   businessEditingId: "",
   businessEditingAdmin: false,
+  businessImageUploading: false,
   businessForm: {},
   businessLinkQuery: "",
   businessLinkSuggestions: [],
@@ -2994,6 +2995,7 @@ function icon(name, size = 17) {
     play: '<path d="m8 5 11 7-11 7Z"></path>',
     sun: '<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path>',
     moon: '<path d="M20.9 15.2A8.6 8.6 0 0 1 8.8 3.1 8.6 8.6 0 1 0 20.9 15.2Z"></path>',
+    upload: '<path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M5 20h14"></path>',
   };
   return `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.spark}</svg>`;
 }
@@ -3176,7 +3178,8 @@ async function loadBusinessAdmin() {
 function businessAvatar(profile, type, className = "") {
   const image = type === "company" ? profile.logo_url : profile.image_url;
   const name = type === "company" ? profile.name : profile.full_name;
-  return `<span class="business-avatar ${type} ${className}">${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy" decoding="async" />` : `<b>${escapeHtml((name || "?").slice(0, 2).toUpperCase())}</b>`}</span>`;
+  const imageLabel = type === "company" ? `${name || "Company"} logo` : `Photo of ${name || "founder"}`;
+  return `<span class="business-avatar ${type} ${className}">${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(imageLabel)}" loading="lazy" decoding="async" />` : `<b>${escapeHtml((name || "?").slice(0, 2).toUpperCase())}</b>`}</span>`;
 }
 
 function businessProfileRoute(profile, type) {
@@ -3297,18 +3300,70 @@ function businessFormField(key, label, type = "text", placeholder = "") {
   return `<label><span>${label}</span><input type="${type}" data-business-field="${key}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" /></label>`;
 }
 
+function businessProfileImageEditor(type) {
+  const company = type === "company";
+  const imageKey = company ? "logo_url" : "image_url";
+  const image = state.businessForm[imageKey] || "";
+  const name = company ? state.businessForm.name : state.businessForm.full_name;
+  return `<div class="business-image-editor">
+    <div class="business-image-preview ${company ? "company" : "person"}">
+      ${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(company ? `${name || "Company"} logo preview` : `Photo preview for ${name || "founder"}`)}" />` : `<span>${icon(company ? "gauge" : "users", 28)}<small>${company ? "Logo" : "Photo"}</small></span>`}
+    </div>
+    <div class="business-image-controls">
+      <div><strong>${company ? "Company logo" : "Founder profile photo"}</strong><p>${company ? "Use a square logo with a clean background." : "Use a clear, recent square headshot."} JPG, PNG, WebP, or GIF up to 4 MB.</p></div>
+      <div class="business-image-actions">
+        <label class="secondary-button business-image-upload ${state.businessImageUploading ? "disabled" : ""}">${icon("upload", 15)}${state.businessImageUploading ? "Uploading…" : image ? "Replace image" : "Upload image"}<input id="businessProfileImageFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" ${state.businessImageUploading ? "disabled" : ""} /></label>
+        ${image ? `<button type="button" class="secondary-button" data-action="remove-business-profile-image">${icon("close", 14)}Remove</button>` : ""}
+      </div>
+      <label class="business-image-url"><span>Or use an image URL</span><input type="url" data-business-field="${imageKey}" value="${escapeHtml(image)}" placeholder="https://example.com/${company ? "logo.png" : "photo.jpg"}" /></label>
+    </div>
+  </div>`;
+}
+
+async function uploadBusinessProfileImage(file) {
+  if (!file) return;
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+  if (!allowed.has(file.type)) {
+    state.businessMessage = "Use a JPG, PNG, WebP, or GIF image.";
+    render();
+    return;
+  }
+  if (file.size > 4 * 1024 * 1024) {
+    state.businessMessage = "Profile images must be 4 MB or smaller.";
+    render();
+    return;
+  }
+  state.businessImageUploading = true;
+  state.businessMessage = "Uploading profile image…";
+  render();
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("profileType", state.businessEditorType === "company" ? "company" : "founder");
+    const payload = await apiRequest("/api/business-network/media", { method: "POST", body: formData });
+    const imageKey = state.businessEditorType === "company" ? "logo_url" : "image_url";
+    state.businessForm[imageKey] = payload.url;
+    state.businessMessage = `${state.businessEditorType === "company" ? "Company logo" : "Founder photo"} uploaded. Save the profile to publish it.`;
+  } catch (error) {
+    state.businessMessage = error.message;
+  } finally {
+    state.businessImageUploading = false;
+    render();
+  }
+}
+
 function businessEditorTemplate(type) {
   const company = type === "company";
   return `<form id="businessProfileForm" class="business-profile-form">
     <div class="business-editor-head"><div><span>${state.businessEditingId ? "Editing" : "New profile"}</span><h2>${state.businessEditingId ? "Update" : "Create"} ${company ? "company" : "founder"} profile</h2><p>Complete profiles are easier to discover and verify.</p></div><button type="button" class="icon-button" data-action="close-business-editor" aria-label="Close editor">${icon("close", 17)}</button></div>
-    <section class="business-form-section"><div class="business-form-section-head"><div><span>Identity</span><h3>Core profile</h3></div></div><div class="business-form-grid">
-      ${company ? businessFormField("name", "Company name") + businessFormField("legal_name", "Legal name") + businessFormField("tagline", "One-line pitch") + businessFormField("founded_on", "Foundation date", "date") + businessFormField("industry", "Primary industry") + businessFormField("company_type", "Company type", "text", "Private, public, nonprofit…") : businessFormField("full_name", "Full name") + businessFormField("headline", "Professional headline") + businessFormField("location", "Location") + businessFormField("image_url", "Profile image URL", "url")}
+    <section class="business-form-section"><div class="business-form-section-head"><div><span>Identity</span><h3>Core profile</h3></div></div>${businessProfileImageEditor(type)}<div class="business-form-grid">
+      ${company ? businessFormField("name", "Company name") + businessFormField("legal_name", "Legal name") + businessFormField("tagline", "One-line pitch") + businessFormField("founded_on", "Foundation date", "date") + businessFormField("industry", "Primary industry") + businessFormField("company_type", "Company type", "text", "Private, public, nonprofit…") : businessFormField("full_name", "Full name") + businessFormField("headline", "Professional headline") + businessFormField("location", "Location")}
       ${businessFormField(company ? "description" : "biography", company ? "Company overview" : "Biography", "textarea")}
       ${businessFormField(company ? "mission" : "founder_story", company ? "Mission" : "Founder story", "textarea")}
       ${company ? businessFormField("vision", "Vision", "textarea") : ""}
     </div></section>
     ${company ? `<section class="business-form-section"><div class="business-form-section-head"><div><span>Business intelligence</span><h3>Scale, stage, and market</h3></div></div><div class="business-form-grid">${businessFormField("business_model", "Business model")}${businessFormField("operating_status", "Operating status")}${businessFormField("funding_stage", "Funding stage")}${businessFormField("funding_total", "Total funding")}${businessFormField("employee_range", "Team size")}${businessFormField("revenue_range", "Revenue range")}${businessFormField("products", "Products (comma separated)")}${businessFormField("technologies", "Technologies")}${businessFormField("markets", "Markets")}${businessFormField("keywords", "Keywords")}${businessFormField("milestones", "Milestones")}</div></section>` : `<section class="business-form-section"><div class="business-form-section-head"><div><span>Background</span><h3>Expertise and achievements</h3></div></div><div class="business-form-grid">${businessFormField("expertise", "Expertise (comma separated)")}${businessFormField("education", "Education")}${businessFormField("achievements", "Achievements")}${businessFormField("languages", "Languages")}</div></section>`}
-    <section class="business-form-section"><div class="business-form-section-head"><div><span>Location & links</span><h3>Where to find ${company ? "the business" : "this founder"}</h3></div></div><div class="business-form-grid">${company ? businessFormField("headquarters", "Headquarters") : ""}${businessFormField("city", "City")}${businessFormField("state_region", "State / region")}${businessFormField("country", "Country")}${businessFormField("website", "Website", "url")}${businessFormField("linkedin_url", "LinkedIn URL", "url")}${businessFormField("x_url", "X / Twitter URL", "url")}${company ? businessFormField("logo_url", "Logo URL", "url") : ""}</div></section>
+    <section class="business-form-section"><div class="business-form-section-head"><div><span>Location & links</span><h3>Where to find ${company ? "the business" : "this founder"}</h3></div></div><div class="business-form-grid">${company ? businessFormField("headquarters", "Headquarters") : ""}${businessFormField("city", "City")}${businessFormField("state_region", "State / region")}${businessFormField("country", "Country")}${businessFormField("website", "Website", "url")}${businessFormField("linkedin_url", "LinkedIn URL", "url")}${businessFormField("x_url", "X / Twitter URL", "url")}</div></section>
     ${businessLinkedProfilesEditor(type)}
     <section class="business-form-section private-section"><div class="business-form-section-head"><div><span>${icon("lock", 14)}Private contact data</span><h3>Subscriber-only contact details</h3></div><p>These fields are never shown to public visitors.</p></div><div class="business-form-grid">${company ? businessFormField("contact_name", "Contact person") + businessFormField("contact_role", "Contact role") : ""}${businessFormField("contact_email", "Contact email", "email")}${businessFormField("contact_phone", "Contact number", "tel")}${company ? businessFormField("contact_address", "Contact address", "textarea") : ""}</div></section>
     <div class="business-form-actions"><span>${escapeHtml(state.businessMessage || "You can update this profile later from your dashboard.")}</span><button type="button" class="secondary-button" data-action="close-business-editor">Cancel</button><button class="primary-button" type="submit">${icon("check", 15)}Save ${company ? "company" : "founder"} profile</button></div>
@@ -6624,7 +6679,13 @@ function bindInputs() {
   document.querySelectorAll("[data-business-field]").forEach((field) => {
     const update = (event) => { state.businessForm[event.target.dataset.businessField] = event.target.value; };
     field.addEventListener("input", update);
-    field.addEventListener("change", update);
+    field.addEventListener("change", (event) => {
+      update(event);
+      if (["logo_url", "image_url"].includes(event.target.dataset.businessField)) render();
+    });
+  });
+  document.getElementById("businessProfileImageFile")?.addEventListener("change", (event) => {
+    uploadBusinessProfileImage(event.target.files?.[0]);
   });
   document.querySelectorAll("[data-business-link-role]").forEach((field) => {
     field.addEventListener("input", (event) => {
@@ -7270,6 +7331,7 @@ document.addEventListener("click", async (event) => {
     state.businessEditorType = dashboardBusiness;
     state.businessEditingId = "";
     state.businessEditingAdmin = false;
+    state.businessImageUploading = false;
     state.businessForm = emptyBusinessForm(dashboardBusiness);
     setRoute("/dashboard");
     loadMyBusinessProfiles();
@@ -7286,6 +7348,7 @@ document.addEventListener("click", async (event) => {
     state.businessEditorType = type;
     state.businessEditingId = "";
     state.businessEditingAdmin = state.path.startsWith("/admin/business-network");
+    state.businessImageUploading = false;
     state.businessForm = emptyBusinessForm(type);
     state.businessLinkQuery = "";
     state.businessLinkSuggestions = [];
@@ -7298,6 +7361,7 @@ document.addEventListener("click", async (event) => {
     state.businessEditorType = "";
     state.businessEditingId = "";
     state.businessEditingAdmin = false;
+    state.businessImageUploading = false;
     state.businessMessage = "";
     render();
     return;
@@ -7322,6 +7386,7 @@ document.addEventListener("click", async (event) => {
       state.businessEditorType = type;
       state.businessEditingId = profile.id;
       state.businessEditingAdmin = editingFromAdmin;
+      state.businessImageUploading = false;
       state.businessForm = profileToBusinessForm(profile, type);
       state.businessLinkQuery = "";
       state.businessLinkSuggestions = [];
@@ -7367,6 +7432,14 @@ document.addEventListener("click", async (event) => {
 
   if (removeBusinessLink !== undefined) {
     state.businessForm.links = (state.businessForm.links || []).filter((_, index) => index !== Number(removeBusinessLink));
+    render();
+    return;
+  }
+
+  if (action === "remove-business-profile-image") {
+    const imageKey = state.businessEditorType === "company" ? "logo_url" : "image_url";
+    state.businessForm[imageKey] = "";
+    state.businessMessage = "Profile image removed. Save the profile to publish this change.";
     render();
     return;
   }

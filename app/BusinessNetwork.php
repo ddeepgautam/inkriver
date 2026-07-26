@@ -354,6 +354,16 @@ function business_review_queue_item(string $kind, string $id, array $body, array
 function handle_business_api(string $path, string $method): bool
 {
     $session = current_session();
+    if ($method === 'POST' && $path === '/api/business-network/media') {
+        $auth = require_auth();
+        $profileType = business_profile_config((string) ($_POST['profileType'] ?? 'company'))['type'];
+        if (empty($_FILES['file']) || !is_uploaded_file($_FILES['file']['tmp_name'])) {
+            json_response(['error' => 'NO_FILE', 'message' => 'Choose a company logo or founder photo to upload.'], 400);
+        }
+        $url = store_profile_avatar_upload('file');
+        audit_log($auth['user']['id'], 'business.profile_image_uploaded', $profileType, null, ['url' => $url]);
+        json_response(['url' => $url, 'profileType' => $profileType], 201);
+    }
     if ($method === 'GET' && $path === '/api/business-network') {
         $type = (string) ($_GET['type'] ?? 'companies');
         json_response([
@@ -536,6 +546,18 @@ function business_mcp_tool_definitions(): array
             'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
         ],
         [
+            'name' => 'upload_business_profile_image',
+            'description' => 'Upload a company logo or founder headshot from a URL or base64 image. Use the returned asset.url as logo_url for a company or image_url for a founder.',
+            'inputSchema' => ['type' => 'object', 'properties' => [
+                'profileType' => ['type' => 'string', 'enum' => ['company', 'founder']],
+                'sourceUrl' => ['type' => 'string', 'description' => 'HTTPS URL of the image to import.'],
+                'dataBase64' => ['type' => 'string', 'description' => 'Base64-encoded JPG, PNG, WebP, or GIF data.'],
+                'filename' => ['type' => 'string'],
+                'altText' => ['type' => 'string'],
+            ]],
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
             'name' => 'create_or_update_company',
             'description' => 'Create or update a complete company profile and link founders/key people by their profile ids.',
             'inputSchema' => ['type' => 'object', 'required' => ['name'], 'properties' => $companyProperties],
@@ -556,6 +578,15 @@ function business_mcp_call_tool(string $name, array $arguments, array $session):
     if ($name === 'list_business_profiles') {
         $type = (string) ($arguments['type'] ?? 'companies');
         return ['profiles' => business_list_profiles($type, $arguments, $session, true)];
+    }
+    if ($name === 'upload_business_profile_image') {
+        $profileType = (string) ($arguments['profileType'] ?? 'company');
+        if (!in_array($profileType, ['company', 'founder'], true)) throw new RuntimeException('profileType must be company or founder.');
+        return [
+            'asset' => store_mcp_image_asset($arguments, $session['user']['id']),
+            'assignToField' => $profileType === 'company' ? 'logo_url' : 'image_url',
+            'profileType' => $profileType,
+        ];
     }
     if ($name === 'create_or_update_company') {
         $identifier = trim((string) ($arguments['id'] ?? $arguments['slug'] ?? ''));

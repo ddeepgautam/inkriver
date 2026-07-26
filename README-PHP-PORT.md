@@ -160,6 +160,7 @@ Business Network tools:
 
 - `get_business_profile_schema` - returns every company/founder field, relationship shape, status, and privacy rule.
 - `list_business_profiles` - finds existing company/founder ids before linking or updating.
+- `upload_business_profile_image` - imports a logo/headshot from a URL or base64 image and returns the correct profile field to populate.
 - `create_or_update_company` - fills all company fields and links founders/key people by id.
 - `create_or_update_founder` - fills all founder fields and links companies by id.
 
