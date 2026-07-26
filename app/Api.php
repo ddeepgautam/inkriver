@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/Auth.php';
+require_once __DIR__ . '/BusinessNetwork.php';
 
 const PUBLIC_DOCUMENTS = ['stories', 'categories', 'plans', 'site-seo-public'];
 const ADMIN_DOCUMENTS = ['stories', 'categories', 'plans', 'site-seo', 'creator-tools', 'operations', 'platform-settings'];
@@ -1470,6 +1471,8 @@ function store_mcp_image_asset(array $arguments, string $userId): array
 function mcp_call_tool(string $name, array $arguments): array
 {
     $session = mcp_authorize_session();
+    $businessResult = business_mcp_call_tool($name, $arguments, $session);
+    if ($businessResult !== null) return mcp_tool_result($businessResult);
     if ($name === 'get_blog_editor_schema') return mcp_tool_result(mcp_blog_editor_schema());
     if ($name === 'list_categories') return mcp_tool_result(['categories' => document_value('categories', [])]);
     if ($name === 'list_publications') return mcp_tool_result(['publications' => current_publication_rows()]);
@@ -1503,11 +1506,11 @@ function mcp_handle_request(array $request): ?array
             'initialize' => [
                 'protocolVersion' => '2025-11-25',
                 'capabilities' => ['tools' => ['listChanged' => false], 'resources' => ['listChanged' => false]],
-                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Blog Publishing MCP', 'version' => '1.0.0'],
-                'instructions' => 'Use get_blog_editor_schema first, optionally upload images, then call create_or_update_blog with status draft, review, approved, scheduled, or published.',
+                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Publishing and Business Network MCP', 'version' => '1.1.0'],
+                'instructions' => 'For articles, use get_blog_editor_schema before create_or_update_blog. For companies and founders, use get_business_profile_schema, resolve relationships with list_business_profiles, then call create_or_update_company or create_or_update_founder.',
             ],
             'ping' => new stdClass(),
-            'tools/list' => ['tools' => mcp_tool_definitions()],
+            'tools/list' => ['tools' => array_merge(mcp_tool_definitions(), business_mcp_tool_definitions())],
             'tools/call' => mcp_call_tool((string) ($request['params']['name'] ?? ''), is_array($request['params']['arguments'] ?? null) ? $request['params']['arguments'] : []),
             'resources/list' => ['resources' => [['uri' => 'inkriver://blog-editor/schema', 'name' => 'InkRiver blog editor schema', 'mimeType' => 'application/json']]],
             'resources/read' => ['contents' => [['uri' => 'inkriver://blog-editor/schema', 'mimeType' => 'application/json', 'text' => json_encode(mcp_blog_editor_schema(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)]]],
@@ -1552,7 +1555,7 @@ function handle_mcp(string $method): void
 function sitemap_xml(): string
 {
     $origin = rtrim(app_origin(), '/');
-    $urls = [['loc' => $origin . '/', 'lastmod' => now_iso()], ['loc' => $origin . '/pricing', 'lastmod' => now_iso()]];
+    $urls = [['loc' => $origin . '/', 'lastmod' => now_iso()], ['loc' => $origin . '/pricing', 'lastmod' => now_iso()], ['loc' => $origin . '/business-network', 'lastmod' => now_iso()]];
     foreach (document_value('stories', []) as $story) {
         if (($story['status'] ?? '') !== 'published') continue;
         $urls[] = ['loc' => $origin . '/stories/' . rawurlencode((string) $story['slug']), 'lastmod' => (string) ($story['updatedAt'] ?? $story['publishedAt'] ?? now_iso())];
@@ -1564,6 +1567,12 @@ function sitemap_xml(): string
         if (($publication['status'] ?? '') === 'active') {
             $urls[] = ['loc' => $origin . '/publications/' . rawurlencode((string) $publication['slug']), 'lastmod' => (string) ($publication['updated_at'] ?? now_iso())];
         }
+    }
+    foreach (business_list_profiles('company', ['status' => 'published']) as $company) {
+        $urls[] = ['loc' => $origin . '/companies/' . rawurlencode((string) $company['slug']), 'lastmod' => (string) ($company['updated_at'] ?? now_iso())];
+    }
+    foreach (business_list_profiles('person', ['status' => 'published']) as $person) {
+        $urls[] = ['loc' => $origin . '/founders/' . rawurlencode((string) $person['slug']), 'lastmod' => (string) ($person['updated_at'] ?? now_iso())];
     }
     $xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
     foreach ($urls as $url) $xml .= "  <url><loc>" . htmlspecialchars($url['loc'], ENT_XML1) . "</loc><lastmod>" . htmlspecialchars($url['lastmod'], ENT_XML1) . "</lastmod></url>\n";
@@ -3760,6 +3769,7 @@ function finish_oauth_login(string $provider, array $profile): never
 function handle_api(string $path, string $method): void
 {
     $pdo = Database::pdo();
+    handle_business_api($path, $method);
 
     if ($method === 'POST' && $path === '/api/cron/run') {
         $secret = env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret');

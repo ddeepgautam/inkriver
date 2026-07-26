@@ -27,6 +27,7 @@ Completed:
 - Push subscription storage and admin push-send endpoint.
 - Server-side recommendation training with persisted user profiles, story scores, transparent factors, feedback controls, and admin rebuild/status APIs.
 - SQLite FTS5 full-text search with filters, autocomplete, fallback search, and admin index rebuild.
+- Business Network discovery for companies and founders, linked roles, subscriber-only contact details, profile claiming, suggested corrections, and staff review workflows.
 
 Remaining production services to connect with live provider credentials:
 
@@ -154,6 +155,13 @@ Publishing tools:
 - `list_blogs` - returns existing story ids/slugs/statuses for updates.
 - `upload_blog_image` - accepts `sourceUrl` or `dataBase64`, stores the image, and returns a URL.
 - `create_or_update_blog` - fills the blog editor fields and saves, schedules, or publishes the story.
+
+Business Network tools:
+
+- `get_business_profile_schema` - returns every company/founder field, relationship shape, status, and privacy rule.
+- `list_business_profiles` - finds existing company/founder ids before linking or updating.
+- `create_or_update_company` - fills all company fields and links founders/key people by id.
+- `create_or_update_founder` - fills all founder fields and links companies by id.
 
 Every MCP tool declares both `inputSchema` and `outputSchema`. Tool responses include `structuredContent` matching the declared output schema so ChatGPT and Claude can reason about returned story ids, slugs, media URLs, publication/category options, and publishing status in follow-up calls.
 

@@ -1784,6 +1784,21 @@ const state = {
   supportTicketDetail: null,
   supportTicketForm: { subject: "", category: "Account", priority: "Normal", details: "" },
   supportReply: { body: "", visibility: "public", status: "Open", priority: "Normal", owner: "Support" },
+  businessNetwork: { type: "companies", profiles: [], industries: [], q: "", industry: "", loaded: false, loading: false },
+  businessProfile: null,
+  businessProfileLoading: false,
+  businessProfileMessage: "",
+  myBusinessProfiles: { companies: [], founders: [] },
+  businessEditorType: "",
+  businessEditingId: "",
+  businessEditingAdmin: false,
+  businessForm: {},
+  businessLinkQuery: "",
+  businessLinkSuggestions: [],
+  businessOverlay: { type: "", profileType: "", profileId: "", profileName: "", message: "" },
+  businessAdmin: { companies: [], people: [], claims: [], suggestions: [], loaded: false },
+  businessAdminView: "profiles",
+  businessMessage: "",
   privacyMessage: "",
   securityMessage: "",
   calendarMessage: "",
@@ -2991,7 +3006,8 @@ function setRoute(to) {
     render();
     return;
   }
-  if (to.startsWith("/admin") && state.user?.role !== "admin") {
+  const businessStaffRoute = to.startsWith("/admin/business-network") && state.user?.role === "moderator";
+  if (to.startsWith("/admin") && state.user?.role !== "admin" && !businessStaffRoute) {
     state.userMessage = "Administrator access is required.";
     if (!state.user) {
       state.authMode = "login";
@@ -3026,6 +3042,10 @@ function setRoute(to) {
   render();
   if (to.startsWith("/admin/users")) loadAdminUsers();
   if (to.startsWith("/search")) runServerSearch(false);
+  if (to.startsWith("/business-network")) loadBusinessNetwork();
+  if (to.startsWith("/companies/") || to.startsWith("/founders/")) loadBusinessProfileRoute();
+  if (to.startsWith("/admin/business-network")) loadBusinessAdmin();
+  if (to.startsWith("/dashboard") && state.dashboardSection === "business") loadMyBusinessProfiles();
 }
 
 function filteredStories(topic = state.activeTopic) {
@@ -3057,6 +3077,344 @@ function filteredStories(topic = state.activeTopic) {
     .sort((a, b) => recommendationScore(b) - recommendationScore(a));
 }
 
+function emptyBusinessForm(type = "company") {
+  if (type === "company") {
+    return {
+      name: "", legal_name: "", slug: "", tagline: "", description: "", mission: "", vision: "",
+      founded_on: "", industry: "", industries: "", company_type: "", business_model: "",
+      operating_status: "Operating", funding_stage: "", funding_total: "", employee_range: "",
+      revenue_range: "", headquarters: "", city: "", state_region: "", country: "India",
+      website: "", linkedin_url: "", x_url: "", facebook_url: "", logo_url: "", cover_url: "",
+      products: "", technologies: "", markets: "", keywords: "", milestones: "",
+      contact_name: "", contact_role: "", contact_email: "", contact_phone: "", contact_address: "",
+      status: "published", verified: false, links: [],
+    };
+  }
+  return {
+    full_name: "", slug: "", headline: "", biography: "", founder_story: "", location: "",
+    city: "", state_region: "", country: "India", website: "", linkedin_url: "", x_url: "",
+    image_url: "", expertise: "", education: "", achievements: "", languages: "",
+    contact_email: "", contact_phone: "", status: "published", verified: false, links: [],
+  };
+}
+
+function commaValue(value) {
+  return Array.isArray(value) ? value.join(", ") : String(value || "");
+}
+
+function profileToBusinessForm(profile, type) {
+  const form = { ...emptyBusinessForm(type), ...profile };
+  const listFields = type === "company"
+    ? ["industries", "products", "technologies", "markets", "keywords", "milestones"]
+    : ["expertise", "education", "achievements", "languages"];
+  listFields.forEach((field) => { form[field] = commaValue(profile[field]); });
+  form.links = type === "company"
+    ? (profile.people || []).map((item) => ({ id: item.person_id, name: item.full_name, meta: item.headline, roleTitle: item.role_title, isFounder: item.is_founder, isCurrent: item.is_current }))
+    : (profile.companies || []).map((item) => ({ id: item.company_id, name: item.name, meta: item.industry, roleTitle: item.role_title, isFounder: item.is_founder, isCurrent: item.is_current }));
+  return form;
+}
+
+async function loadBusinessNetwork() {
+  if (state.businessNetwork.loading) return;
+  state.businessNetwork.loading = true;
+  render();
+  try {
+    const params = new URLSearchParams({ type: state.businessNetwork.type });
+    if (state.businessNetwork.q) params.set("q", state.businessNetwork.q);
+    if (state.businessNetwork.industry && state.businessNetwork.type === "companies") params.set("industry", state.businessNetwork.industry);
+    const payload = await apiRequest(`/api/business-network?${params}`);
+    state.businessNetwork.profiles = payload.profiles || [];
+    state.businessNetwork.industries = payload.industries || [];
+    state.businessNetwork.loaded = true;
+  } catch (error) {
+    state.businessMessage = error.message;
+  } finally {
+    state.businessNetwork.loading = false;
+    render();
+  }
+}
+
+async function loadBusinessProfileRoute() {
+  const parts = state.path.split("/").filter(Boolean);
+  if (!["companies", "founders"].includes(parts[0]) || !parts[1]) return;
+  state.businessProfileLoading = true;
+  state.businessProfile = null;
+  render();
+  try {
+    const payload = await apiRequest(`/api/${parts[0]}/${encodeURIComponent(parts[1])}`);
+    state.businessProfile = payload.profile;
+  } catch (error) {
+    state.businessProfileMessage = error.message;
+  } finally {
+    state.businessProfileLoading = false;
+    render();
+  }
+}
+
+async function loadMyBusinessProfiles() {
+  if (!state.user) return;
+  try {
+    const [companies, founders] = await Promise.all([apiRequest("/api/me/companies"), apiRequest("/api/me/founders")]);
+    state.myBusinessProfiles = { companies: companies.profiles || [], founders: founders.profiles || [] };
+  } catch (error) {
+    state.businessMessage = error.message;
+  }
+  render();
+}
+
+async function loadBusinessAdmin() {
+  if (!["admin", "moderator"].includes(state.user?.role)) return;
+  try {
+    const payload = await apiRequest("/api/admin/business-network");
+    state.businessAdmin = { ...payload, loaded: true };
+  } catch (error) {
+    state.businessMessage = error.message;
+  }
+  render();
+}
+
+function businessAvatar(profile, type, className = "") {
+  const image = type === "company" ? profile.logo_url : profile.image_url;
+  const name = type === "company" ? profile.name : profile.full_name;
+  return `<span class="business-avatar ${type} ${className}">${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy" decoding="async" />` : `<b>${escapeHtml((name || "?").slice(0, 2).toUpperCase())}</b>`}</span>`;
+}
+
+function businessProfileRoute(profile, type) {
+  return `/${type === "company" ? "companies" : "founders"}/${profile.slug}`;
+}
+
+function businessNetworkCard(profile, type) {
+  const company = type === "company";
+  const name = company ? profile.name : profile.full_name;
+  const meta = company ? profile.industry : profile.headline;
+  const location = company ? (profile.headquarters || [profile.city, profile.country].filter(Boolean).join(", ")) : (profile.location || [profile.city, profile.country].filter(Boolean).join(", "));
+  return `
+    <button class="business-card" data-route="${businessProfileRoute(profile, type)}">
+      <span class="business-card-top">${businessAvatar(profile, type)}<span class="business-badges">${profile.verified ? `<i class="verified-badge">${icon("check", 12)}Verified</i>` : ""}${company && profile.operating_status ? `<i>${escapeHtml(profile.operating_status)}</i>` : ""}</span></span>
+      <span class="business-card-copy"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(meta || (company ? "Company" : "Founder"))}</small><p>${escapeHtml((company ? profile.tagline || profile.description : profile.biography || profile.headline) || "Profile details coming soon.")}</p></span>
+      <span class="business-card-foot"><i>${icon("gauge", 14)}${escapeHtml(location || "Location not listed")}</i><em>View profile ${icon("link", 13)}</em></span>
+    </button>`;
+}
+
+function businessNetworkTemplate() {
+  const type = state.businessNetwork.type === "founders" ? "person" : "company";
+  const profiles = state.businessNetwork.profiles;
+  return `
+    <main class="business-network-page">
+      <section class="business-network-hero">
+        <span class="eyebrow">InkRiver Business Network</span>
+        <h1>Discover the people and companies building what’s next.</h1>
+        <p>Explore verified organizations, founding teams, operating milestones, markets, technologies, and member-only contact channels.</p>
+        <div class="business-network-search">${icon("search", 20)}<input id="businessNetworkSearch" value="${escapeHtml(state.businessNetwork.q)}" placeholder="Search companies, founders, sectors, or keywords" /><button class="primary-button" data-action="search-business-network">Search</button></div>
+        <div class="capsule-toggle" role="tablist" aria-label="Business profile type">
+          <button role="tab" aria-selected="${type === "company"}" class="${type === "company" ? "active" : ""}" data-business-type="companies">${icon("gauge", 15)}Companies</button>
+          <button role="tab" aria-selected="${type === "person"}" class="${type === "person" ? "active" : ""}" data-business-type="founders">${icon("users", 15)}Founders</button>
+        </div>
+      </section>
+      <section class="business-network-body">
+        <div class="business-results-head"><div><strong>${profiles.length}</strong><span>${type === "company" ? "companies" : "founders"} in the network</span></div>${type === "company" ? `<label><span>Industry</span><select id="businessIndustryFilter"><option value="">All industries</option>${state.businessNetwork.industries.map((industry) => `<option value="${escapeHtml(industry)}" ${state.businessNetwork.industry === industry ? "selected" : ""}>${escapeHtml(industry)}</option>`).join("")}</select></label>` : ""}${state.user ? `<button class="secondary-button" data-dashboard-business="${type}">${icon("pen", 15)}Create ${type === "company" ? "company" : "founder"} profile</button>` : `<button class="secondary-button" data-action="open-login">${icon("lock", 15)}Sign in to list a profile</button>`}</div>
+        ${state.businessMessage ? `<div class="form-message">${escapeHtml(state.businessMessage)}</div>` : ""}
+        <div class="business-card-grid">${state.businessNetwork.loading ? `<div class="empty-state">Loading the business network…</div>` : profiles.length ? profiles.map((profile) => businessNetworkCard(profile, type)).join("") : `<div class="business-empty"><span>${icon("search", 28)}</span><h2>No profiles found</h2><p>Try a broader search or be the first to add a profile in this sector.</p></div>`}</div>
+      </section>
+    </main>`;
+}
+
+function businessContactPanel(profile) {
+  if (!profile.contactLocked) {
+    const rows = [
+      ["Contact person", [profile.contact_name, profile.contact_role].filter(Boolean).join(" · ")],
+      ["Email", profile.contact_email],
+      ["Phone", profile.contact_phone],
+      ["Address", profile.contact_address],
+    ].filter(([, value]) => value);
+    return `<div class="business-contact-panel unlocked"><div class="panel-title">${icon("card")}<h2>Direct contact</h2></div>${rows.length ? rows.map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("") : `<div class="empty-state">No direct contact details have been added.</div>`}</div>`;
+  }
+  return `<div class="business-contact-panel locked"><span>${icon("lock", 24)}</span><h2>Member-only contact details</h2><p>Subscribe to access verified email addresses, phone numbers, and representative details.</p><button class="primary-button" data-route="/pricing">View membership plans</button></div>`;
+}
+
+function businessClaimActions(profile, type) {
+  return `<div class="business-profile-actions">
+    ${!profile.claimed ? `<button class="secondary-button" data-business-claim="${profile.id}" data-business-profile-type="${type}" data-business-profile-name="${escapeHtml(type === "company" ? profile.name : profile.full_name)}">${icon("shield", 15)}Claim this profile</button>` : `<span class="claimed-label">${icon("check", 14)}Claimed profile</span>`}
+    ${profile.canManage ? `<button class="primary-button" data-business-edit="${profile.id}" data-business-profile-type="${type}">${icon("pen", 15)}Manage profile</button>` : ""}
+  </div>`;
+}
+
+function businessProfilePageTemplate() {
+  if (state.businessProfileLoading) return `<main class="business-profile-page"><div class="empty-state">Loading profile…</div></main>`;
+  const profile = state.businessProfile;
+  if (!profile) return `<main class="business-profile-page"><div class="business-empty"><h1>Profile unavailable</h1><p>${escapeHtml(state.businessProfileMessage || "This profile may be unpublished or no longer available.")}</p><button class="secondary-button" data-route="/business-network">Return to Business Network</button></div></main>`;
+  const company = state.path.startsWith("/companies/");
+  const type = company ? "company" : "person";
+  const name = company ? profile.name : profile.full_name;
+  const links = company ? profile.people || [] : profile.companies || [];
+  return `
+    <main class="business-profile-page">
+      <button class="back-link" data-route="/business-network">${icon("link", 14)}Back to Business Network</button>
+      <section class="business-profile-hero">
+        ${businessAvatar(profile, type, "large")}
+        <div class="business-profile-identity"><div class="business-badges">${company && profile.industry ? `<i>${escapeHtml(profile.industry)}</i>` : `<i>Founder profile</i>`}${profile.verified ? `<i class="verified-badge">${icon("check", 12)}Verified</i>` : ""}</div><h1>${escapeHtml(name)}</h1><p>${escapeHtml(company ? profile.tagline || profile.description : profile.headline || profile.biography)}</p>${businessClaimActions(profile, type)}</div>
+        ${company && profile.website ? `<a class="primary-button" href="${escapeHtml(profile.website)}" target="_blank" rel="noopener noreferrer">Visit website ${icon("link", 14)}</a>` : ""}
+      </section>
+      <section class="business-profile-layout">
+        <div class="business-profile-main">
+          ${company ? `
+            ${profile.description ? `<section class="business-story-block"><span>About</span><h2>Company overview</h2><p>${escapeHtml(profile.description)}</p></section>` : ""}
+            ${(profile.mission || profile.vision) ? `<section class="business-split-story"><article><span>Mission</span><p>${escapeHtml(profile.mission || "Not provided")}</p></article><article><span>Vision</span><p>${escapeHtml(profile.vision || "Not provided")}</p></article></section>` : ""}
+          ` : `<section class="business-story-block"><span>Founder story</span><h2>The journey so far</h2><p>${escapeHtml(profile.founder_story || profile.biography || "This founder has not shared their story yet.")}</p></section>`}
+          <section class="business-linked-section"><div class="section-heading"><div><span>${company ? "Leadership" : "Portfolio"}</span><h2>${company ? "Founders & key people" : "Companies built and led"}</h2></div></div><div class="business-linked-grid">${links.length ? links.map((link) => {
+            const linked = company ? { ...link, full_name: link.full_name, image_url: link.image_url } : { ...link, name: link.name, logo_url: link.logo_url };
+            const linkedType = company ? "person" : "company";
+            return `<button data-route="/${company ? "founders" : "companies"}/${link.slug}">${businessAvatar(linked, linkedType)}<span><strong>${escapeHtml(company ? link.full_name : link.name)}</strong><small>${escapeHtml(link.role_title || (company ? link.headline : link.tagline) || "")}</small></span>${icon("link", 15)}</button>`;
+          }).join("") : `<div class="empty-state">No linked ${company ? "people" : "companies"} yet.</div>`}</div></section>
+          <section class="business-detail-cloud">${(company ? [
+            ["Products", profile.products], ["Technologies", profile.technologies], ["Markets", profile.markets], ["Keywords", profile.keywords], ["Milestones", profile.milestones],
+          ] : [["Expertise", profile.expertise], ["Education", profile.education], ["Achievements", profile.achievements], ["Languages", profile.languages]]).filter(([, values]) => values?.length).map(([label, values]) => `<div><h3>${label}</h3><p>${values.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</p></div>`).join("")}</section>
+        </div>
+        <aside class="business-profile-rail">
+          <section class="business-vitals"><div class="panel-title">${icon("gauge")}<h2>Profile details</h2></div>${(company ? [
+            ["Founded", profile.founded_on], ["Industry", profile.industry], ["Company type", profile.company_type], ["Business model", profile.business_model], ["Stage", profile.funding_stage], ["Funding", profile.funding_total], ["Team size", profile.employee_range], ["Revenue", profile.revenue_range], ["Headquarters", profile.headquarters || [profile.city, profile.country].filter(Boolean).join(", ")], ["Status", profile.operating_status],
+          ] : [["Location", profile.location || [profile.city, profile.country].filter(Boolean).join(", ")], ["Headline", profile.headline], ["Member since", profile.created_at ? new Date(profile.created_at).toLocaleDateString("en-IN", { month: "short", year: "numeric" }) : ""], ["Verification", profile.verified ? "Verified" : "Unverified"]]).filter(([, value]) => value).map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</section>
+          ${businessContactPanel(profile)}
+        </aside>
+      </section>
+      <div class="suggest-change-link">Something outdated? <button data-business-suggest="${profile.id}" data-business-profile-type="${type}" data-business-profile-name="${escapeHtml(name)}">Suggest a change</button></div>
+    </main>`;
+}
+
+function businessLinkedProfilesEditor(type) {
+  const links = state.businessForm.links || [];
+  const target = type === "company" ? "founder" : "company";
+  return `<section class="business-form-section"><div class="business-form-section-head"><div><span>Connected profiles</span><h3>Link ${target === "founder" ? "founders and key people" : "companies"}</h3></div><p>Start typing a name and choose the accurate existing profile.</p></div>
+    <label class="business-link-search">${icon("search", 16)}<input id="businessLinkSearch" value="${escapeHtml(state.businessLinkQuery)}" placeholder="Search ${target} profiles by name" autocomplete="off" /></label>
+    ${state.businessLinkSuggestions.length ? `<div class="business-link-suggestions">${state.businessLinkSuggestions.map((item) => `<button type="button" data-add-business-link="${item.id}" data-link-name="${escapeHtml(item.name)}" data-link-meta="${escapeHtml(item.meta || "")}"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.meta || target)}</span>${icon("link", 14)}</button>`).join("")}</div>` : ""}
+    <div class="business-selected-links">${links.map((link, index) => `<div><span><strong>${escapeHtml(link.name)}</strong><small>${escapeHtml(link.meta || "")}</small></span><label><span>Role</span><input data-business-link-role="${index}" value="${escapeHtml(link.roleTitle || "Founder")}" /></label><label class="check-row"><input type="checkbox" data-business-link-founder="${index}" ${link.isFounder !== false ? "checked" : ""} /><span>Founder</span></label><button type="button" class="icon-button" data-remove-business-link="${index}" aria-label="Remove link">${icon("close", 15)}</button></div>`).join("") || `<div class="empty-state">No profiles linked yet.</div>`}</div>
+  </section>`;
+}
+
+function businessFormField(key, label, type = "text", placeholder = "") {
+  const value = state.businessForm[key] ?? "";
+  if (type === "textarea") return `<label class="wide"><span>${label}</span><textarea data-business-field="${key}" placeholder="${escapeHtml(placeholder)}">${escapeHtml(value)}</textarea></label>`;
+  return `<label><span>${label}</span><input type="${type}" data-business-field="${key}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" /></label>`;
+}
+
+function businessEditorTemplate(type) {
+  const company = type === "company";
+  return `<form id="businessProfileForm" class="business-profile-form">
+    <div class="business-editor-head"><div><span>${state.businessEditingId ? "Editing" : "New profile"}</span><h2>${state.businessEditingId ? "Update" : "Create"} ${company ? "company" : "founder"} profile</h2><p>Complete profiles are easier to discover and verify.</p></div><button type="button" class="icon-button" data-action="close-business-editor" aria-label="Close editor">${icon("close", 17)}</button></div>
+    <section class="business-form-section"><div class="business-form-section-head"><div><span>Identity</span><h3>Core profile</h3></div></div><div class="business-form-grid">
+      ${company ? businessFormField("name", "Company name") + businessFormField("legal_name", "Legal name") + businessFormField("tagline", "One-line pitch") + businessFormField("founded_on", "Foundation date", "date") + businessFormField("industry", "Primary industry") + businessFormField("company_type", "Company type", "text", "Private, public, nonprofit…") : businessFormField("full_name", "Full name") + businessFormField("headline", "Professional headline") + businessFormField("location", "Location") + businessFormField("image_url", "Profile image URL", "url")}
+      ${businessFormField(company ? "description" : "biography", company ? "Company overview" : "Biography", "textarea")}
+      ${businessFormField(company ? "mission" : "founder_story", company ? "Mission" : "Founder story", "textarea")}
+      ${company ? businessFormField("vision", "Vision", "textarea") : ""}
+    </div></section>
+    ${company ? `<section class="business-form-section"><div class="business-form-section-head"><div><span>Business intelligence</span><h3>Scale, stage, and market</h3></div></div><div class="business-form-grid">${businessFormField("business_model", "Business model")}${businessFormField("operating_status", "Operating status")}${businessFormField("funding_stage", "Funding stage")}${businessFormField("funding_total", "Total funding")}${businessFormField("employee_range", "Team size")}${businessFormField("revenue_range", "Revenue range")}${businessFormField("products", "Products (comma separated)")}${businessFormField("technologies", "Technologies")}${businessFormField("markets", "Markets")}${businessFormField("keywords", "Keywords")}${businessFormField("milestones", "Milestones")}</div></section>` : `<section class="business-form-section"><div class="business-form-section-head"><div><span>Background</span><h3>Expertise and achievements</h3></div></div><div class="business-form-grid">${businessFormField("expertise", "Expertise (comma separated)")}${businessFormField("education", "Education")}${businessFormField("achievements", "Achievements")}${businessFormField("languages", "Languages")}</div></section>`}
+    <section class="business-form-section"><div class="business-form-section-head"><div><span>Location & links</span><h3>Where to find ${company ? "the business" : "this founder"}</h3></div></div><div class="business-form-grid">${company ? businessFormField("headquarters", "Headquarters") : ""}${businessFormField("city", "City")}${businessFormField("state_region", "State / region")}${businessFormField("country", "Country")}${businessFormField("website", "Website", "url")}${businessFormField("linkedin_url", "LinkedIn URL", "url")}${businessFormField("x_url", "X / Twitter URL", "url")}${company ? businessFormField("logo_url", "Logo URL", "url") : ""}</div></section>
+    ${businessLinkedProfilesEditor(type)}
+    <section class="business-form-section private-section"><div class="business-form-section-head"><div><span>${icon("lock", 14)}Private contact data</span><h3>Subscriber-only contact details</h3></div><p>These fields are never shown to public visitors.</p></div><div class="business-form-grid">${company ? businessFormField("contact_name", "Contact person") + businessFormField("contact_role", "Contact role") : ""}${businessFormField("contact_email", "Contact email", "email")}${businessFormField("contact_phone", "Contact number", "tel")}${company ? businessFormField("contact_address", "Contact address", "textarea") : ""}</div></section>
+    <div class="business-form-actions"><span>${escapeHtml(state.businessMessage || "You can update this profile later from your dashboard.")}</span><button type="button" class="secondary-button" data-action="close-business-editor">Cancel</button><button class="primary-button" type="submit">${icon("check", 15)}Save ${company ? "company" : "founder"} profile</button></div>
+  </form>`;
+}
+
+function businessWorkspaceTemplate() {
+  if (state.businessEditorType) return businessEditorTemplate(state.businessEditorType);
+  const cards = (profiles, type) => profiles.length ? profiles.map((profile) => `<article class="managed-business-card">${businessAvatar(profile, type)}<span><strong>${escapeHtml(type === "company" ? profile.name : profile.full_name)}</strong><small>${escapeHtml((type === "company" ? profile.industry : profile.headline) || "Profile")}</small><i class="status-pill">${escapeHtml(profile.status)}</i></span><button class="secondary-button" data-route="${businessProfileRoute(profile, type)}">View</button><button class="secondary-button" data-business-edit="${profile.id}" data-business-profile-type="${type}">Edit</button></article>`).join("") : `<div class="empty-state">No ${type === "company" ? "company" : "founder"} profiles under your account yet.</div>`;
+  return `<section class="business-workspace-intro"><div><span class="eyebrow">Business Network</span><h2>Build your organization graph</h2><p>Create accurate, linked profiles for your companies, founders, and key people. Contact details remain member-only.</p></div><div><button class="primary-button" data-action="create-company-profile">${icon("gauge", 15)}Add company</button><button class="secondary-button" data-action="create-founder-profile">${icon("users", 15)}Add founder</button></div></section>
+    ${state.businessMessage ? `<div class="form-message">${escapeHtml(state.businessMessage)}</div>` : ""}
+    <section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("gauge")}<h2>My companies</h2></div><div class="managed-business-list">${cards(state.myBusinessProfiles.companies, "company")}</div></div><div class="work-panel"><div class="panel-title">${icon("users")}<h2>My founder profiles</h2></div><div class="managed-business-list">${cards(state.myBusinessProfiles.founders, "person")}</div></div></section>`;
+}
+
+function businessOverlayTemplate() {
+  const overlay = state.businessOverlay;
+  const claim = overlay.type === "claim";
+  return `<div class="modal-backdrop" data-action="close-business-overlay"><section class="business-overlay" role="dialog" aria-modal="true" aria-labelledby="businessOverlayTitle" data-stop-propagation><button class="modal-close" data-action="close-business-overlay" aria-label="Close">${icon("close")}</button><span class="eyebrow">${claim ? "Ownership verification" : "Community correction"}</span><h2 id="businessOverlayTitle">${claim ? "Claim" : "Suggest a change to"} ${escapeHtml(overlay.profileName)}</h2><p>${claim ? "Tell the review team how you are connected to this profile. Once approved, you can manage it from your dashboard." : "Share the correction and where possible include the exact replacement information. We’ll email you after review."}</p>
+    <form id="${claim ? "businessClaimForm" : "businessSuggestionForm"}" class="business-overlay-form">
+      <label><span>Your name</span><input name="name" value="${escapeHtml(state.user?.name || "")}" required /></label><label><span>Email address</span><input name="email" type="email" value="${escapeHtml(state.user?.email || "")}" required /></label>
+      ${claim ? `<label><span>Your role</span><input name="role" placeholder="Founder, director, authorized representative…" required /></label><label><span>Proof URL</span><input name="proofUrl" type="url" placeholder="Company website or professional profile" /></label><label class="wide"><span>Verification details</span><textarea name="evidence" placeholder="Explain how the team can verify your relationship." required></textarea></label>` : `<label class="wide"><span>What should change?</span><textarea name="summary" placeholder="Describe the current information and the accurate replacement." required minlength="10"></textarea></label>`}
+      ${overlay.message ? `<div class="form-message wide">${escapeHtml(overlay.message)}</div>` : ""}<button class="primary-button wide" type="submit">${icon("check", 15)}Submit for review</button>
+    </form></section></div>`;
+}
+
+function adminBusinessNetworkTemplate() {
+  if (state.businessEditorType && state.businessEditingAdmin) {
+    return adminShellTemplate(
+      state.businessEditingId ? "Edit business profile" : "Create business profile",
+      "Complete the public profile, private contact record, and linked founder/company relationships.",
+      businessEditorTemplate(state.businessEditorType),
+      `<button class="secondary-button" data-action="close-business-editor">${icon("close", 15)}Back to profiles</button>`,
+    );
+  }
+  const data = state.businessAdmin;
+  const view = state.businessAdminView;
+  const profileRows = [...(data.companies || []).map((item) => ({ ...item, _type: "company" })), ...(data.people || []).map((item) => ({ ...item, _type: "person" }))];
+  const queue = view === "claims" ? data.claims || [] : data.suggestions || [];
+  const content = `<section class="business-admin-tabs"><button class="${view === "profiles" ? "active" : ""}" data-business-admin-view="profiles">Profiles <span>${profileRows.length}</span></button><button class="${view === "claims" ? "active" : ""}" data-business-admin-view="claims">Claims <span>${(data.claims || []).filter((item) => item.status === "pending").length}</span></button><button class="${view === "suggestions" ? "active" : ""}" data-business-admin-view="suggestions">Suggested changes <span>${(data.suggestions || []).filter((item) => item.status === "pending").length}</span></button></section>
+    ${state.businessMessage ? `<div class="form-message">${escapeHtml(state.businessMessage)}</div>` : ""}
+    ${view === "profiles" ? `<section class="admin-table-panel business-admin-table"><div class="panel-title">${icon("gauge")}<h2>Company and founder profiles</h2></div><div class="admin-table-scroll"><table><thead><tr><th>Profile</th><th>Type</th><th>Status</th><th>Ownership</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${profileRows.map((profile) => `<tr><td><strong>${escapeHtml(profile._type === "company" ? profile.name : profile.full_name)}</strong><small>${escapeHtml((profile._type === "company" ? profile.industry : profile.headline) || "")}</small></td><td>${profile._type === "company" ? "Company" : "Founder"}</td><td><span class="status-pill">${escapeHtml(profile.status)}</span></td><td>${profile.claimed ? "Claimed" : "Unclaimed"}</td><td>${new Date(profile.updated_at).toLocaleDateString("en-IN")}</td><td><div class="table-actions"><button data-route="${businessProfileRoute(profile, profile._type)}">View</button><button data-business-edit="${profile.id}" data-business-profile-type="${profile._type}">Edit</button><button data-business-admin-status="${profile.id}" data-business-profile-type="${profile._type}" data-next-status="${profile.status === "published" ? "unpublished" : "published"}">${profile.status === "published" ? "Unpublish" : "Publish"}</button><button class="danger-link" data-business-admin-delete="${profile.id}" data-business-profile-type="${profile._type}">Delete</button></div></td></tr>`).join("") || `<tr><td colspan="6">No profiles yet.</td></tr>`}</tbody></table></div></section>` : `<section class="business-review-list">${queue.map((item) => `<article><div class="business-review-head"><span><i class="status-pill">${escapeHtml(item.status)}</i><small>${new Date(item.created_at).toLocaleString("en-IN")}</small></span><strong>${escapeHtml(view === "claims" ? item.claimant_name : item.submitter_name)}</strong><a href="mailto:${escapeHtml(view === "claims" ? item.claimant_email : item.submitter_email)}">${escapeHtml(view === "claims" ? item.claimant_email : item.submitter_email)}</a></div><div class="business-review-body"><span>${escapeHtml(item.profile_type)} profile</span><p>${escapeHtml(view === "claims" ? item.evidence || item.claimant_role : item.summary)}</p>${view === "claims" && item.proof_url ? `<a href="${escapeHtml(item.proof_url)}" target="_blank" rel="noopener noreferrer">Open proof link</a>` : ""}</div>${item.status === "pending" ? `<div class="business-review-actions"><button class="secondary-button" data-business-review="${item.id}" data-review-kind="${view}" data-review-status="rejected">${icon("close", 14)}Reject</button><button class="primary-button" data-business-review="${item.id}" data-review-kind="${view}" data-review-status="approved">${icon("check", 14)}Approve${view === "suggestions" ? " suggestion" : ""}</button></div>` : ""}</article>`).join("") || `<div class="empty-state">No ${view === "claims" ? "profile claims" : "suggested changes"} yet.</div>`}</section>`}`;
+  return adminShellTemplate("Business network", "Manage profiles, ownership claims, private contact data, and community-suggested corrections.", content, `<div class="member-header-actions"><button class="secondary-button" data-route="/business-network">${icon("eye", 15)}View network</button><button class="secondary-button" data-action="create-founder-profile">${icon("users", 15)}Add founder</button><button class="primary-button" data-action="create-company-profile">${icon("gauge", 15)}Add company</button></div>`);
+}
+
+async function saveBusinessProfile() {
+  const type = state.businessEditorType;
+  const listFields = type === "company"
+    ? ["industries", "products", "technologies", "markets", "keywords", "milestones"]
+    : ["expertise", "education", "achievements", "languages"];
+  const payload = { ...state.businessForm };
+  listFields.forEach((field) => { payload[field] = businessCleanFrontendList(payload[field]); });
+  if (type === "company") {
+    payload.people = (payload.links || []).map((item) => ({ personId: item.id, roleTitle: item.roleTitle || "Founder", isFounder: item.isFounder !== false, isCurrent: item.isCurrent !== false }));
+  } else {
+    payload.companies = (payload.links || []).map((item) => ({ companyId: item.id, roleTitle: item.roleTitle || "Founder", isFounder: item.isFounder !== false, isCurrent: item.isCurrent !== false }));
+  }
+  delete payload.links;
+  state.businessMessage = "Saving profile…";
+  render();
+  try {
+    const plural = type === "company" ? "companies" : "founders";
+    const path = state.businessEditingId
+      ? state.businessEditingAdmin
+        ? `/api/admin/business-network/${plural}/${encodeURIComponent(state.businessEditingId)}`
+        : `/api/me/${plural}/${encodeURIComponent(state.businessEditingId)}`
+      : `/api/me/${plural}`;
+    const response = await apiRequest(path, { method: state.businessEditingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
+    state.businessMessage = `${type === "company" ? "Company" : "Founder"} profile saved.`;
+    const returnToAdmin = state.businessEditingAdmin;
+    state.businessEditorType = "";
+    state.businessEditingId = "";
+    state.businessEditingAdmin = false;
+    if (returnToAdmin) {
+      await loadBusinessAdmin();
+      setRoute("/admin/business-network");
+    } else {
+      await loadMyBusinessProfiles();
+      setRoute(businessProfileRoute(response.profile, type));
+    }
+  } catch (error) {
+    state.businessMessage = error.message;
+    render();
+  }
+}
+
+function businessCleanFrontendList(value) {
+  return Array.isArray(value) ? value : String(value || "").split(/[\n,]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+async function submitBusinessOverlay(form, claim) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const overlay = state.businessOverlay;
+  const payload = { ...data, profileType: overlay.profileType, profileId: overlay.profileId };
+  overlay.message = "Submitting for review…";
+  render();
+  try {
+    await apiRequest(`/api/business-network/${claim ? "claims" : "suggestions"}`, { method: "POST", body: JSON.stringify(payload) });
+    state.businessOverlay = { type: "", profileType: "", profileId: "", profileName: "", message: "" };
+    state.businessProfileMessage = claim ? "Your claim is awaiting staff review." : "Thank you. Your suggestion is awaiting review.";
+    render();
+  } catch (error) {
+    state.businessOverlay.message = error.message;
+    render();
+  }
+}
+
 function appTemplate() {
   const selectedStory = state.stories.find((story) => story.status === "published" && state.path.includes(`/stories/${story.slug}`));
   const selectedCategory = state.categories.find((category) => state.path === `/category/${category.slug}`);
@@ -3080,6 +3438,10 @@ function appTemplate() {
             ? publicationTemplate(selectedPublication)
           : selectedCategory
             ? homeTemplate(selectedCategory)
+          : state.path.startsWith("/companies/") || state.path.startsWith("/founders/")
+            ? businessProfilePageTemplate()
+          : state.path.startsWith("/business-network")
+            ? businessNetworkTemplate()
           : state.path === "/me"
             ? readerProfileTemplate()
           : state.path.startsWith("/search")
@@ -3113,12 +3475,15 @@ function appTemplate() {
       ${state.loginOpen ? loginTemplate() : ""}
       ${state.onboardingOpen ? onboardingTemplate() : ""}
       ${state.adminModal.type ? adminModalTemplate() : ""}
+      ${state.businessOverlay.type ? businessOverlayTemplate() : ""}
     </div>
   `;
 }
 
 function adminRouteTemplate() {
-  if (state.user?.role !== "admin") return accessDeniedTemplate("Administrator access is required.");
+  const businessModerator = state.path.startsWith("/admin/business-network") && state.user?.role === "moderator";
+  if (state.user?.role !== "admin" && !businessModerator) return accessDeniedTemplate("Administrator access is required.");
+  if (state.path.startsWith("/admin/business-network")) return adminBusinessNetworkTemplate();
   if (state.path === "/admin/blogs/new") {
     if (state.editingBlogId) {
       state.editingBlogId = "";
@@ -3163,6 +3528,7 @@ function adminRouteTemplate() {
 function headerTemplate() {
   const links = [
     ["Topics", "/"],
+    ["Business Network", "/business-network"],
     ["Membership", "/pricing"],
     ["Dashboard", state.user?.role === "admin" ? "/admin" : "/dashboard"],
   ];
@@ -3986,12 +4352,12 @@ function dashboardNavItems(role) {
   const items = [["chart", "Overview", "overview"], ["play", "Reading", "reading"], ["spark", "Interests", "interests"], ["users", "Following", "following"], ["eye", "History", "history"], ["card", "Membership", "membership"]];
   if (role === "writer") items.splice(1, 0, ["pen", "My stories", "stories"], ["chart", "Analytics", "analytics"], ["money", "Earnings", "earnings"]);
   if (role === "moderator") items.splice(1, 0, ["shield", "Moderation queue", "moderation"], ["filter", "Reports", "reports"]);
-  items.push(["lock", "Security", "security"], ["users", "Profile", "profile"]);
+  items.push(["gauge", "Business profiles", "business"], ["lock", "Security", "security"], ["users", "Profile", "profile"]);
   return items;
 }
 
 function dashboardSectionTitle(section) {
-  return { overview: "Dashboard overview", reading: "Reading workspace", interests: "Reading interests", following: "Following", history: "Reading history", membership: "Membership and billing", stories: "My stories", analytics: "Creator analytics", earnings: "Writer earnings", moderation: "Moderation queue", reports: "Reports and activity", security: "Security", profile: "Profile and account" }[section] || "Dashboard overview";
+  return { overview: "Dashboard overview", reading: "Reading workspace", interests: "Reading interests", following: "Following", history: "Reading history", membership: "Membership and billing", stories: "My stories", analytics: "Creator analytics", earnings: "Writer earnings", moderation: "Moderation queue", reports: "Reports and activity", business: "Business profiles", security: "Security", profile: "Profile and account" }[section] || "Dashboard overview";
 }
 
 function dashboardSectionDescription(section, role) {
@@ -4007,6 +4373,7 @@ function dashboardSectionDescription(section, role) {
     earnings: "Track attributed article revenue and estimated payouts.",
     moderation: "Review content and discussion reports assigned to you.",
     reports: "See moderation outcomes and recent operational activity.",
+    business: "Create, link, and manage your company and founder profiles.",
     security: "Manage account protection, sessions, and recovery methods.",
     profile: "Review your public identity and account details.",
   }[section] || "Your InkRiver workspace.";
@@ -4023,6 +4390,7 @@ function dashboardSectionTemplate(section) {
   if (section === "earnings") return dashboardWriterEarningsTemplate();
   if (section === "moderation") return dashboardModeratorQueueTemplate();
   if (section === "reports") return dashboardModeratorReportsTemplate();
+  if (section === "business") return businessWorkspaceTemplate();
   if (section === "security") return securityWorkspaceTemplate(false);
   if (section === "profile") return dashboardProfileTemplate();
   return dashboardOverviewTemplate();
@@ -4903,11 +5271,12 @@ function adminTemplate() {
 }
 
 function adminShellTemplate(title, description, content, actions = "") {
-  const navItems = [
+  let navItems = [
     ["chart", "Dashboard", "/admin"],
     ["pen", "Blogs", "/admin/blogs"],
     ["spark", "Creator studio", "/admin/creator"],
     ["users", "Users", "/admin/users"],
+    ["gauge", "Business network", "/admin/business-network"],
     ["shield", "Moderation", "/admin/moderation"],
     ["link", "Copyright", "/admin/copyright"],
     ["comment", "Support", "/admin/support"],
@@ -4917,13 +5286,14 @@ function adminShellTemplate(title, description, content, actions = "") {
     ["gauge", "Site SEO", "/admin/seo"],
     ["card", "Settings", "/admin/settings"],
   ];
+  if (state.user?.role === "moderator") navItems = [["gauge", "Business network", "/admin/business-network"]];
   return `
     <main class="admin-app">
       <aside class="admin-sidebar">
         <div class="admin-sidebar-brand">
           <span class="admin-sidebar-brand-icon">${icon("shield", 20)}</span>
           <span>
-            <strong>Admin console</strong>
+            <strong>${state.user?.role === "moderator" ? "Moderator console" : "Admin console"}</strong>
             <small>InkRiver operations</small>
           </span>
         </div>
@@ -4945,8 +5315,8 @@ function adminShellTemplate(title, description, content, actions = "") {
           <div class="admin-sidebar-account">
             <span class="admin-sidebar-avatar">A</span>
             <span>
-              <strong>Administrator</strong>
-              <small>Full access</small>
+              <strong>${escapeHtml(state.user?.name || "Administrator")}</strong>
+              <small>${state.user?.role === "moderator" ? "Business review access" : "Full access"}</small>
             </span>
           </div>
         </div>
@@ -6241,6 +6611,66 @@ function render() {
 }
 
 function bindInputs() {
+  document.getElementById("businessNetworkSearch")?.addEventListener("input", (event) => {
+    state.businessNetwork.q = event.target.value;
+  });
+  document.getElementById("businessNetworkSearch")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loadBusinessNetwork();
+  });
+  document.getElementById("businessIndustryFilter")?.addEventListener("change", (event) => {
+    state.businessNetwork.industry = event.target.value;
+    loadBusinessNetwork();
+  });
+  document.querySelectorAll("[data-business-field]").forEach((field) => {
+    const update = (event) => { state.businessForm[event.target.dataset.businessField] = event.target.value; };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-business-link-role]").forEach((field) => {
+    field.addEventListener("input", (event) => {
+      const link = state.businessForm.links?.[Number(event.target.dataset.businessLinkRole)];
+      if (link) link.roleTitle = event.target.value;
+    });
+  });
+  document.querySelectorAll("[data-business-link-founder]").forEach((field) => {
+    field.addEventListener("change", (event) => {
+      const link = state.businessForm.links?.[Number(event.target.dataset.businessLinkFounder)];
+      if (link) link.isFounder = event.target.checked;
+    });
+  });
+  document.getElementById("businessLinkSearch")?.addEventListener("input", (event) => {
+    state.businessLinkQuery = event.target.value;
+    window.clearTimeout(state.businessLinkTimer);
+    state.businessLinkTimer = window.setTimeout(async () => {
+      if (state.businessLinkQuery.trim().length < 2) {
+        state.businessLinkSuggestions = [];
+        render();
+        return;
+      }
+      try {
+        const targetType = state.businessEditorType === "company" ? "founders" : "companies";
+        const payload = await apiRequest(`/api/business-network/suggest?type=${targetType}&q=${encodeURIComponent(state.businessLinkQuery.trim())}`);
+        const linkedIds = new Set((state.businessForm.links || []).map((item) => item.id));
+        state.businessLinkSuggestions = (payload.profiles || []).filter((item) => !linkedIds.has(item.id));
+      } catch (error) {
+        state.businessMessage = error.message;
+      }
+      render();
+      document.getElementById("businessLinkSearch")?.focus();
+    }, 220);
+  });
+  document.getElementById("businessProfileForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveBusinessProfile();
+  });
+  document.getElementById("businessClaimForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitBusinessOverlay(event.currentTarget, true);
+  });
+  document.getElementById("businessSuggestionForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitBusinessOverlay(event.currentTarget, false);
+  });
   const authForm = document.getElementById("authForm");
   authForm?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -6814,11 +7244,182 @@ document.addEventListener("click", async (event) => {
   const installerStep = target.dataset.installerStep;
   const featurePreset = target.dataset.featurePreset;
   const rollbackImport = target.dataset.rollbackImport;
+  const businessType = target.dataset.businessType;
+  const dashboardBusiness = target.dataset.dashboardBusiness;
+  const businessEdit = target.dataset.businessEdit;
+  const businessProfileType = target.dataset.businessProfileType;
+  const businessClaim = target.dataset.businessClaim;
+  const businessSuggest = target.dataset.businessSuggest;
+  const addBusinessLink = target.dataset.addBusinessLink;
+  const removeBusinessLink = target.dataset.removeBusinessLink;
+  const businessAdminView = target.dataset.businessAdminView;
+  const businessAdminStatus = target.dataset.businessAdminStatus;
+  const businessAdminDelete = target.dataset.businessAdminDelete;
+  const businessReview = target.dataset.businessReview;
+
+  if (businessType) {
+    state.businessNetwork.type = businessType;
+    state.businessNetwork.industry = "";
+    state.businessNetwork.profiles = [];
+    loadBusinessNetwork();
+    return;
+  }
+
+  if (dashboardBusiness) {
+    state.dashboardSection = "business";
+    state.businessEditorType = dashboardBusiness;
+    state.businessEditingId = "";
+    state.businessEditingAdmin = false;
+    state.businessForm = emptyBusinessForm(dashboardBusiness);
+    setRoute("/dashboard");
+    loadMyBusinessProfiles();
+    return;
+  }
+
+  if (action === "search-business-network") {
+    loadBusinessNetwork();
+    return;
+  }
+
+  if (action === "create-company-profile" || action === "create-founder-profile") {
+    const type = action === "create-company-profile" ? "company" : "person";
+    state.businessEditorType = type;
+    state.businessEditingId = "";
+    state.businessEditingAdmin = state.path.startsWith("/admin/business-network");
+    state.businessForm = emptyBusinessForm(type);
+    state.businessLinkQuery = "";
+    state.businessLinkSuggestions = [];
+    state.businessMessage = "";
+    render();
+    return;
+  }
+
+  if (action === "close-business-editor") {
+    state.businessEditorType = "";
+    state.businessEditingId = "";
+    state.businessEditingAdmin = false;
+    state.businessMessage = "";
+    render();
+    return;
+  }
+
+  if (businessEdit && businessProfileType) {
+    const editingFromAdmin = state.path.startsWith("/admin/business-network");
+    const type = businessProfileType === "company" ? "company" : "person";
+    const candidates = type === "company" ? state.myBusinessProfiles.companies : state.myBusinessProfiles.founders;
+    let profile = state.businessProfile?.id === businessEdit ? state.businessProfile : null;
+    try {
+      const plural = type === "company" ? "companies" : "founders";
+      const detailPath = editingFromAdmin ? `/api/admin/business-network/${plural}/${encodeURIComponent(businessEdit)}` : `/api/me/${plural}/${encodeURIComponent(businessEdit)}`;
+      const payload = await apiRequest(detailPath);
+      profile = payload.profile;
+    } catch (error) {
+      profile = profile || candidates.find((item) => item.id === businessEdit);
+      if (!profile) state.businessMessage = error.message;
+    }
+    if (profile) {
+      state.dashboardSection = "business";
+      state.businessEditorType = type;
+      state.businessEditingId = profile.id;
+      state.businessEditingAdmin = editingFromAdmin;
+      state.businessForm = profileToBusinessForm(profile, type);
+      state.businessLinkQuery = "";
+      state.businessLinkSuggestions = [];
+      if (editingFromAdmin) render();
+      else setRoute("/dashboard");
+    }
+    return;
+  }
+
+  if (businessClaim) {
+    if (!state.user) {
+      state.loginOpen = true;
+      state.loginMessage = "Sign in before claiming a business profile.";
+      render();
+      return;
+    }
+    state.businessOverlay = { type: "claim", profileType: businessProfileType, profileId: businessClaim, profileName: target.dataset.businessProfileName || "this profile", message: "" };
+    render();
+    return;
+  }
+
+  if (businessSuggest) {
+    state.businessOverlay = { type: "suggestion", profileType: businessProfileType, profileId: businessSuggest, profileName: target.dataset.businessProfileName || "this profile", message: "" };
+    render();
+    return;
+  }
+
+  if (action === "close-business-overlay") {
+    state.businessOverlay = { type: "", profileType: "", profileId: "", profileName: "", message: "" };
+    render();
+    return;
+  }
+
+  if (addBusinessLink) {
+    if (!(state.businessForm.links || []).some((item) => item.id === addBusinessLink)) {
+      state.businessForm.links = [...(state.businessForm.links || []), { id: addBusinessLink, name: target.dataset.linkName || "Linked profile", meta: target.dataset.linkMeta || "", roleTitle: "Founder", isFounder: true, isCurrent: true }];
+    }
+    state.businessLinkQuery = "";
+    state.businessLinkSuggestions = [];
+    render();
+    return;
+  }
+
+  if (removeBusinessLink !== undefined) {
+    state.businessForm.links = (state.businessForm.links || []).filter((_, index) => index !== Number(removeBusinessLink));
+    render();
+    return;
+  }
+
+  if (businessAdminView) {
+    state.businessAdminView = businessAdminView;
+    render();
+    return;
+  }
+
+  if (businessAdminStatus && businessProfileType) {
+    try {
+      await apiRequest(`/api/admin/business-network/${businessProfileType === "company" ? "companies" : "founders"}/${encodeURIComponent(businessAdminStatus)}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.nextStatus }) });
+      state.businessMessage = `Profile ${target.dataset.nextStatus}.`;
+      await loadBusinessAdmin();
+    } catch (error) {
+      state.businessMessage = error.message;
+      render();
+    }
+    return;
+  }
+
+  if (businessAdminDelete && businessProfileType) {
+    if (!window.confirm("Permanently delete this business profile and all of its links?")) return;
+    try {
+      await apiRequest(`/api/admin/business-network/${businessProfileType === "company" ? "companies" : "founders"}/${encodeURIComponent(businessAdminDelete)}`, { method: "DELETE" });
+      state.businessMessage = "Profile deleted.";
+      await loadBusinessAdmin();
+    } catch (error) {
+      state.businessMessage = error.message;
+      render();
+    }
+    return;
+  }
+
+  if (businessReview) {
+    const reviewNote = window.prompt(`Optional note for the ${target.dataset.reviewStatus} email:`, "") ?? "";
+    try {
+      await apiRequest(`/api/admin/business-network/${target.dataset.reviewKind}/${encodeURIComponent(businessReview)}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.reviewStatus, reviewNote }) });
+      state.businessMessage = `Review ${target.dataset.reviewStatus}.`;
+      await loadBusinessAdmin();
+    } catch (error) {
+      state.businessMessage = error.message;
+      render();
+    }
+    return;
+  }
 
   if (dashboardSection) {
     const allowed = new Set(dashboardNavItems(state.user?.role || "reader").map((item) => item[2]));
     state.dashboardSection = allowed.has(dashboardSection) ? dashboardSection : "overview";
     render();
+    if (state.dashboardSection === "business") loadMyBusinessProfiles();
   }
 
   if (installerStep) {
@@ -8559,13 +9160,16 @@ window.addEventListener("popstate", () => {
     state.path = "/";
     state.loginOpen = true;
     state.loginMessage = "Sign in to continue.";
-  } else if (nextPath.startsWith("/admin") && state.user?.role !== "admin") {
+  } else if (nextPath.startsWith("/admin") && state.user?.role !== "admin" && !(nextPath.startsWith("/admin/business-network") && state.user?.role === "moderator")) {
     window.history.replaceState({}, "", state.user ? "/dashboard" : "/");
     state.path = state.user ? "/dashboard" : "/";
   } else {
     state.path = nextPath;
   }
   render();
+  if (state.path.startsWith("/business-network")) loadBusinessNetwork();
+  if (state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) loadBusinessProfileRoute();
+  if (state.path.startsWith("/admin/business-network")) loadBusinessAdmin();
 });
 
 window.addEventListener("scroll", trackArticleDepth, { passive: true });
@@ -8606,7 +9210,7 @@ async function bootstrapApp() {
     state.path = "/";
     state.loginOpen = true;
     state.loginMessage = "Sign in to continue.";
-  } else if (protectedAdminRoute && state.user?.role !== "admin") {
+  } else if (protectedAdminRoute && state.user?.role !== "admin" && !(state.path.startsWith("/admin/business-network") && state.user?.role === "moderator")) {
     const fallback = state.user ? "/dashboard" : "/";
     window.history.replaceState({}, "", fallback);
     state.path = fallback;
@@ -8623,6 +9227,9 @@ async function bootstrapApp() {
     state.loginMessage = "";
   }
   render();
+  if (state.path.startsWith("/business-network")) loadBusinessNetwork();
+  if (state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) loadBusinessProfileRoute();
+  if (state.path.startsWith("/admin/business-network")) loadBusinessAdmin();
   if (state.user?.role === "admin") {
     await loadAdminUsers();
     await loadMediaAssets();

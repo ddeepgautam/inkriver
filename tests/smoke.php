@@ -57,4 +57,34 @@ assert_true(payment_amount_for_checkout(['amount' => 10000], ['discountCode' => 
 $jobId = enqueue_background_job('payouts.execute', ['limit' => 1]);
 assert_true(str_starts_with($jobId, 'JOB-'), 'payout execution job can be queued');
 
+$pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-BIZ-ADMIN', 'Business Admin', 'business-admin@example.com', ?, 'admin', 'Pro', 'active', 1, ?, ?)")
+    ->execute([hash_password_value('SmokePassword!23'), $now, $now]);
+$adminSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin', 'email' => 'business-admin@example.com', 'role' => 'admin', 'subscription' => 'Pro']];
+$founder = business_save_profile('person', [
+    'full_name' => 'Smoke Founder',
+    'headline' => 'Founder and builder',
+    'expertise' => ['Product', 'Operations'],
+    'contact_email' => 'founder@example.com',
+], $adminSession);
+assert_true(($founder['slug'] ?? '') === 'smoke-founder', 'founder profile slug is generated');
+
+$company = business_save_profile('company', [
+    'name' => 'Smoke Ventures',
+    'industry' => 'Technology',
+    'tagline' => 'A test business profile',
+    'contact_email' => 'hello@smoke.example',
+    'people' => [['personId' => $founder['id'], 'roleTitle' => 'Founder & CEO', 'isFounder' => true]],
+], $adminSession);
+assert_true(count($company['people'] ?? []) === 1, 'company links to an existing founder profile');
+
+$publicCompany = business_get_profile('company', $company['slug'], null);
+assert_true(($publicCompany['contactLocked'] ?? false) && ($publicCompany['contact_email'] ?? '') === '', 'public company contact details stay hidden');
+
+$memberSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin', 'email' => 'business-admin@example.com', 'role' => 'subscriber', 'subscription' => 'Pro']];
+$memberCompany = business_get_profile('company', $company['slug'], $memberSession);
+assert_true(($memberCompany['contact_email'] ?? '') === 'hello@smoke.example', 'subscribed members can access contact details');
+
+$fieldMap = business_mcp_field_map();
+assert_true(in_array('contact_email', $fieldMap['company']['fields'], true) && in_array('companies', $fieldMap['person']['fields'], true), 'MCP schema maps private contacts and founder-company relationships');
+
 echo "Smoke tests passed\n";

@@ -851,6 +851,132 @@
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS business_companies (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL,
+    legal_name TEXT NOT NULL DEFAULT '',
+    tagline TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    mission TEXT NOT NULL DEFAULT '',
+    vision TEXT NOT NULL DEFAULT '',
+    founded_on TEXT,
+    industry TEXT NOT NULL DEFAULT '',
+    industries_json TEXT NOT NULL DEFAULT '[]',
+    company_type TEXT NOT NULL DEFAULT '',
+    business_model TEXT NOT NULL DEFAULT '',
+    operating_status TEXT NOT NULL DEFAULT '',
+    funding_stage TEXT NOT NULL DEFAULT '',
+    funding_total TEXT NOT NULL DEFAULT '',
+    employee_range TEXT NOT NULL DEFAULT '',
+    revenue_range TEXT NOT NULL DEFAULT '',
+    headquarters TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    state_region TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    website TEXT NOT NULL DEFAULT '',
+    linkedin_url TEXT NOT NULL DEFAULT '',
+    x_url TEXT NOT NULL DEFAULT '',
+    facebook_url TEXT NOT NULL DEFAULT '',
+    logo_url TEXT NOT NULL DEFAULT '',
+    cover_url TEXT NOT NULL DEFAULT '',
+    products_json TEXT NOT NULL DEFAULT '[]',
+    technologies_json TEXT NOT NULL DEFAULT '[]',
+    markets_json TEXT NOT NULL DEFAULT '[]',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    milestones_json TEXT NOT NULL DEFAULT '[]',
+    contact_name TEXT NOT NULL DEFAULT '',
+    contact_role TEXT NOT NULL DEFAULT '',
+    contact_email TEXT NOT NULL DEFAULT '',
+    contact_phone TEXT NOT NULL DEFAULT '',
+    contact_address TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'published',
+    verified INTEGER NOT NULL DEFAULT 0,
+    claimed_owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS business_people (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    full_name TEXT NOT NULL,
+    headline TEXT NOT NULL DEFAULT '',
+    biography TEXT NOT NULL DEFAULT '',
+    founder_story TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    state_region TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    website TEXT NOT NULL DEFAULT '',
+    linkedin_url TEXT NOT NULL DEFAULT '',
+    x_url TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '',
+    expertise_json TEXT NOT NULL DEFAULT '[]',
+    education_json TEXT NOT NULL DEFAULT '[]',
+    achievements_json TEXT NOT NULL DEFAULT '[]',
+    languages_json TEXT NOT NULL DEFAULT '[]',
+    contact_email TEXT NOT NULL DEFAULT '',
+    contact_phone TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'published',
+    verified INTEGER NOT NULL DEFAULT 0,
+    claimed_owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS business_person_company_links (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL REFERENCES business_people(id) ON DELETE CASCADE,
+    company_id TEXT NOT NULL REFERENCES business_companies(id) ON DELETE CASCADE,
+    role_title TEXT NOT NULL DEFAULT 'Founder',
+    is_founder INTEGER NOT NULL DEFAULT 1,
+    is_current INTEGER NOT NULL DEFAULT 1,
+    started_on TEXT,
+    ended_on TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(person_id, company_id, role_title)
+  );
+
+  CREATE TABLE IF NOT EXISTS business_profile_claims (
+    id TEXT PRIMARY KEY,
+    profile_type TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    claimant_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    claimant_name TEXT NOT NULL,
+    claimant_email TEXT NOT NULL,
+    claimant_role TEXT NOT NULL DEFAULT '',
+    proof_url TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    review_note TEXT NOT NULL DEFAULT '',
+    reviewed_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS business_profile_suggestions (
+    id TEXT PRIMARY KEY,
+    profile_type TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    submitter_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    submitter_name TEXT NOT NULL,
+    submitter_email TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    proposed_changes_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    review_note TEXT NOT NULL DEFAULT '',
+    reviewed_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
   CREATE INDEX IF NOT EXISTS idx_users_role_status ON users(role, status);
@@ -901,3 +1027,11 @@
   CREATE INDEX IF NOT EXISTS idx_deployment_updates_created ON deployment_updates(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_oauth_codes_client_expires ON oauth_authorization_codes(client_id, expires_at);
   CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user_expires ON oauth_access_tokens(user_id, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_business_companies_status_industry ON business_companies(status, industry, name);
+  CREATE INDEX IF NOT EXISTS idx_business_companies_owner ON business_companies(claimed_owner_user_id, created_by_user_id);
+  CREATE INDEX IF NOT EXISTS idx_business_people_status_name ON business_people(status, full_name);
+  CREATE INDEX IF NOT EXISTS idx_business_people_owner ON business_people(claimed_owner_user_id, created_by_user_id);
+  CREATE INDEX IF NOT EXISTS idx_business_links_company ON business_person_company_links(company_id, is_founder);
+  CREATE INDEX IF NOT EXISTS idx_business_links_person ON business_person_company_links(person_id, is_current);
+  CREATE INDEX IF NOT EXISTS idx_business_claims_status ON business_profile_claims(status, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_business_suggestions_status ON business_profile_suggestions(status, created_at DESC);
