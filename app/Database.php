@@ -46,6 +46,7 @@ final class Database
         self::ensureColumn('feature_flag_history', 'environment', "TEXT NOT NULL DEFAULT 'all'");
         self::ensureColumn('content_imports', 'metadata_json', "TEXT NOT NULL DEFAULT '{}'");
         self::ensureColumn('content_imports', 'snapshot_json', "TEXT NOT NULL DEFAULT '[]'");
+        self::ensureColumn('discount_codes', 'deleted_at', 'TEXT');
     }
 
     private static function ensureColumn(string $table, string $column, string $definition): void

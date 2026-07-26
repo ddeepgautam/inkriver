@@ -265,6 +265,7 @@
     starts_at TEXT,
     ends_at TEXT,
     active INTEGER NOT NULL DEFAULT 1,
+    deleted_at TEXT,
     created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

@@ -28,6 +28,9 @@ assert_true(in_array('environment', $historyColumns, true), 'feature_flag_histor
 $suppressionTable = $pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'newsletter_suppressions'")->fetch();
 assert_true((bool) $suppressionTable, 'newsletter_suppressions table exists');
 
+$discountColumns = array_column($pdo->query('PRAGMA table_info(discount_codes)')->fetchAll(), 'name');
+assert_true(in_array('deleted_at', $discountColumns, true), 'discount codes support non-destructive deletion');
+
 $csv = "title,slug,contentHtml\nSmoke Story,smoke-story,<p>Hello</p>\n";
 $items = imported_story_items('csv', $csv);
 assert_true(count($items) === 1 && $items[0]['slug'] === 'smoke-story', 'CSV importer parses story rows');
@@ -43,6 +46,13 @@ assert_true(feature_flag_enabled('smoke_feature', false), 'production feature fl
 $pdo->prepare("INSERT INTO feature_flags (key, enabled, rollout_percent, roles_json, environment, description, updated_at) VALUES ('staging_only', 1, 100, '[]', 'staging', 'Smoke', ?)")
     ->execute([now_iso()]);
 assert_true(!feature_flag_enabled('staging_only', false), 'environment-scoped feature flag stays off');
+
+$now = now_iso();
+$pdo->prepare("INSERT INTO discount_codes (id, code, description, discount_type, discount_value, audience, active, created_at, updated_at) VALUES ('DISC-SMOKE', 'SMOKE20', 'Smoke discount', 'percent', 20, 'All readers', 1, ?, ?)")
+    ->execute([$now, $now]);
+assert_true(payment_amount_for_checkout(['amount' => 10000], ['discountCode' => 'SMOKE20']) === 8000, 'active percentage coupon changes checkout amount');
+$pdo->prepare("UPDATE discount_codes SET deleted_at = ?, active = 0 WHERE id = 'DISC-SMOKE'")->execute([$now]);
+assert_true(payment_amount_for_checkout(['amount' => 10000], ['discountCode' => 'SMOKE20']) === 10000, 'deleted coupon no longer changes checkout amount');
 
 $jobId = enqueue_background_job('payouts.execute', ['limit' => 1]);
 assert_true(str_starts_with($jobId, 'JOB-'), 'payout execution job can be queued');

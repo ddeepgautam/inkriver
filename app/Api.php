@@ -2177,7 +2177,7 @@ function payment_amount_for_checkout(array $payment, array $metadata): int
     $code = strtoupper(trim((string) ($metadata['discountCode'] ?? $metadata['discount_code'] ?? '')));
     if ($code === '') return $amount;
     $pdo = Database::pdo();
-    $stmt = $pdo->prepare("SELECT * FROM discount_codes WHERE code = ? AND active = 1 AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)");
+    $stmt = $pdo->prepare("SELECT * FROM discount_codes WHERE code = ? AND active = 1 AND deleted_at IS NULL AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)");
     $stmt->execute([$code, now_iso(), now_iso()]);
     $discount = $stmt->fetch();
     if (!$discount) return $amount;
@@ -2193,7 +2193,7 @@ function active_discount_for_payment(array $payment, array $metadata): ?array
     $code = strtoupper(trim((string) ($metadata['discountCode'] ?? $metadata['discount_code'] ?? '')));
     if ($code === '') return null;
     $pdo = Database::pdo();
-    $stmt = $pdo->prepare("SELECT * FROM discount_codes WHERE code = ? AND active = 1 AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)");
+    $stmt = $pdo->prepare("SELECT * FROM discount_codes WHERE code = ? AND active = 1 AND deleted_at IS NULL AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)");
     $stmt->execute([$code, now_iso(), now_iso()]);
     $discount = $stmt->fetch();
     if (!$discount) return null;
@@ -2203,6 +2203,85 @@ function active_discount_for_payment(array $payment, array $metadata): ?array
         ? (int) floor($original * min(100, (int) $discount['discount_value']) / 100)
         : min($original, (int) $discount['discount_value']);
     return ['row' => $discount, 'amount' => $off];
+}
+
+function public_discount_code(array $row): array
+{
+    return [
+        'id' => $row['id'],
+        'code' => $row['code'],
+        'description' => $row['description'],
+        'discountType' => $row['discount_type'],
+        'discountValue' => (int) $row['discount_value'],
+        'appliesToPlanId' => $row['applies_to_plan_id'] ?: '',
+        'audience' => $row['audience'],
+        'maxRedemptions' => $row['max_redemptions'] === null ? null : (int) $row['max_redemptions'],
+        'redeemedCount' => (int) $row['redeemed_count'],
+        'startsAt' => $row['starts_at'] ?: '',
+        'endsAt' => $row['ends_at'] ?: '',
+        'active' => (bool) $row['active'],
+        'createdAt' => $row['created_at'],
+        'updatedAt' => $row['updated_at'],
+    ];
+}
+
+function normalized_discount_date(mixed $value, string $label): ?string
+{
+    $value = trim((string) $value);
+    if ($value === '') return null;
+    try {
+        return (new DateTimeImmutable($value))
+            ->setTimezone(new DateTimeZone('UTC'))
+            ->format('Y-m-d\TH:i:s.v\Z');
+    } catch (Throwable) {
+        json_response(['error' => 'INVALID_DISCOUNT_DATE', 'message' => "Enter a valid {$label} date and time."], 400);
+    }
+}
+
+function normalized_discount_payload(array $body, ?array $current = null): array
+{
+    $code = strtoupper(preg_replace('/[^A-Z0-9_-]/', '', (string) ($body['code'] ?? ($current['code'] ?? ''))));
+    $code = substr($code, 0, 48);
+    if (strlen($code) < 3) {
+        json_response(['error' => 'INVALID_CODE', 'message' => 'Coupon code must contain at least 3 letters, numbers, hyphens, or underscores.'], 400);
+    }
+
+    $discountType = ($body['discountType'] ?? ($current['discount_type'] ?? 'percent')) === 'amount' ? 'amount' : 'percent';
+    $discountValue = (int) ($body['discountValue'] ?? ($current['discount_value'] ?? 0));
+    if ($discountValue < 1) {
+        json_response(['error' => 'INVALID_DISCOUNT_VALUE', 'message' => 'Discount value must be greater than zero.'], 400);
+    }
+    if ($discountType === 'percent' && $discountValue > 100) {
+        json_response(['error' => 'INVALID_DISCOUNT_VALUE', 'message' => 'Percentage discounts cannot exceed 100%.'], 400);
+    }
+
+    $maxRedemptionsValue = $body['maxRedemptions'] ?? ($current['max_redemptions'] ?? null);
+    $maxRedemptions = $maxRedemptionsValue === null || $maxRedemptionsValue === '' ? null : (int) $maxRedemptionsValue;
+    if ($maxRedemptions !== null && $maxRedemptions < 1) {
+        json_response(['error' => 'INVALID_REDEMPTION_LIMIT', 'message' => 'Redemption limit must be at least 1 or left blank.'], 400);
+    }
+    if ($maxRedemptions !== null && $maxRedemptions < (int) ($current['redeemed_count'] ?? 0)) {
+        json_response(['error' => 'INVALID_REDEMPTION_LIMIT', 'message' => 'Redemption limit cannot be lower than completed redemptions.'], 400);
+    }
+
+    $startsAt = normalized_discount_date($body['startsAt'] ?? ($current['starts_at'] ?? ''), 'start');
+    $endsAt = normalized_discount_date($body['endsAt'] ?? ($current['ends_at'] ?? ''), 'end');
+    if ($startsAt && $endsAt && $endsAt <= $startsAt) {
+        json_response(['error' => 'INVALID_DISCOUNT_WINDOW', 'message' => 'End date must be later than the start date.'], 400);
+    }
+
+    return [
+        'code' => $code,
+        'description' => substr(trim((string) ($body['description'] ?? ($current['description'] ?? ''))), 0, 500),
+        'discountType' => $discountType,
+        'discountValue' => $discountValue,
+        'appliesToPlanId' => trim((string) ($body['appliesToPlanId'] ?? ($current['applies_to_plan_id'] ?? ''))) ?: null,
+        'audience' => substr(trim((string) ($body['audience'] ?? ($current['audience'] ?? 'All readers'))) ?: 'All readers', 0, 120),
+        'maxRedemptions' => $maxRedemptions,
+        'startsAt' => $startsAt,
+        'endsAt' => $endsAt,
+        'active' => array_key_exists('active', $body) ? (bool) $body['active'] : (bool) ($current['active'] ?? true),
+    ];
 }
 
 function normalize_segment_text(string $value): string
@@ -5490,29 +5569,60 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'GET' && $path === '/api/admin/discounts') {
         require_auth(['admin']);
-        $rows = $pdo->query('SELECT * FROM discount_codes ORDER BY created_at DESC')->fetchAll();
-        json_response(['discounts' => array_map(fn($r) => ['id'=>$r['id'],'code'=>$r['code'],'description'=>$r['description'],'discountType'=>$r['discount_type'],'discountValue'=>(int)$r['discount_value'],'appliesToPlanId'=>$r['applies_to_plan_id'] ?: '','audience'=>$r['audience'],'maxRedemptions'=>$r['max_redemptions'],'redeemedCount'=>(int)$r['redeemed_count'],'startsAt'=>$r['starts_at'] ?: '','endsAt'=>$r['ends_at'] ?: '','active'=>(bool)$r['active']], $rows)]);
+        $rows = $pdo->query('SELECT * FROM discount_codes WHERE deleted_at IS NULL ORDER BY created_at DESC')->fetchAll();
+        json_response(['discounts' => array_map('public_discount_code', $rows)]);
     }
 
     if ($method === 'POST' && $path === '/api/admin/discounts') {
         if (!feature_flag_enabled('discounts')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Discounts are disabled.'], 403);
         $session = require_auth(['admin']);
         $body = read_json();
-        $code = strtoupper(preg_replace('/[^A-Z0-9_-]/', '', (string) ($body['code'] ?? '')));
-        if (strlen($code) < 3) json_response(['error' => 'INVALID_CODE', 'message' => 'Discount code is invalid.'], 400);
+        $values = normalized_discount_payload($body);
+        $duplicate = $pdo->prepare('SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE');
+        $duplicate->execute([$values['code']]);
+        if ($duplicate->fetch()) json_response(['error' => 'DISCOUNT_CODE_EXISTS', 'message' => 'That coupon code already exists. Choose another code.'], 409);
         $id = 'DISC-' . uuid_value();
         $now = now_iso();
-        $pdo->prepare("INSERT INTO discount_codes (id, code, description, discount_type, discount_value, applies_to_plan_id, audience, max_redemptions, active, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)")
-            ->execute([$id, $code, $body['description'] ?? '', ($body['discountType'] ?? '') === 'amount' ? 'amount' : 'percent', max(1, (int) ($body['discountValue'] ?? 10)), $body['appliesToPlanId'] ?? null, $body['audience'] ?? 'All readers', $body['maxRedemptions'] ?? null, $session['user']['id'], $now, $now]);
-        json_response(['discount' => ['id' => $id, 'code' => $code]], 201);
+        $pdo->prepare("INSERT INTO discount_codes (id, code, description, discount_type, discount_value, applies_to_plan_id, audience, max_redemptions, starts_at, ends_at, active, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            ->execute([$id, $values['code'], $values['description'], $values['discountType'], $values['discountValue'], $values['appliesToPlanId'], $values['audience'], $values['maxRedemptions'], $values['startsAt'], $values['endsAt'], $values['active'] ? 1 : 0, $session['user']['id'], $now, $now]);
+        $stmt = $pdo->prepare('SELECT * FROM discount_codes WHERE id = ?');
+        $stmt->execute([$id]);
+        audit_log($session['user']['id'], 'discount.created', 'discount', $id, ['code' => $values['code']]);
+        json_response(['discount' => public_discount_code($stmt->fetch())], 201);
     }
 
     if ($method === 'PATCH' && preg_match('#^/api/admin/discounts/([^/]+)$#', $path, $m)) {
         if (!feature_flag_enabled('discounts')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Discounts are disabled.'], 403);
-        require_auth(['admin']);
+        $session = require_auth(['admin']);
+        $id = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM discount_codes WHERE id = ? AND deleted_at IS NULL');
+        $stmt->execute([$id]);
+        $current = $stmt->fetch();
+        if (!$current) json_response(['error' => 'NOT_FOUND', 'message' => 'Discount code not found.'], 404);
         $body = read_json();
-        $pdo->prepare('UPDATE discount_codes SET active = ?, updated_at = ? WHERE id = ?')->execute([!empty($body['active']) ? 1 : 0, now_iso(), urldecode($m[1])]);
-        json_response(['ok' => true]);
+        $values = normalized_discount_payload($body, $current);
+        $duplicate = $pdo->prepare('SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE AND id != ?');
+        $duplicate->execute([$values['code'], $id]);
+        if ($duplicate->fetch()) json_response(['error' => 'DISCOUNT_CODE_EXISTS', 'message' => 'That coupon code already exists. Choose another code.'], 409);
+        $pdo->prepare('UPDATE discount_codes SET code = ?, description = ?, discount_type = ?, discount_value = ?, applies_to_plan_id = ?, audience = ?, max_redemptions = ?, starts_at = ?, ends_at = ?, active = ?, updated_at = ? WHERE id = ?')
+            ->execute([$values['code'], $values['description'], $values['discountType'], $values['discountValue'], $values['appliesToPlanId'], $values['audience'], $values['maxRedemptions'], $values['startsAt'], $values['endsAt'], $values['active'] ? 1 : 0, now_iso(), $id]);
+        $stmt->execute([$id]);
+        audit_log($session['user']['id'], 'discount.updated', 'discount', $id, ['code' => $values['code']]);
+        json_response(['discount' => public_discount_code($stmt->fetch())]);
+    }
+
+    if ($method === 'DELETE' && preg_match('#^/api/admin/discounts/([^/]+)$#', $path, $m)) {
+        if (!feature_flag_enabled('discounts')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Discounts are disabled.'], 403);
+        $session = require_auth(['admin']);
+        $id = urldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM discount_codes WHERE id = ? AND deleted_at IS NULL');
+        $stmt->execute([$id]);
+        $discount = $stmt->fetch();
+        if (!$discount) json_response(['error' => 'NOT_FOUND', 'message' => 'Discount code not found.'], 404);
+        $now = now_iso();
+        $pdo->prepare('UPDATE discount_codes SET active = 0, deleted_at = ?, updated_at = ? WHERE id = ?')->execute([$now, $now, $id]);
+        audit_log($session['user']['id'], 'discount.deleted', 'discount', $id, ['code' => $discount['code'], 'redemptionsPreserved' => (int) $discount['redeemed_count']]);
+        json_response(['ok' => true, 'archived' => true]);
     }
 
     if ($method === 'POST' && $path === '/api/discounts/validate') {
@@ -5520,12 +5630,17 @@ function handle_api(string $path, string $method): void
         $body = read_json();
         $code = strtoupper(trim((string) ($body['code'] ?? '')));
         $amount = max(0, (int) ($body['amount'] ?? 0));
-        $stmt = $pdo->prepare('SELECT * FROM discount_codes WHERE code = ? COLLATE NOCASE AND active = 1');
-        $stmt->execute([$code]);
+        $planId = trim((string) ($body['planId'] ?? ''));
+        $now = now_iso();
+        $stmt = $pdo->prepare('SELECT * FROM discount_codes WHERE code = ? COLLATE NOCASE AND active = 1 AND deleted_at IS NULL AND (starts_at IS NULL OR starts_at <= ?) AND (ends_at IS NULL OR ends_at >= ?) AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)');
+        $stmt->execute([$code, $now, $now]);
         $row = $stmt->fetch();
-        if (!$row) json_response(['error' => 'INVALID_DISCOUNT', 'message' => 'This discount code is not active.'], 400);
+        if (!$row) json_response(['error' => 'INVALID_DISCOUNT', 'message' => 'This coupon is inactive, expired, scheduled for later, or fully redeemed.'], 400);
+        if (($row['applies_to_plan_id'] ?? '') && $planId !== $row['applies_to_plan_id']) {
+            json_response(['error' => 'PLAN_NOT_ELIGIBLE', 'message' => 'This coupon does not apply to the selected membership plan.'], 400);
+        }
         $discountAmount = $row['discount_type'] === 'amount' ? min($amount, (int) $row['discount_value']) : (int) round($amount * (int) $row['discount_value'] / 100);
-        json_response(['valid' => true, 'discount' => ['id' => $row['id'], 'code' => $row['code']], 'discountAmount' => $discountAmount, 'finalAmount' => max(0, $amount - $discountAmount)]);
+        json_response(['valid' => true, 'discount' => public_discount_code($row), 'discountAmount' => $discountAmount, 'finalAmount' => max(0, $amount - $discountAmount)]);
     }
 
     if ($method === 'GET' && $path === '/api/me/creator-analytics') {

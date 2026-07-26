@@ -1212,11 +1212,13 @@ button {
   transition: transform 160ms ease;
 }
 
-.toggle.on {
+.toggle.on,
+.toggle.active {
   background: var(--accent);
 }
 
-.toggle.on span {
+.toggle.on span,
+.toggle.active span {
   transform: translateX(18px);
 }
 
@@ -4872,6 +4874,63 @@ button:disabled {
 .promotion-list article { display: grid; grid-template-columns: 1.5fr .6fr .6fr auto; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 11px; }
 .publication-admin-list article { grid-template-columns: minmax(180px, 1fr) repeat(4, auto); }
 .promotion-list small { display: block; color: var(--muted); }
+.offers-panel { min-width: 0; }
+.offers-panel header .primary-button { flex: 0 0 auto; }
+.offer-list .offer-row {
+  grid-template-columns: minmax(230px, 1.6fr) minmax(90px, .45fr) minmax(95px, .45fr) auto;
+  min-height: 76px;
+}
+.offer-identity { min-width: 0; }
+.offer-identity > span {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.offer-identity > span > strong {
+  color: var(--accent-dark);
+  font-size: 13px;
+  letter-spacing: .04em;
+}
+.offer-identity small {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.offer-status {
+  padding: 4px 7px;
+  font-size: 9px;
+  font-style: normal;
+}
+.offer-status.active { color: var(--accent-dark); background: var(--soft-2); }
+.offer-status.inactive,
+.offer-status.expired,
+.offer-status.exhausted { color: var(--muted); background: var(--soft); }
+.offer-status.scheduled { color: #8a5c14; background: var(--amber); }
+.offer-value { font-size: 13px; }
+.offer-usage strong,
+.offer-usage small { display: block; }
+.offer-usage small { margin-top: 3px; }
+.offer-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.compact-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 36px;
+  padding: 0 10px;
+}
+.offer-empty-state {
+  display: grid;
+  gap: 5px;
+  margin-top: 18px;
+}
+.offer-empty-state span { color: var(--muted); }
 .gift-membership { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding: 14px; background: var(--soft); }
 .gift-membership button { margin-left: auto; }
 .tip-settings label { display: block; margin-top: 18px; }
@@ -5567,6 +5626,83 @@ button:disabled {
 .admin-form-modal {
   max-width: 640px;
 }
+.discount-form-modal {
+  width: min(760px, 100%);
+  max-width: 760px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+.discount-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+.discount-form-grid > label {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+.discount-form-grid > label > span {
+  font-size: 12px;
+  font-weight: 800;
+}
+.discount-form-grid > label > small,
+.discount-active-field small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.discount-code-field,
+.discount-description-field,
+.discount-active-field {
+  grid-column: 1 / -1;
+}
+.discount-code-field input {
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.discount-value-input {
+  display: flex;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--line) 84%, var(--muted));
+  border-radius: 8px;
+  background: var(--input);
+  overflow: hidden;
+}
+.discount-value-input b {
+  display: grid;
+  place-items: center;
+  min-width: 42px;
+  min-height: 44px;
+  border-right: 1px solid var(--line);
+}
+.discount-value-input input {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.discount-active-field {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+.discount-active-field input {
+  width: 20px;
+  height: 20px;
+}
+.discount-active-field span {
+  display: grid;
+  gap: 2px;
+}
+.form-error {
+  border-color: color-mix(in srgb, #a83232 45%, var(--line));
+  color: #a83232;
+}
 .installer-grid span {
   padding: 12px;
   border: 1px solid var(--line);
@@ -5708,6 +5844,21 @@ button:disabled {
   .segment-list > article,
   .promotion-list article { grid-template-columns: 1fr; }
   .segment-list article > div:last-child { display: flex; gap: 6px; }
+  .offers-panel header,
+  .gift-membership {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .offers-panel header .primary-button,
+  .gift-membership button {
+    width: 100%;
+    margin-left: 0;
+  }
+  .offer-controls { justify-content: flex-start; }
+  .discount-form-grid { grid-template-columns: 1fr; }
+  .discount-code-field,
+  .discount-description-field,
+  .discount-active-field { grid-column: auto; }
   .recommendation-factors { grid-template-columns: 1fr; }
   .account-center { padding: 28px 16px 48px; }
   .account-center > header h1 { font-size: 34px; }

@@ -1557,11 +1557,6 @@ const creatorSeed = {
     { id: "seg-2", name: "At-risk annual members", rules: "Annual plan · No visit in 21 days", size: 0, channel: "Draft" },
     { id: "seg-3", name: "India creator prospects", rules: "Location India · Source organic · Free plan", size: 0, channel: "Draft" },
   ],
-  promotions: [
-    { id: "SAVE20", kind: "Coupon", value: "20% off", audience: "New members", uses: 842, active: true },
-    { id: "STUDENT50", kind: "Student", value: "50% off", audience: "Verified students", uses: 319, active: true },
-    { id: "TEAM10", kind: "Corporate", value: "10 seats", audience: "Organizations", uses: 47, active: true },
-  ],
   tipCommission: 8,
   tipsEnabled: true,
 };
@@ -4388,11 +4383,72 @@ function audienceSegmentsTemplate() {
   `;
 }
 
+function discountValueLabel(discount) {
+  return discount.discountType === "amount"
+    ? `${formatINR(Number(discount.discountValue || 0) / 100)} off`
+    : `${Number(discount.discountValue || 0)}% off`;
+}
+
+function discountPlanLabel(discount) {
+  if (!discount.appliesToPlanId) return "All membership plans";
+  return state.plans.find((plan) => plan.id === discount.appliesToPlanId)?.name || discount.appliesToPlanId;
+}
+
+function discountOfferStatus(discount) {
+  const now = Date.now();
+  if (!discount.active) return { label: "Inactive", className: "inactive" };
+  if (discount.maxRedemptions && Number(discount.redeemedCount || 0) >= Number(discount.maxRedemptions)) return { label: "Limit reached", className: "exhausted" };
+  if (discount.startsAt && new Date(discount.startsAt).getTime() > now) return { label: "Scheduled", className: "scheduled" };
+  if (discount.endsAt && new Date(discount.endsAt).getTime() < now) return { label: "Expired", className: "expired" };
+  return { label: "Active", className: "active" };
+}
+
+function discountWindowLabel(discount) {
+  const options = { day: "numeric", month: "short", year: "numeric" };
+  const starts = discount.startsAt ? new Date(discount.startsAt).toLocaleDateString("en-IN", options) : "";
+  const ends = discount.endsAt ? new Date(discount.endsAt).toLocaleDateString("en-IN", options) : "";
+  if (starts && ends) return `${starts} – ${ends}`;
+  if (starts) return `Starts ${starts}`;
+  if (ends) return `Ends ${ends}`;
+  return "No expiry";
+}
+
+function discountDateTimeInput(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function discountOffersListTemplate() {
+  if (!state.discounts.length) return `<div class="empty-state offer-empty-state"><strong>No offers yet</strong><span>Create a coupon for a percentage or fixed-amount membership discount.</span></div>`;
+  return `<div class="promotion-list offer-list">${state.discounts.map((discount) => {
+    const status = discountOfferStatus(discount);
+    const redemptions = Number(discount.redeemedCount || 0);
+    const redemptionLimit = discount.maxRedemptions ? ` of ${Number(discount.maxRedemptions).toLocaleString("en-IN")}` : "";
+    return `<article class="offer-row">
+      <div class="offer-identity">
+        <span><strong>${escapeHtml(discount.code)}</strong><em class="status-pill offer-status ${status.className}">${status.label}</em></span>
+        <small>${escapeHtml(discount.description || discount.audience || "Membership promotion")}</small>
+        <small>${escapeHtml(discount.audience || "All readers")} · ${escapeHtml(discountPlanLabel(discount))} · ${escapeHtml(discountWindowLabel(discount))}</small>
+      </div>
+      <b class="offer-value">${escapeHtml(discountValueLabel(discount))}</b>
+      <span class="offer-usage"><strong>${redemptions.toLocaleString("en-IN")}${redemptionLimit}</strong><small>redemptions</small></span>
+      <div class="offer-controls">
+        <button class="toggle ${discount.active ? "on" : ""}" data-toggle-discount="${escapeHtml(discount.id)}" aria-label="${discount.active ? "Deactivate" : "Activate"} ${escapeHtml(discount.code)}" aria-pressed="${discount.active ? "true" : "false"}"><span></span></button>
+        <button class="secondary-button compact-button" data-edit-discount="${escapeHtml(discount.id)}">${icon("pen", 14)}Edit</button>
+        <button class="secondary-button danger-button compact-button" data-delete-discount="${escapeHtml(discount.id)}">Delete</button>
+      </div>
+    </article>`;
+  }).join("")}</div>`;
+}
+
 function creatorCommerceTemplate() {
   return `
     <section class="creator-workspace commerce-workspace">
       <div class="commerce-columns">
-        <section><header><div><h2>Gifts and promotions</h2><p>Trials, coupons, student, corporate, and regional offers.</p></div><button class="primary-button" data-action="create-promotion">New offer</button></header><div class="promotion-list">${state.creatorTools.promotions.map((promo) => `<article><span><strong>${promo.id}</strong><small>${promo.kind} · ${promo.audience}</small></span><b>${promo.value}</b><span>${promo.uses.toLocaleString("en-IN")} uses</span><button class="toggle ${promo.active ? "active" : ""}" data-toggle-promo="${promo.id}" aria-label="Toggle ${promo.id}"><span></span></button></article>`).join("")}</div><div class="gift-membership"><span>${icon("card", 20)}</span><div><strong>Gift memberships</strong><p>Send 1, 3, 6, or 12 months with a personalized message and scheduled delivery.</p></div><button class="secondary-button" data-action="gift-preview">Preview flow</button></div></section>
+        <section class="offers-panel"><header><div><h2>Gifts and promotions</h2><p>Create checkout coupons with plan, schedule, and redemption controls.</p></div><button class="primary-button" data-action="create-discount">${icon("spark", 15)}New offer</button></header>${discountOffersListTemplate()}<div class="gift-membership"><span>${icon("card", 20)}</span><div><strong>Gift memberships</strong><p>Send 1, 3, 6, or 12 months with a personalized message and scheduled delivery.</p></div><button class="secondary-button" data-action="gift-preview">Preview flow</button></div></section>
         <section class="tip-settings"><h2>Writer tipping</h2><p>Accept one-time reader support through enabled payment gateways.</p><label class="checkbox-field"><input type="checkbox" id="tipsEnabled" ${state.creatorTools.tipsEnabled ? "checked" : ""}><span>Enable tips on articles</span></label><label><span>Platform commission</span><div class="number-affix"><input id="tipCommission" type="number" min="0" max="30" value="${state.creatorTools.tipCommission}"><b>%</b></div></label><div class="tip-example"><span>INR 500 reader tip</span><strong>Writer receives ${formatINR(500 * (1 - state.creatorTools.tipCommission / 100))}</strong><small>Platform commission ${formatINR(500 * state.creatorTools.tipCommission / 100)} before gateway fees.</small></div><div class="gateway-mini-list">${visiblePaymentGateways().map((gateway) => `<span>${icon("card", 14)}${gateway.name}</span>`).join("")}</div><button class="primary-button" data-action="save-tip-settings">Save payout rules</button></section>
       </div>
     </section>
@@ -5735,7 +5791,7 @@ function adCampaignManagerTemplate() {
 
 function discountManagerTemplate() {
   if (!featureEnabled("discounts")) return `<div class="work-panel">${featureDisabledMessage("Discounts and promotions")}</div>`;
-  return `<div class="work-panel"><div class="panel-title">${icon("card")}<h2>Discounts and promotions</h2></div><p class="settings-note">Active discount codes are validated by checkout before the payment order is created.</p><div class="settings-actions"><button class="primary-button" data-action="create-discount">Create discount code</button></div><div class="promotion-list">${state.discounts.length ? state.discounts.map((discount) => `<article><span><strong>${escapeHtml(discount.code)}</strong><small>${escapeHtml(discount.audience || "All readers")} · ${discount.discountType === "amount" ? formatINR(Number(discount.discountValue || 0) / 100) : `${discount.discountValue}%`} · ${Number(discount.redeemedCount || 0).toLocaleString("en-IN")} used</small></span><b>${discount.active ? "Active" : "Inactive"}</b><button class="toggle ${discount.active ? "active" : ""}" data-toggle-discount="${discount.id}" aria-label="Toggle ${escapeHtml(discount.code)}"><span></span></button></article>`).join("") : `<div class="empty-state">No discount codes have been created yet.</div>`}</div></div>`;
+  return `<div class="work-panel"><div class="panel-title">${icon("card")}<h2>Discounts and promotions</h2></div><p class="settings-note">Active coupon rules are enforced both when checkout previews the discount and when payment is captured.</p><div class="settings-actions"><button class="primary-button" data-action="create-discount">Create discount code</button></div>${discountOffersListTemplate()}</div>`;
 }
 
 function payoutManagerTemplate() {
@@ -5906,11 +5962,30 @@ function openAdminModal(type, fields = {}) {
   render();
 }
 
+function discountModalFieldsTemplate(fields) {
+  const discountType = fields.discountType === "amount" ? "amount" : "percent";
+  const active = fields.active !== false;
+  return `
+    <div class="discount-form-grid">
+      <label class="discount-code-field"><span>Coupon code</span><input data-modal-field="code" value="${escapeHtml(fields.code ?? "")}" maxlength="48" autocomplete="off" autocapitalize="characters" placeholder="WELCOME20" /><small>3–48 letters, numbers, hyphens, or underscores.</small></label>
+      <label><span>Discount type</span><select data-modal-field="discountType"><option value="percent" ${discountType === "percent" ? "selected" : ""}>Percentage off</option><option value="amount" ${discountType === "amount" ? "selected" : ""}>Fixed amount off</option></select></label>
+      <label><span>Discount value</span><div class="discount-value-input"><b>${discountType === "amount" ? "₹" : "%"}</b><input data-modal-field="discountValue" type="number" min="${discountType === "amount" ? "0.01" : "1"}" max="${discountType === "percent" ? "100" : "1000000"}" step="${discountType === "amount" ? "0.01" : "1"}" value="${escapeHtml(fields.discountValue ?? "")}" inputmode="decimal" /></div><small>${discountType === "amount" ? "Enter the value in rupees." : "Between 1% and 100%."}</small></label>
+      <label><span>Membership plan</span><select data-modal-field="appliesToPlanId"><option value="">All membership plans</option>${state.plans.map((plan) => `<option value="${escapeHtml(plan.id)}" ${fields.appliesToPlanId === plan.id ? "selected" : ""}>${escapeHtml(plan.name)}</option>`).join("")}</select></label>
+      <label><span>Audience label</span><input data-modal-field="audience" value="${escapeHtml(fields.audience ?? "All readers")}" maxlength="120" placeholder="New members" /><small>Used to identify the campaign internally.</small></label>
+      <label><span>Maximum redemptions</span><input data-modal-field="maxRedemptions" type="number" min="1" step="1" value="${escapeHtml(fields.maxRedemptions ?? "")}" placeholder="Unlimited" /><small>Leave blank for no limit.</small></label>
+      <label><span>Starts at</span><input data-modal-field="startsAt" type="datetime-local" value="${escapeHtml(fields.startsAt ?? "")}" /></label>
+      <label><span>Ends at</span><input data-modal-field="endsAt" type="datetime-local" value="${escapeHtml(fields.endsAt ?? "")}" /></label>
+      <label class="discount-description-field"><span>Offer description</span><textarea data-modal-field="description" maxlength="500" rows="3" placeholder="What this promotion is for">${escapeHtml(fields.description ?? "")}</textarea></label>
+      <label class="discount-active-field"><input data-modal-field="active" type="checkbox" ${active ? "checked" : ""} /><span><strong>Offer active</strong><small>Inactive offers cannot be applied at checkout.</small></span></label>
+    </div>
+  `;
+}
+
 function adminModalTemplate() {
   const { type, fields } = state.adminModal;
   const configs = {
     ad: { title: "Create ad campaign", action: "submit-admin-modal-ad", fields: [["name", "Campaign name"], ["sponsor", "Sponsor"], ["headline", "Headline"], ["targetUrl", "Target URL"], ["placement", "Placement"]] },
-    discount: { title: "Create discount", action: "submit-admin-modal-discount", fields: [["code", "Code"], ["discountType", "Type percent or amount"], ["discountValue", "Value"], ["audience", "Audience"]] },
+    discount: { title: fields.id ? `Edit ${fields.code}` : "Create discount offer", action: "submit-admin-modal-discount", fields: [] },
     credential: { title: "Add provider credential", action: "submit-admin-modal-credential", fields: [["provider", "Provider"], ["key", "Credential key"], ["value", "Secret value"], ["environment", "Environment"]] },
     user: { title: "Create user", action: "submit-admin-modal-user", fields: [["name", "Full name"], ["email", "Email"], ["password", "Temporary password"], ["role", "Role"], ["subscription", "Subscription"], ["status", "Status"]] },
     geoip: { title: "Configure IP intelligence", action: "submit-admin-modal-geoip", fields: [["apiUrl", "API URL with {ip}"], ["apiKey", "API key"]] },
@@ -5941,14 +6016,19 @@ function adminModalTemplate() {
     <p class="settings-note">Paste an image URL below to insert an externally hosted image.</p>
     ${state.mediaMessage ? `<div class="payment-message">${escapeHtml(state.mediaMessage)}</div>` : ""}
   </div>` : "";
+  const formFields = type === "discount"
+    ? discountModalFieldsTemplate(fields)
+    : `<div class="settings-form-grid">${config.fields.map(([key, label]) => `<label><span>${escapeHtml(label)}</span><input data-modal-field="${key}" value="${escapeHtml(fields[key] || "")}" /></label>`).join("")}</div>`;
+  const submitLabel = state.adminModal.submitting ? "Saving…" : type === "discount" ? (fields.id ? "Save changes" : "Create offer") : "Save";
   return `<div class="modal-backdrop" role="dialog" aria-modal="true">
-    <section class="checkout-modal admin-form-modal">
+    <section class="checkout-modal admin-form-modal ${type === "discount" ? "discount-form-modal" : ""}">
       <button class="close-button" data-action="close-admin-modal" aria-label="Close">${icon("close")}</button>
       <h2>${escapeHtml(config.title)}</h2>
       ${fields._summary ? `<p class="settings-note">${escapeHtml(fields._summary)}</p>` : ""}
       ${editorImageExtras}
-      <div class="settings-form-grid">${config.fields.map(([key, label]) => `<label><span>${escapeHtml(label)}</span><input data-modal-field="${key}" value="${escapeHtml(fields[key] || "")}" /></label>`).join("")}</div>
-      <div class="settings-actions"><button class="primary-button" data-action="${config.action}">Save</button><button class="secondary-button" data-action="close-admin-modal">Cancel</button></div>
+      ${state.adminModal.error ? `<div class="payment-message form-error" role="alert">${escapeHtml(state.adminModal.error)}</div>` : ""}
+      ${formFields}
+      <div class="settings-actions"><button class="primary-button" data-action="${config.action}" ${state.adminModal.submitting ? "disabled" : ""}>${submitLabel}</button><button class="secondary-button" data-action="close-admin-modal" ${state.adminModal.submitting ? "disabled" : ""}>Cancel</button></div>
     </section>
   </div>`;
 }
@@ -6540,7 +6620,10 @@ function bindInputs() {
   });
   document.querySelectorAll("[data-modal-field]").forEach((field) => {
     const update = (event) => {
-      state.adminModal.fields[event.target.dataset.modalField] = event.target.value;
+      const key = event.target.dataset.modalField;
+      state.adminModal.fields[key] = event.target.type === "checkbox" ? event.target.checked : event.target.value;
+      state.adminModal.error = "";
+      if (state.adminModal.type === "discount" && key === "discountType" && event.type === "change") render();
     };
     field.addEventListener("input", update);
     field.addEventListener("change", update);
@@ -6703,9 +6786,10 @@ document.addEventListener("click", async (event) => {
   const readerScale = target.dataset.readerScale;
   const tipAmount = target.dataset.tipAmount;
   const tipStory = target.dataset.tipStory;
-  const togglePromo = target.dataset.togglePromo;
   const toggleAd = target.dataset.toggleAd;
   const toggleDiscount = target.dataset.toggleDiscount;
+  const editDiscount = target.dataset.editDiscount;
+  const deleteDiscount = target.dataset.deleteDiscount;
   const verifyPayoutAccount = target.dataset.verifyPayoutAccount;
   const executePayout = target.dataset.executePayout;
   const removeTranslationLanguage = target.dataset.removeTranslationLanguage;
@@ -6786,7 +6870,17 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (action === "create-ad-campaign") return openAdminModal("ad", { placement: "leaderboard" });
-  if (action === "create-discount") return openAdminModal("discount", { discountType: "percent", discountValue: "10", audience: "All readers" });
+  if (action === "create-discount") return openAdminModal("discount", { discountType: "percent", discountValue: "10", audience: "All readers", active: true, appliesToPlanId: "", maxRedemptions: "", startsAt: "", endsAt: "", description: "" });
+  if (editDiscount) {
+    const discount = state.discounts.find((item) => item.id === editDiscount);
+    if (discount) return openAdminModal("discount", {
+      ...discount,
+      discountValue: discount.discountType === "amount" ? String(Number(discount.discountValue || 0) / 100) : String(discount.discountValue || ""),
+      maxRedemptions: discount.maxRedemptions ?? "",
+      startsAt: discountDateTimeInput(discount.startsAt),
+      endsAt: discountDateTimeInput(discount.endsAt),
+    });
+  }
   if (action === "add-provider-credential") return openAdminModal("credential", { environment: "production" });
   if (credentialProvider && credentialKey) return openAdminModal("credential", { provider: credentialProvider, key: credentialKey, environment: "production" });
   if (action === "create-admin-user") return setRoute("/admin/users/new");
@@ -6810,6 +6904,12 @@ document.addEventListener("click", async (event) => {
 
   if (action?.startsWith("submit-admin-modal-")) {
     const fields = state.adminModal.fields || {};
+    if (state.adminModal.submitting) return;
+    if (action === "submit-admin-modal-discount") {
+      state.adminModal.submitting = true;
+      state.adminModal.error = "";
+      render();
+    }
     try {
       if (action === "submit-admin-modal-ad") {
         await apiRequest("/api/admin/ads", {
@@ -6820,12 +6920,32 @@ document.addEventListener("click", async (event) => {
         state.userMessage = "Ad campaign created.";
       }
       if (action === "submit-admin-modal-discount") {
-        await apiRequest("/api/admin/discounts", {
-          method: "POST",
-          body: JSON.stringify({ ...fields, discountValue: Number(fields.discountValue || 0) }),
+        const code = String(fields.code || "").trim().toUpperCase();
+        if (!/^[A-Z0-9_-]{3,48}$/.test(code)) throw new Error("Use 3–48 letters, numbers, hyphens, or underscores for the coupon code.");
+        const enteredValue = Number(fields.discountValue || 0);
+        if (!Number.isFinite(enteredValue) || enteredValue <= 0) throw new Error("Enter a discount value greater than zero.");
+        if (fields.discountType !== "amount" && enteredValue > 100) throw new Error("Percentage discounts cannot exceed 100%.");
+        const maxRedemptions = fields.maxRedemptions === "" || fields.maxRedemptions == null ? null : Number(fields.maxRedemptions);
+        if (maxRedemptions !== null && (!Number.isInteger(maxRedemptions) || maxRedemptions < 1)) throw new Error("Maximum redemptions must be a whole number of at least 1.");
+        const startsAt = fields.startsAt ? new Date(fields.startsAt).toISOString() : "";
+        const endsAt = fields.endsAt ? new Date(fields.endsAt).toISOString() : "";
+        if (startsAt && endsAt && new Date(endsAt) <= new Date(startsAt)) throw new Error("End date must be later than the start date.");
+        const payload = {
+          ...fields,
+          code,
+          discountType: fields.discountType === "amount" ? "amount" : "percent",
+          discountValue: fields.discountType === "amount" ? Math.round(enteredValue * 100) : Math.round(enteredValue),
+          maxRedemptions,
+          startsAt,
+          endsAt,
+          active: fields.active !== false,
+        };
+        await apiRequest(fields.id ? `/api/admin/discounts/${encodeURIComponent(fields.id)}` : "/api/admin/discounts", {
+          method: fields.id ? "PATCH" : "POST",
+          body: JSON.stringify(payload),
         });
         await loadAdminCommerceData();
-        state.userMessage = "Discount code created.";
+        state.userMessage = fields.id ? `Coupon ${code} updated.` : `Coupon ${code} created.`;
       }
       if (action === "submit-admin-modal-credential") {
         const payload = await apiRequest("/api/admin/provider-credentials", {
@@ -7008,6 +7128,8 @@ document.addEventListener("click", async (event) => {
       state.adminModal = { type: "", fields: {} };
     } catch (error) {
       state.userMessage = error.message;
+      state.adminModal.error = error.message;
+      state.adminModal.submitting = false;
     }
     render();
     return;
@@ -7452,11 +7574,6 @@ document.addEventListener("click", async (event) => {
     const story = state.stories.find((item) => item.slug === tipStory);
     state.tipStory = tipStory;
     if (story) await startTipPayment(story);
-  }
-  if (togglePromo) {
-    state.creatorTools.promotions = state.creatorTools.promotions.map((promo) => promo.id === togglePromo ? { ...promo, active: !promo.active } : promo);
-    persistProductState("creator-tools", state.creatorTools);
-    render();
   }
   if (sessionRevoke) {
     try {
@@ -8061,11 +8178,6 @@ document.addEventListener("click", async (event) => {
     persistProductState("creator-tools", state.creatorTools);
     render();
   }
-  if (action === "create-promotion") {
-    state.creatorTools.promotions.push({ id: `LAUNCH${state.creatorTools.promotions.length + 1}`, kind: "Campaign", value: "15% off", audience: "Selected segment", uses: 0, active: true });
-    persistProductState("creator-tools", state.creatorTools);
-    render();
-  }
   if (action === "refresh-commerce") {
     await loadAdminCommerceData();
     state.userMessage = "Commerce data refreshed.";
@@ -8097,6 +8209,19 @@ document.addEventListener("click", async (event) => {
         });
         await loadAdminCommerceData();
         state.userMessage = "Discount status updated.";
+      } catch (error) {
+        state.userMessage = error.message;
+      }
+      render();
+    }
+  }
+  if (deleteDiscount) {
+    const discount = state.discounts.find((item) => item.id === deleteDiscount);
+    if (discount && window.confirm(`Delete coupon ${discount.code}? It will stop working immediately. Existing redemption history will be preserved.`)) {
+      try {
+        await apiRequest(`/api/admin/discounts/${encodeURIComponent(discount.id)}`, { method: "DELETE" });
+        await loadAdminCommerceData();
+        state.userMessage = `Coupon ${discount.code} deleted.`;
       } catch (error) {
         state.userMessage = error.message;
       }
