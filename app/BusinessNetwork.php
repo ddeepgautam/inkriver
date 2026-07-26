@@ -514,6 +514,44 @@ function business_mcp_field_map(): array
     ];
 }
 
+function business_mcp_link_founder_to_company(array $arguments, array $session): array
+{
+    $founderId = trim((string) ($arguments['founderId'] ?? $arguments['personId'] ?? ''));
+    $companyId = trim((string) ($arguments['companyId'] ?? ''));
+    $roleTitle = trim((string) ($arguments['roleTitle'] ?? 'Founder')) ?: 'Founder';
+    $founder = $founderId !== '' ? business_get_raw_profile('person', $founderId) : null;
+    $company = $companyId !== '' ? business_get_raw_profile('company', $companyId) : null;
+    if (!$founder || !$company) throw new RuntimeException('Provide valid founderId and companyId values from list_founder_profiles and list_company_profiles.');
+    $pdo = Database::pdo();
+    $stmt = $pdo->prepare('SELECT id FROM business_person_company_links WHERE person_id = ? AND company_id = ? AND role_title = ? LIMIT 1');
+    $stmt->execute([$founder['id'], $company['id'], $roleTitle]);
+    $existingId = (string) (($stmt->fetch()['id'] ?? ''));
+    $isFounder = array_key_exists('isFounder', $arguments) ? (int) (bool) $arguments['isFounder'] : 1;
+    $isCurrent = array_key_exists('isCurrent', $arguments) ? (int) (bool) $arguments['isCurrent'] : 1;
+    if ($existingId !== '') {
+        $pdo->prepare('UPDATE business_person_company_links SET is_founder = ?, is_current = ?, started_on = ?, ended_on = ? WHERE id = ?')
+            ->execute([$isFounder, $isCurrent, $arguments['startedOn'] ?? null, $arguments['endedOn'] ?? null, $existingId]);
+        $linkId = $existingId;
+    } else {
+        $linkId = uuid_value('LNK-');
+        $pdo->prepare('INSERT INTO business_person_company_links (id, person_id, company_id, role_title, is_founder, is_current, started_on, ended_on, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$linkId, $founder['id'], $company['id'], $roleTitle, $isFounder, $isCurrent, $arguments['startedOn'] ?? null, $arguments['endedOn'] ?? null, now_iso()]);
+    }
+    audit_log($session['user']['id'], 'mcp.business_profiles_linked', 'business_link', $linkId, ['founderId' => $founder['id'], 'companyId' => $company['id']]);
+    return [
+        'link' => [
+            'id' => $linkId,
+            'founderId' => $founder['id'],
+            'founderName' => $founder['full_name'],
+            'companyId' => $company['id'],
+            'companyName' => $company['name'],
+            'roleTitle' => $roleTitle,
+            'isFounder' => (bool) $isFounder,
+            'isCurrent' => (bool) $isCurrent,
+        ],
+    ];
+}
+
 function business_mcp_tool_definitions(): array
 {
     $companyProperties = [];
@@ -528,11 +566,79 @@ function business_mcp_tool_definitions(): array
             ? ['type' => 'array', 'items' => in_array($field, ['companies'], true) ? ['type' => 'object', 'additionalProperties' => true] : ['type' => 'string']]
             : ['type' => in_array($field, ['verified'], true) ? 'boolean' : 'string'];
     }
-    return [
+    $emptyInput = ['type' => 'object', 'properties' => new stdClass()];
+    $listProperties = [
+        'q' => ['type' => 'string'],
+        'status' => ['type' => 'string', 'enum' => ['', 'draft', 'published', 'unpublished']],
+    ];
+    $imageProperties = [
+        'profileType' => ['type' => 'string', 'enum' => ['company', 'founder']],
+        'sourceUrl' => ['type' => 'string', 'description' => 'HTTPS URL of the image to import.'],
+        'dataBase64' => ['type' => 'string', 'description' => 'Base64-encoded JPG, PNG, WebP, or GIF data.'],
+        'filename' => ['type' => 'string'],
+        'altText' => ['type' => 'string'],
+    ];
+    $tools = [
+        [
+            'name' => 'get_company_profile_schema',
+            'description' => 'Return every supported company profile field, relationship shape, profile status, logo field, and contact privacy rule.',
+            'inputSchema' => $emptyInput,
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
+            'name' => 'get_founder_profile_schema',
+            'description' => 'Return every supported founder profile field, relationship shape, profile status, photo field, and contact privacy rule.',
+            'inputSchema' => $emptyInput,
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
+            'name' => 'list_company_profiles',
+            'description' => 'Find existing company profiles and ids before creating, updating, or linking a company.',
+            'inputSchema' => ['type' => 'object', 'properties' => $listProperties],
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
+            'name' => 'list_founder_profiles',
+            'description' => 'Find existing founder profiles and ids before creating, updating, or linking a founder.',
+            'inputSchema' => ['type' => 'object', 'properties' => $listProperties],
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
+            'name' => 'upload_profile_image',
+            'description' => 'Upload a company logo or founder headshot from a URL or base64 image. The response identifies whether asset.url belongs in logo_url or image_url.',
+            'inputSchema' => ['type' => 'object', 'required' => ['profileType'], 'properties' => $imageProperties],
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
+            'name' => 'create_or_update_company_profile',
+            'description' => 'Create a new company profile or update one by id/slug, including logo, company details, private contacts, status, founders, and key people.',
+            'inputSchema' => ['type' => 'object', 'required' => ['name'], 'properties' => $companyProperties],
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
+            'name' => 'create_or_update_founder_profile',
+            'description' => 'Create a new founder profile or update one by id/slug, including photo, biography, designation, location, social links, achievements, companies, and status.',
+            'inputSchema' => ['type' => 'object', 'required' => ['full_name'], 'properties' => $personProperties],
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
+        [
+            'name' => 'link_founder_to_company',
+            'description' => 'Link an existing founder profile to an existing company profile without replacing either profile’s other relationships.',
+            'inputSchema' => ['type' => 'object', 'required' => ['founderId', 'companyId'], 'properties' => [
+                'founderId' => ['type' => 'string'],
+                'companyId' => ['type' => 'string'],
+                'roleTitle' => ['type' => 'string'],
+                'isFounder' => ['type' => 'boolean'],
+                'isCurrent' => ['type' => 'boolean'],
+                'startedOn' => ['type' => 'string'],
+                'endedOn' => ['type' => 'string'],
+            ]],
+            'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
+        ],
         [
             'name' => 'get_business_profile_schema',
-            'description' => 'Return the complete field map for InkRiver company and founder profiles, including relationship shapes and contact privacy rules.',
-            'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+            'description' => 'Compatibility action returning the combined company and founder profile schema.',
+            'inputSchema' => $emptyInput,
             'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
         ],
         [
@@ -547,14 +653,8 @@ function business_mcp_tool_definitions(): array
         ],
         [
             'name' => 'upload_business_profile_image',
-            'description' => 'Upload a company logo or founder headshot from a URL or base64 image. Use the returned asset.url as logo_url for a company or image_url for a founder.',
-            'inputSchema' => ['type' => 'object', 'properties' => [
-                'profileType' => ['type' => 'string', 'enum' => ['company', 'founder']],
-                'sourceUrl' => ['type' => 'string', 'description' => 'HTTPS URL of the image to import.'],
-                'dataBase64' => ['type' => 'string', 'description' => 'Base64-encoded JPG, PNG, WebP, or GIF data.'],
-                'filename' => ['type' => 'string'],
-                'altText' => ['type' => 'string'],
-            ]],
+            'description' => 'Compatibility alias for upload_profile_image.',
+            'inputSchema' => ['type' => 'object', 'required' => ['profileType'], 'properties' => $imageProperties],
             'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
         ],
         [
@@ -570,16 +670,21 @@ function business_mcp_tool_definitions(): array
             'outputSchema' => ['type' => 'object', 'additionalProperties' => true],
         ],
     ];
+    return $tools;
 }
 
 function business_mcp_call_tool(string $name, array $arguments, array $session): ?array
 {
+    if ($name === 'get_company_profile_schema') return ['profileType' => 'company'] + business_mcp_field_map()['company'] + ['statuses' => business_mcp_field_map()['statuses'], 'privacy' => business_mcp_field_map()['privacy']];
+    if ($name === 'get_founder_profile_schema') return ['profileType' => 'founder'] + business_mcp_field_map()['person'] + ['statuses' => business_mcp_field_map()['statuses'], 'privacy' => business_mcp_field_map()['privacy']];
     if ($name === 'get_business_profile_schema') return business_mcp_field_map();
+    if ($name === 'list_company_profiles') return ['profiles' => business_list_profiles('company', $arguments, $session, true)];
+    if ($name === 'list_founder_profiles') return ['profiles' => business_list_profiles('person', $arguments, $session, true)];
     if ($name === 'list_business_profiles') {
         $type = (string) ($arguments['type'] ?? 'companies');
         return ['profiles' => business_list_profiles($type, $arguments, $session, true)];
     }
-    if ($name === 'upload_business_profile_image') {
+    if (in_array($name, ['upload_profile_image', 'upload_business_profile_image'], true)) {
         $profileType = (string) ($arguments['profileType'] ?? 'company');
         if (!in_array($profileType, ['company', 'founder'], true)) throw new RuntimeException('profileType must be company or founder.');
         return [
@@ -588,13 +693,14 @@ function business_mcp_call_tool(string $name, array $arguments, array $session):
             'profileType' => $profileType,
         ];
     }
-    if ($name === 'create_or_update_company') {
+    if (in_array($name, ['create_or_update_company_profile', 'create_or_update_company'], true)) {
         $identifier = trim((string) ($arguments['id'] ?? $arguments['slug'] ?? ''));
         return ['profile' => business_save_profile('company', $arguments, $session, $identifier !== '' ? $identifier : null, true)];
     }
-    if ($name === 'create_or_update_founder') {
+    if (in_array($name, ['create_or_update_founder_profile', 'create_or_update_founder'], true)) {
         $identifier = trim((string) ($arguments['id'] ?? $arguments['slug'] ?? ''));
         return ['profile' => business_save_profile('person', $arguments, $session, $identifier !== '' ? $identifier : null, true)];
     }
+    if ($name === 'link_founder_to_company') return business_mcp_link_founder_to_company($arguments, $session);
     return null;
 }

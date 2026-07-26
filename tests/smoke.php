@@ -92,7 +92,46 @@ $fieldMap = business_mcp_field_map();
 assert_true(in_array('contact_email', $fieldMap['company']['fields'], true) && in_array('companies', $fieldMap['person']['fields'], true), 'MCP schema maps private contacts and founder-company relationships');
 $mcpToolNames = array_column(business_mcp_tool_definitions(), 'name');
 assert_true(in_array('upload_business_profile_image', $mcpToolNames, true), 'MCP exposes business profile image upload tool');
-$mcpImage = business_mcp_call_tool('upload_business_profile_image', [
+$requiredBusinessTools = [
+    'get_company_profile_schema',
+    'get_founder_profile_schema',
+    'list_company_profiles',
+    'list_founder_profiles',
+    'upload_profile_image',
+    'create_or_update_company_profile',
+    'create_or_update_founder_profile',
+    'link_founder_to_company',
+];
+assert_true(!array_diff($requiredBusinessTools, $mcpToolNames), 'MCP advertises dedicated company and founder profile actions');
+$toolsListResponse = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 7, 'method' => 'tools/list', 'params' => new stdClass()]);
+$advertisedToolNames = array_column($toolsListResponse['result']['tools'] ?? [], 'name');
+assert_true(!array_diff($requiredBusinessTools, $advertisedToolNames), 'MCP tools/list includes dedicated business profile actions');
+$companySchema = business_mcp_call_tool('get_company_profile_schema', [], $adminSession);
+$founderSchema = business_mcp_call_tool('get_founder_profile_schema', [], $adminSession);
+assert_true(in_array('logo_url', $companySchema['fields'] ?? [], true) && in_array('image_url', $founderSchema['fields'] ?? [], true), 'dedicated MCP schemas expose company logo and founder photo fields');
+$companyList = business_mcp_call_tool('list_company_profiles', ['q' => 'Smoke Ventures'], $adminSession);
+$founderList = business_mcp_call_tool('list_founder_profiles', ['q' => 'Smoke Founder'], $adminSession);
+assert_true(count($companyList['profiles'] ?? []) === 1 && count($founderList['profiles'] ?? []) === 1, 'dedicated MCP list actions find existing profiles');
+$linkedProfiles = business_mcp_call_tool('link_founder_to_company', [
+    'founderId' => $founder['id'],
+    'companyId' => $company['id'],
+    'roleTitle' => 'Board member',
+    'isFounder' => false,
+], $adminSession);
+assert_true(($linkedProfiles['link']['companyId'] ?? '') === $company['id'], 'MCP links a founder to a company without replacing existing relationships');
+$updatedCompany = business_mcp_call_tool('create_or_update_company_profile', [
+    'id' => $company['id'],
+    'name' => 'Smoke Ventures',
+    'tagline' => 'Updated through the dedicated MCP profile action',
+], $adminSession);
+assert_true(($updatedCompany['profile']['tagline'] ?? '') === 'Updated through the dedicated MCP profile action', 'dedicated MCP company action updates a profile');
+$updatedFounder = business_mcp_call_tool('create_or_update_founder_profile', [
+    'id' => $founder['id'],
+    'full_name' => 'Smoke Founder',
+    'headline' => 'Founder profile updated through MCP',
+], $adminSession);
+assert_true(($updatedFounder['profile']['headline'] ?? '') === 'Founder profile updated through MCP', 'dedicated MCP founder action updates a profile');
+$mcpImage = business_mcp_call_tool('upload_profile_image', [
     'profileType' => 'founder',
     'dataBase64' => 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'filename' => 'smoke-founder.png',

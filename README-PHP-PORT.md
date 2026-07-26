@@ -158,6 +158,11 @@ Publishing tools:
 
 Business Network tools:
 
+- `get_company_profile_schema` / `get_founder_profile_schema` - return the dedicated field map for each profile type.
+- `list_company_profiles` / `list_founder_profiles` - find existing profile ids before creating, updating, or linking.
+- `create_or_update_company_profile` / `create_or_update_founder_profile` - create and manage dedicated business profiles independently from article authors.
+- `upload_profile_image` - imports a company logo or founder headshot and returns the profile field to populate.
+- `link_founder_to_company` - links existing profiles without replacing their other relationships.
 - `get_business_profile_schema` - returns every company/founder field, relationship shape, status, and privacy rule.
 - `list_business_profiles` - finds existing company/founder ids before linking or updating.
 - `upload_business_profile_image` - imports a logo/headshot from a URL or base64 image and returns the correct profile field to populate.

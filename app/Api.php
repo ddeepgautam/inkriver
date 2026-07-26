@@ -1506,14 +1506,24 @@ function mcp_handle_request(array $request): ?array
             'initialize' => [
                 'protocolVersion' => '2025-11-25',
                 'capabilities' => ['tools' => ['listChanged' => false], 'resources' => ['listChanged' => false]],
-                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Publishing and Business Network MCP', 'version' => '1.2.0'],
-                'instructions' => 'For articles, use get_blog_editor_schema before create_or_update_blog. For companies and founders, use get_business_profile_schema, resolve relationships with list_business_profiles, upload logos or headshots with upload_business_profile_image, then pass the returned URL to create_or_update_company or create_or_update_founder.',
+                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Publishing and Business Network MCP', 'version' => '1.3.0'],
+                'instructions' => 'Founder and company profiles are separate from article authors. Use get_company_profile_schema or get_founder_profile_schema, check existing records with list_company_profiles or list_founder_profiles, upload logos/headshots with upload_profile_image, then call create_or_update_company_profile or create_or_update_founder_profile. Use link_founder_to_company to add a relationship without replacing other links.',
             ],
             'ping' => new stdClass(),
             'tools/list' => ['tools' => array_merge(mcp_tool_definitions(), business_mcp_tool_definitions())],
             'tools/call' => mcp_call_tool((string) ($request['params']['name'] ?? ''), is_array($request['params']['arguments'] ?? null) ? $request['params']['arguments'] : []),
-            'resources/list' => ['resources' => [['uri' => 'inkriver://blog-editor/schema', 'name' => 'InkRiver blog editor schema', 'mimeType' => 'application/json']]],
-            'resources/read' => ['contents' => [['uri' => 'inkriver://blog-editor/schema', 'mimeType' => 'application/json', 'text' => json_encode(mcp_blog_editor_schema(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)]]],
+            'resources/list' => ['resources' => [
+                ['uri' => 'inkriver://blog-editor/schema', 'name' => 'InkRiver blog editor schema', 'mimeType' => 'application/json'],
+                ['uri' => 'inkriver://business-network/schema', 'name' => 'InkRiver company and founder profile schema', 'mimeType' => 'application/json'],
+            ]],
+            'resources/read' => ['contents' => [[
+                'uri' => (string) ($request['params']['uri'] ?? 'inkriver://blog-editor/schema'),
+                'mimeType' => 'application/json',
+                'text' => json_encode(
+                    ($request['params']['uri'] ?? '') === 'inkriver://business-network/schema' ? business_mcp_field_map() : mcp_blog_editor_schema(),
+                    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
+                ),
+            ]]],
             default => throw new RuntimeException('Unsupported MCP method: ' . $method),
         };
         return $id === null ? null : ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result];
