@@ -32,9 +32,25 @@ if ($method === 'GET' && $path === '/robots.txt') {
     exit;
 }
 
+if ($method === 'GET' && $path === '/manifest.webmanifest') {
+    $name = configured_site_name();
+    foreach (security_headers() + ['Content-Type' => 'application/manifest+json; charset=utf-8', 'Cache-Control' => 'no-cache'] as $key => $value) header($key . ': ' . $value);
+    echo json_encode([
+        'name' => $name . ' Publishing',
+        'short_name' => $name,
+        'description' => 'Read, publish, subscribe, and manage an independent editorial platform.',
+        'start_url' => '/',
+        'display' => 'standalone',
+        'background_color' => '#ffffff',
+        'theme_color' => '#176b48',
+        'icons' => [['src' => '/src/icon.svg', 'sizes' => 'any', 'type' => 'image/svg+xml', 'purpose' => 'any maskable']],
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 $file = realpath(__DIR__ . $path);
 $root = realpath(__DIR__);
-if ($file && $root && str_starts_with($file, $root) && is_file($file) && basename($file) !== 'index.php') {
+if ($file && $root && str_starts_with($file, $root) && is_file($file) && !in_array(basename($file), ['index.php', 'index.html'], true)) {
     $types = [
         'css' => 'text/css; charset=utf-8',
         'js' => 'text/javascript; charset=utf-8',
@@ -54,4 +70,19 @@ if ($file && $root && str_starts_with($file, $root) && is_file($file) && basenam
 foreach (security_headers() + ['Content-Type' => 'text/html; charset=utf-8', 'Cache-Control' => 'no-cache', 'Vary' => 'Cookie'] as $key => $value) {
     header($key . ': ' . $value);
 }
-readfile(__DIR__ . '/index.html');
+$html = file_get_contents(__DIR__ . '/index.html');
+if ($html === false) {
+    http_response_code(500);
+    echo 'Application shell unavailable.';
+    exit;
+}
+$siteSeo = document_value('site-seo-public', document_value('site-seo', []));
+$siteSeo = is_array($siteSeo) ? $siteSeo : [];
+$siteName = configured_site_name();
+$pageTitle = trim((string) ($siteSeo['homepageSeoTitle'] ?? '')) ?: $siteName . ' - Publishing, Memberships, and Business Network';
+$pageDescription = trim((string) ($siteSeo['homepageMetaDescription'] ?? '')) ?: $siteName . ' combines independent publishing, memberships, and a trusted business network.';
+$escapedTitle = htmlspecialchars($pageTitle, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+$escapedDescription = htmlspecialchars($pageDescription, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+$html = preg_replace_callback('/<title>.*?<\/title>/s', fn() => '<title>' . $escapedTitle . '</title>', $html, 1) ?: $html;
+$html = preg_replace_callback('/(<meta\s+name="description"\s+content=")[^"]*("\s*\/?>)/s', fn($match) => $match[1] . $escapedDescription . $match[2], $html, 1) ?: $html;
+echo $html;

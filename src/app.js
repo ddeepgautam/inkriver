@@ -1,3 +1,5 @@
+let configuredPlatformName = "InkRiver";
+
 const defaultCategories = [
   { id: "category-ai", name: "AI", slug: "ai", description: "Artificial intelligence, tools, workflows, and practical adoption.", color: "blue", seoTitle: "AI Articles and Insights", metaDescription: "Explore practical AI workflows, tools, research, and publishing insights." },
   { id: "category-startups", name: "Startups", slug: "startups", description: "Company building, independent publishing, and sustainable growth.", color: "rose", seoTitle: "Startup Ideas and Growth", metaDescription: "Read startup strategy, growth, company-building, and founder insights." },
@@ -36,6 +38,8 @@ const defaultStories = [
     claps: 920,
     comments: 31,
     premium: false,
+    ads: true,
+    earning: true,
     color: "blue",
     revenue: 7200,
     reads: 14600,
@@ -206,7 +210,7 @@ const defaultStories = [
 const defaultStoryBody = [
   "The next generation of publishing platforms will be measured by the quality of attention they create. Readers want strong editorial signals, fast pages, clear membership value, and fewer noisy interruptions.",
   "For writers, the platform has to make the exchange visible: member read time, saves, comments, conversion bonuses, publication edits, and payout timing. For teams, moderation and advertising need to live inside the same operating room instead of scattered tools.",
-  "InkRiver models those loops directly. A story can be free, ad-supported, member-only, or shared through a friend link. Staff roles can review submissions, publish newsletters, approve ads, and manage comments without touching payment settings.",
+  "{{siteName}} models those loops directly. A story can be free, ad-supported, member-only, or shared through a friend link. Staff roles can review submissions, publish newsletters, approve ads, and manage comments without touching payment settings.",
   "The result is a calm reading surface with a serious business engine behind it: subscriptions in INR, multiple payment processors, revenue analytics, and writer payouts shaped by genuine member engagement.",
 ];
 
@@ -225,7 +229,7 @@ const defaultProfiles = {
 };
 
 const defaultCuratedLists = [
-  { id: "editors-picks", name: "Editor's Picks", description: "Strong reporting and practical ideas selected by the InkRiver editorial desk.", owner: "InkRiver Editors", followers: 32400, slugs: ["inside-the-new-reader-economy", "designing-ai-products-people-trust", "the-new-shape-of-indian-internet-culture"] },
+  { id: "editors-picks", name: "Editor's Picks", description: "Strong reporting and practical ideas selected by the {{siteName}} editorial desk.", owner: "{{siteName}} Editors", followers: 32400, slugs: ["inside-the-new-reader-economy", "designing-ai-products-people-trust", "the-new-shape-of-indian-internet-culture"] },
   { id: "build-better-products", name: "Build Better Products", description: "Design, AI, operations, and product thinking for teams making useful software.", owner: "Leena Bose", followers: 11700, slugs: ["building-a-practical-ai-content-desk", "the-clean-dashboard-test", "designing-ai-products-people-trust", "small-language-models-at-work"] },
   { id: "independent-growth", name: "Independent Growth", description: "A focused collection for founders, creators, and small publications.", owner: "Naina Kapoor", followers: 9400, slugs: ["why-small-publications-win-loyalty", "the-indian-creator-business-stack", "the-seo-brief-that-writers-use", "from-side-project-to-small-company"] },
 ];
@@ -677,7 +681,7 @@ function persistSiteSeo() {
 }
 
 function normalizeStory(story, index = 0) {
-  const body = Array.isArray(story.body) && story.body.length ? story.body : defaultStoryBody;
+  const body = Array.isArray(story.body) && story.body.length ? story.body : configuredStoryBody();
   const generatedTags = `${story.title || ""} ${story.dek || ""}`
     .toLowerCase()
     .split(/[^a-z0-9]+/)
@@ -762,6 +766,40 @@ function publishedStories() {
   return state.stories.filter((story) => story.status === "published");
 }
 
+function siteName() {
+  configuredPlatformName = String(state.siteSeo?.siteTitle || configuredPlatformName || "InkRiver").trim() || "InkRiver";
+  return configuredPlatformName;
+}
+
+function siteInitials() {
+  return siteName().split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "IR";
+}
+
+function displayPublicationName(name) {
+  return !name || name === "InkRiver" ? siteName() : name;
+}
+
+function configuredSiteText(value = "") {
+  return String(value || "").replaceAll("{{siteName}}", configuredPlatformName).replaceAll("InkRiver", configuredPlatformName);
+}
+
+function configuredStoryBody() {
+  return defaultStoryBody.map(configuredSiteText);
+}
+
+function numberedPaginationTemplate(current, totalPages, dataAttribute, label) {
+  if (totalPages <= 1) return "";
+  const pages = totalPages <= 7
+    ? Array.from({ length: totalPages }, (_, index) => index + 1)
+    : [1, current > 4 ? "start-ellipsis" : null, current - 1, current, current + 1, current < totalPages - 3 ? "end-ellipsis" : null, totalPages]
+      .filter((value, index, values) => value && (typeof value === "string" || (value > 1 && value < totalPages) || value === 1 || value === totalPages) && values.indexOf(value) === index);
+  return `<nav class="business-pagination content-pagination" aria-label="${escapeHtml(label)}">
+    <button type="button" ${dataAttribute}="${current - 1}" aria-label="Previous page" ${current <= 1 ? "disabled" : ""}>${icon("chevronLeft", 14)}<span>Previous</span></button>
+    <div>${pages.map((page) => typeof page === "string" ? `<span class="business-page-ellipsis" aria-hidden="true">…</span>` : `<button type="button" ${dataAttribute}="${page}" aria-label="Page ${page}" ${page === current ? `class="active" aria-current="page"` : ""}>${page}</button>`).join("")}</div>
+    <button type="button" ${dataAttribute}="${current + 1}" aria-label="Next page" ${current >= totalPages ? "disabled" : ""}><span>Next</span>${icon("chevronRight", 14)}</button>
+  </nav>`;
+}
+
 function emptyBlogForm() {
   return {
     id: "",
@@ -776,11 +814,11 @@ function emptyBlogForm() {
     color: "mint",
     imageUrl: "",
     tagsText: "",
-    publication: "InkRiver",
+    publication: "",
     scheduledAt: "",
     interactiveBlocks: [],
-    body: defaultStoryBody.join("\n\n"),
-    contentHtml: defaultStoryBody.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
+    body: configuredStoryBody().join("\n\n"),
+    contentHtml: configuredStoryBody().map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
     seo: defaultPostSeo(),
   };
 }
@@ -842,11 +880,11 @@ function saveBlogFromForm(status = "published") {
     slug: nextSlug,
     title,
     dek: state.blogForm.dek.trim() || "A concise editorial summary for this story.",
-    author: state.blogForm.author.trim() || "InkRiver Editor",
+    author: state.blogForm.author.trim() || `${siteName()} Editor`,
     role: state.blogForm.role.trim() || "Editorial desk",
     topic: state.blogForm.topic || "Marketing",
     tags: state.blogForm.tagsText ? state.blogForm.tagsText.split(",").map((tag) => tag.trim()).filter(Boolean) : (previous?.tags || []),
-    publication: state.blogForm.publication.trim() || "InkRiver",
+    publication: state.blogForm.publication.trim() || siteName(),
     scheduledAt: status === "scheduled" ? (state.blogForm.scheduledAt || new Date().toISOString()) : "",
     publishedAt: previous?.publishedAt || new Date().toISOString(),
     interactiveBlocks: state.blogForm.interactiveBlocks || [],
@@ -859,8 +897,8 @@ function saveBlogFromForm(status = "published") {
     reads: previous?.reads || 0,
     status,
     imageUrl: state.blogForm.imageUrl.trim(),
-    body: body.length ? body : defaultStoryBody,
-    contentHtml: contentHtml || defaultStoryBody.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
+    body: body.length ? body : configuredStoryBody(),
+    contentHtml: contentHtml || configuredStoryBody().map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
     seo: {
       ...defaultPostSeo({ title, dek: state.blogForm.dek, imageUrl: state.blogForm.imageUrl }),
       ...state.blogForm.seo,
@@ -919,28 +957,79 @@ async function saveWriterStory(status) {
     return;
   }
   try {
-    const paragraphs = state.draft.body.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
+    if (!["draft", "review"].includes(status)) status = "review";
+    const contentHtml = sanitizeRichHtml(state.blogForm.contentHtml || "");
+    const paragraphs = richTextParagraphs(contentHtml);
     const payload = await apiRequest("/api/stories", {
       method: "POST",
       body: JSON.stringify({
-        title: state.draft.title,
-        dek: state.draft.subtitle,
-        topic: state.draft.topic,
-        premium: state.draft.paywalled,
-        ads: state.draft.ads,
-        earning: state.draft.earning,
+        id: state.editingBlogId || undefined,
+        updateSlug: state.editingBlogId ? state.blogForm.slug : undefined,
+        title: state.blogForm.title,
+        slug: state.blogForm.slug,
+        dek: state.blogForm.dek,
+        publication: state.blogForm.publication || siteName(),
+        topic: state.blogForm.topic,
+        tags: state.blogForm.tagsText.split(",").map((tag) => tag.trim()).filter(Boolean),
+        readTime: state.blogForm.readTime,
+        premium: state.blogForm.premium,
+        ads: state.blogForm.ads,
+        earning: state.blogForm.earning,
+        color: state.blogForm.color,
+        imageUrl: state.blogForm.imageUrl,
+        interactiveBlocks: state.blogForm.interactiveBlocks,
+        seo: state.blogForm.seo,
         status,
         body: paragraphs,
-        contentHtml: paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
+        contentHtml,
       }),
     });
     state.stories = [normalizeStory(payload.story), ...state.stories.filter((story) => story.id !== payload.story.id)];
-    state.claps[payload.story.slug] = 0;
-    state.draftMessage = `${payload.story.title} saved as ${status}.`;
-    if (status === "published") setRoute(`/stories/${payload.story.slug}`);
-    else render();
+    state.claps[payload.story.slug] = Number(state.claps[payload.story.slug] || payload.story.claps || 0);
+    state.editingBlogId = payload.story.id;
+    state.blogForm = {
+      ...payload.story,
+      body: (payload.story.body || []).join("\n\n"),
+      contentHtml: payload.story.contentHtml || "",
+      tagsText: (payload.story.tags || []).join(", "),
+      interactiveBlocks: structuredClone(payload.story.interactiveBlocks || []),
+      seo: { ...defaultPostSeo(payload.story), ...(payload.story.seo || {}) },
+    };
+    state.blogMessage = status === "review" ? `${payload.story.title} submitted for editorial review.` : `${payload.story.title} saved as a draft.`;
+    render();
   } catch (error) {
-    state.draftMessage = error.message;
+    state.blogMessage = error.message;
+    render();
+  }
+}
+
+async function toggleStoryLike(slug) {
+  if (!state.user) {
+    state.authMode = "login";
+    state.loginMessage = "Sign in to like stories and keep your reactions synced.";
+    state.loginOpen = true;
+    render();
+    return;
+  }
+  if (state.likeBusy.has(slug)) return;
+  const wasLiked = state.likedStories.has(slug);
+  const previousCount = Number(state.claps[slug] || 0);
+  wasLiked ? state.likedStories.delete(slug) : state.likedStories.add(slug);
+  state.claps[slug] = Math.max(0, previousCount + (wasLiked ? -1 : 1));
+  state.likeBusy.add(slug);
+  render();
+  try {
+    const payload = await apiRequest(`/api/stories/${encodeURIComponent(slug)}/like`, { method: "POST", body: "{}" });
+    payload.liked ? state.likedStories.add(slug) : state.likedStories.delete(slug);
+    state.claps[slug] = Number(payload.count || 0);
+    const story = state.stories.find((item) => item.slug === slug);
+    if (story) recordRecommendationActivity(story, payload.liked ? "clap" : "unlike");
+  } catch (error) {
+    wasLiked ? state.likedStories.add(slug) : state.likedStories.delete(slug);
+    state.claps[slug] = previousCount;
+    state.userMessage = error.message;
+  } finally {
+    state.likeBusy.delete(slug);
     render();
   }
 }
@@ -1170,12 +1259,14 @@ async function hydratePlatformState() {
     }));
     state.claps = Object.fromEntries(state.stories.map((story) => [story.slug, story.claps || 0]));
   }
+  state.likedStories = new Set(payload.likedStorySlugs || []);
   if (Array.isArray(documents.categories) && documents.categories.length) state.categories = documents.categories;
   if (Array.isArray(documents.plans) && documents.plans.length) state.plans = documents.plans;
   state.translations = payload.translations || {};
   if (Array.isArray(payload.translationLanguages)) state.translationLanguages = payload.translationLanguages;
   if (documents["site-seo-public"]) state.siteSeo = { ...state.siteSeo, ...documents["site-seo-public"] };
   if (documents["site-seo"]) state.siteSeo = { ...state.siteSeo, ...documents["site-seo"] };
+  configuredPlatformName = String(state.siteSeo.siteTitle || configuredPlatformName).trim() || "InkRiver";
   if (documents["creator-tools"]) {
     state.creatorTools = { ...state.creatorTools, ...documents["creator-tools"] };
     state.creatorTools.segments = (state.creatorTools.segments || []).map((segment) => ({ ...segment, size: 0 }));
@@ -1621,6 +1712,9 @@ const state = {
   resetPassword: "",
   categories: initialCategories,
   claps: Object.fromEntries(initialStories.map((story) => [story.slug, story.claps])),
+  likedStories: new Set(),
+  likeBusy: new Set(),
+  homePage: 1,
   role: "subscriber",
   isMember: false,
   user: initialUser,
@@ -1737,6 +1831,8 @@ const state = {
   editingBlogId: "",
   blogForm: emptyBlogForm(),
   blogMessage: "",
+  adminBlogQuery: "",
+  adminBlogPage: 1,
   draftNotes: [],
   draftNoteBody: "",
   draftNoteType: "comment",
@@ -1815,6 +1911,7 @@ const recommendationSignals = {
   read_complete: 4,
   long_read: 3,
   clap: 3,
+  unlike: -3,
   save: 6,
   unsave: -4,
   share: 3,
@@ -1974,6 +2071,7 @@ function recommendationActivityLabel(activity) {
     read_complete: "Read deeply",
     long_read: "Spent time reading",
     clap: "Liked",
+    unlike: "Removed like",
     save: "Saved",
     unsave: "Removed save",
     share: "Shared",
@@ -2202,13 +2300,13 @@ function userProfileFromUser(user, fallbackSlug = "") {
   return {
     slug: user.username || fallbackSlug || slugifyName(user.name),
     name: user.name,
-    bio: user.bio || user.headline || `InkRiver ${user.role || "reader"} profile.`,
+    bio: user.bio || user.headline || `${siteName()} ${user.role || "reader"} profile.`,
     expertise: expertise.slice(0, 5),
     followers: Math.max(0, Object.values(state.following || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0)),
     badge: user.role === "admin" ? "Administrator" : user.role === "moderator" ? "Moderator" : user.role === "writer" ? "Writer" : "Reader",
     website: user.website || "",
     social: socialEntry ? `${socialEntry[0]}: ${socialEntry[1]}` : (user.username ? user.username : ""),
-    publication: user.headline || user.location || "InkRiver",
+    publication: user.headline || user.location || siteName(),
     avatarUrl: user.avatarUrl || "",
     location: user.location || "",
   };
@@ -2235,7 +2333,7 @@ function publicProfiles() {
       badge: existing.badge || (story.authorUserId ? "Verified writer" : "Writer"),
       website: existing.website || "",
       social: existing.social || "",
-      publication: story.publication || existing.publication || "InkRiver",
+      publication: displayPublicationName(story.publication || existing.publication),
       avatarUrl: existing.avatarUrl || "",
       location: existing.location || "",
     };
@@ -2252,13 +2350,17 @@ function publicCuratedLists() {
   const dynamic = Object.entries(byTopic).map(([topic, stories]) => ({
     id: `topic-${slugifyName(topic)}`,
     name: `${topic} essentials`,
-    owner: stories[0]?.publication || "InkRiver",
+    owner: displayPublicationName(stories[0]?.publication),
     description: `A live reading list generated from published ${topic.toLowerCase()} stories.`,
     slugs: stories.slice(0, 8).map((story) => story.slug),
     followers: Math.max(100, stories.reduce((sum, story) => sum + Number(story.reads || 0), 0)),
   }));
   const seen = new Set();
-  return [...dynamic, ...defaultCuratedLists].filter((list) => {
+  return [...dynamic, ...defaultCuratedLists].map((list) => ({
+    ...list,
+    owner: configuredSiteText(list.owner),
+    description: configuredSiteText(list.description),
+  })).filter((list) => {
     if (seen.has(list.id)) return false;
     seen.add(list.id);
     return list.slugs.some((slug) => state.stories.some((story) => story.slug === slug && story.status === "published"));
@@ -2586,7 +2688,7 @@ async function startGatewayPayment(plan, purchase = {}) {
       const checkout = new window.Razorpay({
         key: order.checkout.key,
         ...(order.checkout.subscriptionId ? { subscription_id: order.checkout.subscriptionId } : { order_id: order.checkout.orderId }),
-        name: "InkRiver",
+        name: siteName(),
         description: `${plan.name} membership`,
         prefill: { name: state.user.name, email: state.user.email },
         theme: { color: "#1a7f48" },
@@ -2683,7 +2785,7 @@ async function startTipPayment(story) {
       const checkout = new window.Razorpay({
         key: order.checkout.key,
         order_id: order.checkout.orderId,
-        name: "InkRiver",
+        name: siteName(),
         description: `Tip for ${story.author}`,
         prefill: { name: state.user.name, email: state.user.email },
         theme: { color: "#1a7f48" },
@@ -3042,16 +3144,30 @@ function setRoute(to) {
   if (to === "/admin/blogs/new") {
     state.editingBlogId = "";
     state.blogForm = emptyBlogForm();
+    state.blogForm.publication = siteName();
     state.blogMessage = "";
+  }
+  if (to === "/write" && state.path !== "/write") {
+    state.editingBlogId = "";
+    state.blogForm = emptyBlogForm();
+    state.blogForm.author = state.user?.name || "";
+    state.blogForm.role = "Writer";
+    state.blogForm.publication = siteName();
+    state.blogMessage = "";
+    state.mediaMessage = "";
   }
   if (to === "/admin/users/new") {
     state.adminCreateUserForm = emptyAdminCreateUserForm();
     state.adminCreateUserMessage = "";
   }
-  if (to === "/") state.activeTopic = "For you";
+  if (to === "/") {
+    state.activeTopic = "For you";
+    state.homePage = 1;
+  }
   if (to.startsWith("/category/")) {
     const category = state.categories.find((item) => `/category/${item.slug}` === to);
     if (category) state.activeTopic = category.name;
+    state.homePage = 1;
   }
   window.history.pushState({}, "", to);
   state.path = to;
@@ -3266,7 +3382,7 @@ function businessListingCtaTemplate() {
     <span class="business-cta-orbit orbit-two" aria-hidden="true"></span>
     <div class="business-cta-icon" aria-hidden="true">${icon("gauge", 26)}</div>
     <div class="business-cta-copy">
-      <span>Join the InkRiver Business Network</span>
+      <span>Join the ${escapeHtml(siteName())} Business Network</span>
       <h2 id="businessListingCtaTitle">Put your business story where the right people can find it.</h2>
       <p>Create a trusted company or founder profile, connect your leadership graph, and manage every detail from one dashboard.</p>
       <div><i>${icon("check", 13)}Discoverable profile</i><i>${icon("check", 13)}Linked founders & companies</i><i>${icon("check", 13)}Private member contacts</i></div>
@@ -3281,7 +3397,7 @@ function businessNetworkTemplate() {
   return `
     <main class="business-network-page">
       <section class="business-network-hero">
-        <span class="eyebrow">InkRiver Business Network</span>
+        <span class="eyebrow">${escapeHtml(siteName())} Business Network</span>
         <h1>Discover the people and companies building what’s next.</h1>
         <p>Explore verified organizations, founding teams, operating milestones, markets, technologies, and member-only contact channels.</p>
         <div class="business-network-search">${icon("search", 20)}<input id="businessNetworkSearch" value="${escapeHtml(state.businessNetwork.q)}" placeholder="Search companies, founders, sectors, or keywords" /><button class="primary-button" data-action="search-business-network">Search</button></div>
@@ -3610,6 +3726,19 @@ async function submitBusinessOverlay(form, claim) {
   }
 }
 
+function notFoundTemplate() {
+  return `<main class="not-found-page">
+    <section class="not-found-card">
+      <div class="not-found-art" aria-hidden="true"><span>4</span><div class="missing-page-orbit"><i></i><b>${icon("pen", 30)}</b></div><span>4</span><div class="not-found-river"><i></i><i></i><i></i></div></div>
+      <span class="eyebrow">A small editorial detour</span>
+      <h1>This page wandered off mid-sentence.</h1>
+      <p>It may have been moved, unpublished, or simply decided it needed one more draft. The rest of ${escapeHtml(siteName())} is still flowing normally.</p>
+      <button class="primary-button not-found-home" data-route="/">${icon("chevronLeft", 16)}Return to home</button>
+      <small>Error 404 · No pages were harmed in the making of this message.</small>
+    </section>
+  </main>`;
+}
+
 function appTemplate() {
   const selectedStory = state.stories.find((story) => story.status === "published" && state.path.includes(`/stories/${story.slug}`));
   const selectedCategory = state.categories.find((category) => state.path === `/category/${category.slug}`);
@@ -3663,7 +3792,9 @@ function appTemplate() {
                 ? ["writer", "admin"].includes(state.user?.role) ? writeTemplate() : becomeAuthorTemplate()
                 : state.path.startsWith("/pricing")
                   ? pricingTemplate()
-                  : homeTemplate()
+                  : state.path === "/"
+                    ? homeTemplate()
+                    : notFoundTemplate()
       }
       ${footerTemplate()}
       ${state.checkoutPlan ? checkoutTemplate(state.checkoutPlan) : ""}
@@ -3696,7 +3827,7 @@ function adminRouteTemplate() {
         body: blog.body.join("\n\n"),
         contentHtml: blog.contentHtml || blog.body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
         tagsText: (blog.tags || []).join(", "),
-        publication: blog.publication || blog.role || "InkRiver",
+        publication: displayPublicationName(blog.publication || blog.role),
         interactiveBlocks: structuredClone(blog.interactiveBlocks || []),
         seo: { ...defaultPostSeo(blog), ...(blog.seo || {}) },
       };
@@ -3730,7 +3861,7 @@ function headerTemplate() {
   return `
     <header class="site-header">
       <div class="header-inner">
-        <button class="brand" data-route="/" aria-label="InkRiver home"><span class="brand-mark">IR</span><span>InkRiver</span></button>
+        <button class="brand" data-route="/" aria-label="${escapeHtml(siteName())} home"><span class="brand-mark">${escapeHtml(siteInitials())}</span><span>${escapeHtml(siteName())}</span></button>
         <div class="search-shell">
           <label class="search-box">${icon("search")}<input id="searchInput" value="${escapeHtml(state.query)}" placeholder="Search stories, writers, topics" autocomplete="off" /></label>
           ${state.searchOpen ? searchAutocompleteTemplate() : ""}
@@ -3751,7 +3882,7 @@ function headerTemplate() {
         <div class="mobile-menu-scrim" data-action="close-menu" aria-hidden="true"></div>
         <aside class="mobile-panel" aria-label="Mobile navigation">
           <div class="mobile-panel-head">
-            <button class="brand compact" data-route="/"><span class="brand-mark">IR</span><span>InkRiver</span></button>
+            <button class="brand compact" data-route="/"><span class="brand-mark">${escapeHtml(siteInitials())}</span><span>${escapeHtml(siteName())}</span></button>
             <button class="close-button" data-action="close-menu" aria-label="Close menu">${icon("close", 18)}</button>
           </div>
           <nav>
@@ -3916,7 +4047,7 @@ function readerProfileTemplate() {
         ${userAvatarTemplate(state.user, "profile-avatar")}
         <div class="profile-intro">
           <div class="profile-title-row"><div><h1>${escapeHtml(name)}</h1><span class="profile-badge">${icon("bookmark", 13)}Reader profile</span></div><button class="secondary-button" data-route="/dashboard">Edit interests</button></div>
-          <p>Curious reader following ${state.following.topics.slice(0, 3).map(escapeHtml).join(", ") || "new ideas across InkRiver"}.</p>
+          <p>Curious reader following ${state.following.topics.slice(0, 3).map(escapeHtml).join(", ") || `new ideas across ${escapeHtml(siteName())}`}.</p>
           <div class="profile-meta"><strong>${Object.values(state.following).reduce((sum, items) => sum + items.length, 0)} followed</strong><span>${completed.length} completed stories</span><span>${savedStories.length} saved</span></div>
         </div>
       </section>
@@ -3939,6 +4070,11 @@ function readerProfileTemplate() {
 
 function homeTemplate(selectedCategory = null) {
   const activeTopic = selectedCategory?.name || state.activeTopic;
+  const matchingStories = filteredStories(activeTopic);
+  const perPage = 20;
+  const totalPages = Math.max(1, Math.ceil(matchingStories.length / perPage));
+  state.homePage = Math.max(1, Math.min(totalPages, state.homePage));
+  const pageStories = matchingStories.slice((state.homePage - 1) * perPage, state.homePage * perPage);
   return `
     <main>
       <section class="home-grid">
@@ -3958,9 +4094,11 @@ function homeTemplate(selectedCategory = null) {
           ${!selectedCategory ? personalizedFeedStatusTemplate() : ""}
           ${!selectedCategory && continueReadingEntries(3).length ? continueReadingTemplate("feed") : ""}
           ${adTemplate("leaderboard", "Leaderboard ad 728 x 90")}
-          <div class="story-list">
-            ${filteredStories(activeTopic).map((story, index) => storyCardTemplate(story, activeTopic === "For you", index)).join("")}
+          <div class="feed-result-summary"><span>${matchingStories.length.toLocaleString("en-IN")} published ${matchingStories.length === 1 ? "story" : "stories"}</span><span>Page ${state.homePage} of ${totalPages}</span></div>
+          <div class="story-list" id="homeStoryResults">
+            ${pageStories.map((story, index) => storyCardTemplate(story, activeTopic === "For you", (state.homePage - 1) * perPage + index)).join("") || `<div class="empty-state">No published stories match this view.</div>`}
           </div>
+          ${numberedPaginationTemplate(state.homePage, totalPages, "data-home-page", "Article pages")}
         </div>
         <aside class="right-rail" aria-label="Discovery and account widgets">
           ${subscriptionTemplate()}
@@ -4000,6 +4138,7 @@ function storyCardTemplate(story, personalized = false, index = 0) {
   const displayStory = translatedStory(story);
   const saved = state.saved.has(story.slug);
   const imageUrl = safeImageUrl(story.imageUrl);
+  const liked = state.likedStories.has(story.slug);
   return `
     <article class="story-card">
       <button class="thumbnail ${story.color} ${imageUrl ? "has-image" : ""}" data-route="/stories/${escapeHtml(story.slug)}" aria-label="${escapeHtml(displayStory.title)}">
@@ -4007,14 +4146,14 @@ function storyCardTemplate(story, personalized = false, index = 0) {
         <span>${escapeHtml(story.topic)}</span>
       </button>
       <div class="story-body">
-        <div class="author-row"><button class="author-link" data-route="/${slugifyName(story.author)}"><span class="avatar">${escapeHtml(story.author[0] || "I")}</span><span>${escapeHtml(story.author)}</span></button><span class="muted">in ${escapeHtml(story.publication)}</span></div>
+        <div class="author-row"><button class="author-link" data-route="/${slugifyName(story.author)}"><span class="avatar">${escapeHtml(story.author[0] || "I")}</span><span>${escapeHtml(story.author)}</span></button><span class="muted">in ${escapeHtml(displayPublicationName(story.publication))}</span></div>
         ${personalized ? `<div class="recommendation-reason">${icon("spark", 13)}<span>${index === 0 ? "Top match: " : ""}${escapeHtml(recommendationReason(story))}</span></div>` : ""}
         <button class="story-title" data-route="/stories/${escapeHtml(story.slug)}">${escapeHtml(displayStory.title)}</button>
         <p>${escapeHtml(displayStory.dek)}</p>
         <div class="story-meta">
           ${story.premium ? `<span class="premium-label">${icon("lock", 13)}Member-only</span>` : ""}
           <span>${escapeHtml(story.readTime)}</span>
-          <button data-clap="${story.slug}">${icon("heart", 15)}${state.claps[story.slug].toLocaleString("en-IN")}</button>
+          <button class="story-like-button ${liked ? "liked" : ""}" data-clap="${story.slug}" aria-label="${liked ? "Unlike" : "Like"} ${escapeHtml(story.title)}" aria-pressed="${liked}" ${state.likeBusy.has(story.slug) ? "disabled" : ""}>${icon("heart", 15)}${Number(state.claps[story.slug] || 0).toLocaleString("en-IN")}</button>
           <button>${icon("comment", 15)}${story.comments}</button>
           <button data-save="${story.slug}">${icon("bookmark", 15)}${saved ? "In Read Later" : "Read later"}</button>
           ${personalized ? `<button data-not-interested="${story.slug}">${icon("eye", 15)}Show less</button>` : ""}
@@ -4107,6 +4246,7 @@ function storyPageTemplate(story) {
   const imageUrl = safeImageUrl(story.imageUrl);
   const contentHtml = storyContentHtml(displayStory, locked);
   const history = state.readingHistory.find((entry) => entry.slug === story.slug);
+  const liked = state.likedStories.has(story.slug);
   return `
     <main class="article-shell">
       ${state.preferences.focusMode ? `<button class="focus-exit-floating" data-reader-mode="focus" aria-label="Exit focus mode">${icon("close", 16)}<span>Exit focus</span></button>` : ""}
@@ -4120,7 +4260,7 @@ function storyPageTemplate(story) {
         <h1>${escapeHtml(displayStory.title)}</h1>
         <p class="article-dek">${escapeHtml(displayStory.dek)}</p>
         <div class="article-author-row">
-          <button class="article-author" data-route="/${slugifyName(story.author)}"><span class="avatar large">${escapeHtml(story.author[0] || "I")}</span><div><strong>${escapeHtml(story.author)}</strong><span>${escapeHtml(story.publication)} · ${escapeHtml(story.readTime)}</span></div></button>
+          <button class="article-author" data-route="/${slugifyName(story.author)}"><span class="avatar large">${escapeHtml(story.author[0] || "I")}</span><div><strong>${escapeHtml(story.author)}</strong><span>${escapeHtml(displayPublicationName(story.publication))} · ${escapeHtml(story.readTime)}</span></div></button>
           <div class="article-follow-actions">
             <button class="secondary-button ${isFollowing("writers", story.author) ? "active" : ""}" data-follow-type="writers" data-follow-value="${escapeHtml(story.author)}">${followLabel("writers", story.author)} writer</button>
             <button class="secondary-button ${isFollowing("publications", story.publication) ? "active" : ""}" data-follow-type="publications" data-follow-value="${escapeHtml(story.publication)}">${followLabel("publications", story.publication)} publication</button>
@@ -4131,7 +4271,7 @@ function storyPageTemplate(story) {
           <span>${escapeHtml(story.topic)}</span>
         </div>
         <div class="article-actions">
-          <button data-clap="${story.slug}">${icon("heart")}${state.claps[story.slug].toLocaleString("en-IN")}</button>
+          <button class="story-like-button ${liked ? "liked" : ""}" data-clap="${story.slug}" aria-label="${liked ? "Unlike" : "Like"} ${escapeHtml(story.title)}" aria-pressed="${liked}" ${state.likeBusy.has(story.slug) ? "disabled" : ""}>${icon("heart")}${Number(state.claps[story.slug] || 0).toLocaleString("en-IN")}</button>
           <button>${icon("comment")}${story.comments}</button>
           <button data-save="${story.slug}">${icon("bookmark")}${saved ? "In Read Later" : "Read later"}</button>
           <button data-not-interested="${story.slug}">${icon("eye")}Show less like this</button>
@@ -4382,7 +4522,7 @@ function becomeAuthorTemplate() {
     <main class="become-author-page">
       <section class="author-program-hero">
         <div>
-          <span class="eyebrow">InkRiver author program</span>
+          <span class="eyebrow">${escapeHtml(siteName())} author program</span>
           <h1>Build a serious writing home for readers who return.</h1>
           <p>Publish thoughtful stories, grow a following, work with editorial tools, and use reader memberships, newsletters, comments, analytics, and distribution features from one focused workspace.</p>
           <div class="author-program-actions">
@@ -4392,7 +4532,7 @@ function becomeAuthorTemplate() {
               : state.user
                 ? `<button class="primary-button" data-action="begin-author-flow">${icon("card", 16)}Activate author path</button>`
                 : `<button class="primary-button" data-action="begin-author-flow">${icon("users", 16)}Join and request access</button>`}
-            <button class="secondary-button" data-route="/about">${icon("link", 16)}Learn about InkRiver</button>
+            <button class="secondary-button" data-route="/about">${icon("link", 16)}Learn about ${escapeHtml(siteName())}</button>
           </div>
         </div>
         <aside class="author-program-card">
@@ -4414,7 +4554,7 @@ function becomeAuthorTemplate() {
         ].map(([iconName, title, copy]) => `<article>${icon(iconName, 20)}<h2>${title}</h2><p>${copy}</p></article>`).join("")}
       </section>
       <section class="author-program-flow">
-        <div><h2>How author access works</h2><p>InkRiver keeps author tools behind account access so publishing permissions, subscriptions, moderation, analytics, and payouts remain tied to a verified profile.</p></div>
+        <div><h2>How author access works</h2><p>${escapeHtml(siteName())} keeps author tools behind account access so publishing permissions, subscriptions, moderation, analytics, and payouts remain tied to a verified profile.</p></div>
         <div class="author-steps">
           <article><strong>Create or sign in</strong><span>Start as a reader, complete your profile, add a photo, and choose the topics you want to write about.</span></article>
           <article><strong>Choose a paid membership</strong><span>Author access and earning tools are only activated for paid subscribers.</span></article>
@@ -4429,29 +4569,44 @@ function writeTemplate() {
   if (!["writer", "admin"].includes(state.user?.role)) {
     return accessDeniedTemplate("Writing tools are available from the dashboard for approved writer accounts.");
   }
-  const estimated = state.draft.earning ? 11800 : 0;
+  if (!state.blogForm.author) state.blogForm.author = state.user.name;
+  if (!state.blogForm.role) state.blogForm.role = "Writer";
+  if (!state.blogForm.publication) state.blogForm.publication = siteName();
+  const formImage = safeImageUrl(state.blogForm.imageUrl);
+  const seo = state.blogForm.seo;
+  const score = postSeoScore();
   return `
-    <main class="studio-page">
-      <section class="studio-main">
-        <div class="studio-toolbar">
-          <button class="secondary-button" data-action="save-writer-draft">${icon("pen", 16)}Save draft</button>
-          <button class="secondary-button" data-action="toggle-writer-preview">${icon("eye", 16)}${state.draftPreview ? "Close preview" : "Preview"}</button>
-          <button class="primary-button" data-action="publish-writer-story">${icon("play", 16)}Publish</button>
+    <main class="writer-editor-page">
+      <header class="writer-editor-header"><div><span class="eyebrow">Writer studio</span><h1>${state.editingBlogId ? "Continue your draft" : "Write a new story"}</h1><p>The complete editorial toolkit, with publishing approval kept in the editorial workflow.</p></div><button class="secondary-button" data-route="/dashboard">${icon("chevronLeft", 15)}Back to dashboard</button></header>
+      <section class="post-editor-layout writer-post-editor">
+        <div class="post-editor-main">
+          <div class="editor-title-fields">
+            <input id="blogTitle" class="post-title-input" value="${escapeHtml(state.blogForm.title)}" placeholder="Add title" aria-label="Story title" />
+            <div class="slug-editor"><span>${window.location.origin}/stories/</span><input id="blogSlug" value="${escapeHtml(state.blogForm.slug)}" placeholder="story-url-slug" aria-label="Story URL slug" /></div>
+            <textarea id="blogDek" class="post-excerpt-input" placeholder="Write a concise excerpt for feeds and previews" aria-label="Story excerpt">${escapeHtml(state.blogForm.dek)}</textarea>
+          </div>
+          <div class="rich-editor-shell">${richEditorToolbarTemplate()}<div id="richBlogEditor" class="rich-blog-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Story content">${sanitizeRichHtml(state.blogForm.contentHtml)}</div></div>
+          <section class="editor-panel"><div class="panel-title">${icon("eye")}<h2>Featured image</h2></div><div class="featured-image-controls">
+            <label><span>Image URL</span><input id="blogImageUrl" value="${escapeHtml(state.blogForm.imageUrl)}" placeholder="https://example.com/image.jpg" /></label>
+            <label class="file-field"><span>Upload image</span><input id="blogImageFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" /></label>
+            ${state.mediaMessage ? `<div class="payment-message">${escapeHtml(state.mediaMessage)}</div>` : ""}
+            ${formImage ? `<div class="blog-image-preview"><img src="${escapeHtml(formImage)}" alt="Featured image preview" loading="lazy" decoding="async" /><button class="secondary-button" type="button" data-action="remove-blog-image">Remove image</button></div>` : ""}
+            ${state.mediaAssets.length ? `<div class="media-picker"><strong>Your recent uploads</strong>${state.mediaAssets.slice(0, 8).map((asset) => `<button type="button" data-media-url="${escapeHtml(asset.url)}"><img src="${escapeHtml(asset.url)}" alt="" loading="lazy" decoding="async" /><span>${escapeHtml(asset.originalName)}</span></button>`).join("")}</div>` : ""}
+          </div></section>
+          ${interactiveEditorTemplate()}
+          ${postSeoEditorTemplate(seo, score)}
         </div>
-        <input class="title-input" id="draftTitle" value="${state.draft.title}" aria-label="Story title" />
-        <textarea class="subtitle-input" id="draftSubtitle" aria-label="Story subtitle">${state.draft.subtitle}</textarea>
-        <textarea class="body-editor" id="draftBody" aria-label="Story body">${escapeHtml(state.draft.body)}</textarea>
-        ${state.draftMessage ? `<div class="payment-message">${escapeHtml(state.draftMessage)}</div>` : ""}
-        ${state.draftPreview ? `<article class="article-page writer-preview"><div class="article-kicker">${escapeHtml(state.draft.topic)}</div><h1>${escapeHtml(state.draft.title)}</h1><p class="article-dek">${escapeHtml(state.draft.subtitle)}</p><div class="article-content">${state.draft.body.split(/\n{2,}/).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}</div></article>` : ""}
+        <aside class="post-editor-sidebar">
+          <section class="editor-panel publish-panel"><div class="panel-title">${icon("play")}<h2>Editorial workflow</h2></div><div class="publish-status"><span>Status</span><strong>${state.editingBlogId ? escapeHtml(state.stories.find((story) => story.id === state.editingBlogId)?.status || "draft") : "New draft"}</strong></div><p class="settings-note">Writers can save privately or submit for review. Approval, scheduling, and final publishing remain with authorized editors.</p><button class="primary-button wide-button" data-action="save-writer-review">Submit for review</button><button class="secondary-button wide-button" data-action="save-writer-draft">Save as draft</button>${state.blogMessage ? `<div class="payment-message" role="status">${escapeHtml(state.blogMessage)}</div>` : ""}</section>
+          <section class="editor-panel post-settings-panel"><div class="panel-title">${icon("filter")}<h2>Post settings</h2></div>
+            <div class="writer-identity-lock"><span>${icon("lock", 14)}</span><div><strong>${escapeHtml(state.user.name)}</strong><small>Byline fixed to your verified writer account</small></div></div>
+            <label><span>Publication</span><input id="blogPublication" list="publicationOptions" value="${escapeHtml(state.blogForm.publication)}" placeholder="Publication name" /></label><datalist id="publicationOptions">${state.publications.map((publication) => `<option value="${escapeHtml(publication.name)}"></option>`).join("")}</datalist>
+            <label><span>Topic</span><select id="blogTopic">${categoryNames().map((topic) => `<option value="${escapeHtml(topic)}" ${state.blogForm.topic === topic ? "selected" : ""}>${escapeHtml(topic)}</option>`).join("")}</select></label>
+            <label><span>Tags</span><input id="blogTags" value="${escapeHtml(state.blogForm.tagsText)}" placeholder="AI, workflow, research" /></label><label><span>Read time</span><input id="blogReadTime" value="${escapeHtml(state.blogForm.readTime)}" placeholder="6 min read" /></label><label><span>Visual tone</span><select id="blogColor">${["mint", "blue", "rose", "amber"].map((color) => `<option value="${color}" ${state.blogForm.color === color ? "selected" : ""}>${color}</option>`).join("")}</select></label>
+            <label class="checkbox-field"><input id="blogPremium" type="checkbox" ${state.blogForm.premium ? "checked" : ""} /><span>Member-only paywall</span></label><label class="checkbox-field"><input id="writerBlogAds" type="checkbox" ${state.blogForm.ads ? "checked" : ""} /><span>Allow ad placements</span></label><label class="checkbox-field"><input id="writerBlogEarning" type="checkbox" ${state.blogForm.earning ? "checked" : ""} /><span>Eligible for writer earnings</span></label>
+          </section>
+        </aside>
       </section>
-      <aside class="studio-side">
-        <h2>Publish settings</h2>
-        <label><span>Topic</span><select id="draftTopic">${categoryNames().map((topic) => `<option ${state.draft.topic === topic ? "selected" : ""}>${escapeHtml(topic)}</option>`).join("")}</select></label>
-        ${toggleTemplate("Paywall this story", "paywalled", state.draft.paywalled)}
-        ${toggleTemplate("Allow ad placements", "ads", state.draft.ads)}
-        ${toggleTemplate("Eligible for write to earn", "earning", state.draft.earning)}
-        <div class="earn-preview"><span>Estimated monthly upside</span><strong>${formatINR(estimated)}</strong></div>
-      </aside>
     </main>
   `;
 }
@@ -4527,7 +4682,7 @@ function dashboardTemplate() {
   return `
     <main class="admin-app member-app">
       <aside class="admin-sidebar member-sidebar">
-        <div class="admin-sidebar-brand"><span class="admin-sidebar-brand-icon">${icon(role === "writer" ? "pen" : role === "moderator" ? "shield" : "users", 20)}</span><span><strong>${roleLabel}</strong><small>InkRiver account</small></span></div>
+        <div class="admin-sidebar-brand"><span class="admin-sidebar-brand-icon">${icon(role === "writer" ? "pen" : role === "moderator" ? "shield" : "users", 20)}</span><span><strong>${roleLabel}</strong><small>${escapeHtml(siteName())} account</small></span></div>
         <div class="admin-sidebar-heading">My workspace</div>
         <nav aria-label="${roleLabel} navigation">${dashboardNavItems(role).map(([iconName, label, id]) => `<button class="admin-nav-item ${section === id ? "active" : ""}" data-dashboard-section="${id}"><span class="admin-nav-icon">${icon(iconName, 18)}</span><span>${label}</span></button>`).join("")}</nav>
         <div class="admin-sidebar-footer">
@@ -4571,7 +4726,7 @@ function dashboardSectionDescription(section, role) {
     business: "Create, link, and manage your company and founder profiles.",
     security: "Manage account protection, sessions, and recovery methods.",
     profile: "Review your public identity and account details.",
-  }[section] || "Your InkRiver workspace.";
+  }[section] || `Your ${siteName()} workspace.`;
 }
 
 function dashboardSectionTemplate(section) {
@@ -5111,7 +5266,7 @@ function supportTicketDetailTemplate(ticket, admin = false) {
 }
 
 function supportCenterTemplate() {
-  return `<main class="account-center"><header><h1>Help and support</h1><p>Find answers or track a request with the InkRiver team.</p></header>${supportWorkspaceTemplate(false)}</main>`;
+  return `<main class="account-center"><header><h1>Help and support</h1><p>Find answers or track a request with the ${escapeHtml(siteName())} team.</p></header>${supportWorkspaceTemplate(false)}</main>`;
 }
 
 function publicationInviteTemplate(token) {
@@ -5377,7 +5532,7 @@ function securityCenterTemplate() {
 }
 
 function aboutPageTemplate() {
-  return `<main class="account-center"><header><h1>About InkRiver</h1><p>InkRiver is a publishing and membership platform for thoughtful stories, independent writers, publications, and reader-first communities.</p></header>
+  return `<main class="account-center"><header><h1>About ${escapeHtml(siteName())}</h1><p>${escapeHtml(siteName())} is a publishing and membership platform for thoughtful stories, independent writers, publications, and reader-first communities.</p></header>
     <section class="privacy-layout"><div class="privacy-controls">
       <section><h2>What we do</h2><p>We help readers discover useful writing, save and continue articles, follow writers and topics, and support creators through memberships, tips, and paid publications.</p></section>
       <section><h2>For writers</h2><p>Writers get publishing tools, editorial workflows, analytics, newsletters, scheduled posts, reader engagement, and payout records from one workspace.</p></section>
@@ -5388,17 +5543,17 @@ function aboutPageTemplate() {
 
 function contactPageTemplate() {
   const contactEmail = state.gatewaySettings.contactEmail || "support@inkriver.local";
-  return `<main class="account-center"><header><h1>Contact us</h1><p>Reach the InkRiver team for publishing support, membership help, partnerships, advertising, and platform operations.</p></header>
+  return `<main class="account-center"><header><h1>Contact us</h1><p>Reach the ${escapeHtml(siteName())} team for publishing support, membership help, partnerships, advertising, and platform operations.</p></header>
     <section class="privacy-layout"><div class="privacy-controls">
       <section><h2>General support</h2><p>Use the support center for account, payment, subscription, security, publishing, or technical questions.</p><button class="primary-button" data-route="/support">${icon("comment", 16)}Open support center</button></section>
       <section><h2>Email</h2><p>Send detailed requests, legal notices, or partnership enquiries to <strong>${escapeHtml(contactEmail)}</strong>.</p><a class="secondary-button contact-mail-link" href="mailto:${escapeHtml(contactEmail)}">${icon("mail", 16)}Email us</a></section>
       <section><h2>For creators and advertisers</h2><p>Writers, publications, sponsors, and media partners can contact us for onboarding, campaign setup, paid memberships, or payout questions.</p></section>
-    </div><aside class="privacy-actions"><h2>Quick links</h2><button data-route="/about">${icon("link", 16)}<span><strong>About us</strong><small>What InkRiver does</small></span></button><button data-route="/security">${icon("lock", 16)}<span><strong>Security</strong><small>Account protection</small></span></button><button data-route="/privacy">${icon("shield", 16)}<span><strong>Privacy</strong><small>Data controls</small></span></button></aside></section>
+    </div><aside class="privacy-actions"><h2>Quick links</h2><button data-route="/about">${icon("link", 16)}<span><strong>About us</strong><small>What ${escapeHtml(siteName())} does</small></span></button><button data-route="/security">${icon("lock", 16)}<span><strong>Security</strong><small>Account protection</small></span></button><button data-route="/privacy">${icon("shield", 16)}<span><strong>Privacy</strong><small>Data controls</small></span></button></aside></section>
   </main>`;
 }
 
 function termsPageTemplate() {
-  return `<main class="account-center"><header><h1>Terms</h1><p>These terms describe the basic rules for using InkRiver, publishing content, memberships, payments, and community features.</p></header>
+  return `<main class="account-center"><header><h1>Terms</h1><p>These terms describe the basic rules for using ${escapeHtml(siteName())}, publishing content, memberships, payments, and community features.</p></header>
     <section class="privacy-layout"><div class="privacy-controls">
       <section><h2>Accounts</h2><p>Users are responsible for keeping login details secure, maintaining accurate account information, and following role-specific permissions.</p></section>
       <section><h2>Publishing</h2><p>Authors and publications are responsible for the content they submit, including rights, citations, disclosures, corrections, and compliance with moderation rules.</p></section>
@@ -5489,7 +5644,7 @@ function adminShellTemplate(title, description, content, actions = "") {
           <span class="admin-sidebar-brand-icon">${icon("shield", 20)}</span>
           <span>
             <strong>${state.user?.role === "moderator" ? "Moderator console" : "Admin console"}</strong>
-            <small>InkRiver operations</small>
+            <small>${escapeHtml(siteName())} operations</small>
           </span>
         </div>
         <div class="admin-sidebar-heading">Workspace</div>
@@ -5761,6 +5916,12 @@ function blogListTemplate() {
   const reviewCount = state.stories.filter((story) => ["review", "approved"].includes(story.status)).length;
   const scheduledCount = state.stories.filter((story) => story.status === "scheduled").length;
   const draftCount = state.stories.filter((story) => !["published", "review", "approved", "scheduled"].includes(story.status)).length;
+  const query = state.adminBlogQuery.trim().toLowerCase();
+  const matchingStories = state.stories.filter((story) => !query || `${story.title} ${story.slug} ${story.author} ${story.topic} ${story.status}`.toLowerCase().includes(query));
+  const perPage = 20;
+  const totalPages = Math.max(1, Math.ceil(matchingStories.length / perPage));
+  state.adminBlogPage = Math.max(1, Math.min(totalPages, state.adminBlogPage));
+  const pageStories = matchingStories.slice((state.adminBlogPage - 1) * perPage, state.adminBlogPage * perPage);
   return `
     <section class="blog-list-page">
       <div class="list-summary">
@@ -5771,9 +5932,16 @@ function blogListTemplate() {
         <span><strong>${draftCount}</strong>Drafts</span>
       </div>
       ${state.blogMessage ? `<div class="payment-message">${escapeHtml(state.blogMessage)}</div>` : ""}
-      <div class="blog-admin-list">
-        ${state.stories.map((story) => blogAdminRowTemplate(story)).join("")}
+      <form class="admin-blog-search" id="adminBlogSearchForm">
+        <label><span>Search blogs</span><div>${icon("search", 16)}<input id="adminBlogSearch" value="${escapeHtml(state.adminBlogQuery)}" placeholder="Search title, slug, author, topic, or status" /></div></label>
+        <button class="primary-button" type="submit">${icon("search", 15)}Search</button>
+        <button class="secondary-button" type="button" data-action="clear-admin-blog-search">Reset</button>
+      </form>
+      <div class="admin-blog-result-meta"><span>${matchingStories.length.toLocaleString("en-IN")} matching ${matchingStories.length === 1 ? "entry" : "entries"}</span><span>20 per page</span></div>
+      <div class="blog-admin-list" id="adminBlogResults">
+        ${pageStories.map((story) => blogAdminRowTemplate(story)).join("") || `<div class="business-admin-no-results"><span>${icon("search", 24)}</span><h3>No matching blogs</h3><p>Try a different title, author, topic, slug, or status.</p><button class="secondary-button" data-action="clear-admin-blog-search">Clear search</button></div>`}
       </div>
+      ${numberedPaginationTemplate(state.adminBlogPage, totalPages, "data-admin-blog-page", "Admin blog pages")}
     </section>
   `;
 }
@@ -6035,7 +6203,7 @@ function adminSeoTemplate() {
   const seo = state.siteSeo;
   return adminShellTemplate(
     "Site SEO",
-    "Control how InkRiver appears in search engines, social networks, structured data, feeds, and webmaster platforms.",
+    `Control how ${siteName()} appears in search engines, social networks, structured data, feeds, and webmaster platforms.`,
     `
       <form class="site-seo-form" id="siteSeoForm">
         <fieldset class="seo-settings-section">
@@ -6450,7 +6618,7 @@ function loginTemplate() {
         <section class="checkout-modal auth-modal">
           <button class="close-button" data-action="close-login" aria-label="Close password reset">${icon("close")}</button>
           <h2 id="reset-title">Set a new password</h2>
-          <p>Enter a new password for your InkRiver account. Existing sessions will be signed out.</p>
+          <p>Enter a new password for your ${escapeHtml(siteName())} account. Existing sessions will be signed out.</p>
           <form class="auth-form" id="resetPasswordForm">
             <label><span>New password</span><input id="resetPassword" name="password" type="password" autocomplete="new-password" minlength="10" maxlength="128" required /></label>
             <small>Use at least 10 characters.</small>
@@ -6488,7 +6656,7 @@ function loginTemplate() {
           <button class="${state.authMode === "login" ? "active" : ""}" data-auth-mode="login">Sign in</button>
           <button class="${state.authMode === "register" ? "active" : ""}" data-auth-mode="register">Create account</button>
         </div>
-        <h2 id="login-title">${state.authMode === "register" ? "Create your InkRiver account" : "Welcome back"}</h2>
+        <h2 id="login-title">${state.authMode === "register" ? `Create your ${escapeHtml(siteName())} account` : "Welcome back"}</h2>
         <p>${state.authorIntent ? "You are continuing the author path. A paid membership is required before writer access and earning tools are enabled." : state.authMode === "register" ? "New accounts start with the reader role. Staff permissions can only be granted by an administrator." : "Sign in to access your personal dashboard, reading history, subscriptions, and saved stories."}</p>
         <form class="auth-form" id="authForm">
           ${state.authMode === "register" ? `<label><span>Full name</span><input id="authName" name="name" autocomplete="name" maxlength="80" value="${escapeHtml(state.authForm.name)}" required /></label>` : ""}
@@ -6608,7 +6776,7 @@ function onboardingTemplate() {
         <div class="onboarding-heading">
           <span class="onboarding-mark">${icon("spark", 22)}</span>
           <div>
-            <small>Welcome to InkRiver</small>
+            <small>Welcome to ${escapeHtml(siteName())}</small>
             <h2 id="onboarding-title">What do you want to read?</h2>
             <p>Choose at least three interests. Your feed will start here, then adapt as you read, save, like, share, or ask to see less.</p>
           </div>
@@ -6683,7 +6851,7 @@ function footerTemplate() {
   }).filter(Boolean);
   return `
     <footer class="site-footer">
-      <button class="brand compact" data-route="/"><span class="brand-mark">IR</span><span>InkRiver</span></button>
+      <button class="brand compact" data-route="/"><span class="brand-mark">${escapeHtml(siteInitials())}</span><span>${escapeHtml(siteName())}</span></button>
       <div class="footer-links">
         ${links.map(([label, route]) => `<button data-route="${route}">${label}</button>`).join("")}
       </div>
@@ -6704,14 +6872,15 @@ function setMetaTag(selector, attributes) {
 function applyDocumentSeo() {
   const story = state.stories.find((item) => item.status === "published" && state.path.includes(`/stories/${item.slug}`));
   const category = state.categories.find((item) => state.path === `/category/${item.slug}`);
+  const notFound = Boolean(document.querySelector(".not-found-page"));
   const seo = story?.seo || {};
-  const title = story ? (seo.seoTitle || story.title) : category ? category.seoTitle : state.siteSeo.homepageSeoTitle;
-  const description = story ? (seo.metaDescription || story.dek) : category ? (category.metaDescription || category.description) : state.siteSeo.homepageMetaDescription;
+  const title = notFound ? `Page not found · ${siteName()}` : story ? (seo.seoTitle || story.title) : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
+  const description = notFound ? `The requested page could not be found on ${siteName()}.` : story ? (seo.metaDescription || story.dek) : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
   document.title = title;
   setMetaTag('meta[name="description"]', { name: "description", content: description });
   setMetaTag('meta[name="robots"]', {
     name: "robots",
-    content: story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : "index,follow",
+    content: notFound ? "noindex,follow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : "index,follow",
   });
   setMetaTag('meta[property="og:title"]', { property: "og:title", content: story ? (seo.socialTitle || title) : title });
   setMetaTag('meta[property="og:description"]', { property: "og:description", content: story ? (seo.socialDescription || description) : description });
@@ -6747,7 +6916,7 @@ function applyDocumentSeo() {
     } : {
       "@context": "https://schema.org",
       "@type": state.siteSeo.representationType === "person" ? "Person" : "Organization",
-      name: state.siteSeo.representationType === "person" ? state.siteSeo.personName : state.siteSeo.organizationName,
+      name: configuredSiteText(state.siteSeo.representationType === "person" ? state.siteSeo.personName : state.siteSeo.organizationName),
       alternateName: state.siteSeo.alternateName || undefined,
       logo: state.siteSeo.organizationLogo || undefined,
       url: window.location.origin,
@@ -6806,6 +6975,14 @@ function render() {
 }
 
 function bindInputs() {
+  document.getElementById("adminBlogSearch")?.addEventListener("input", (event) => {
+    state.adminBlogQuery = event.target.value;
+  });
+  document.getElementById("adminBlogSearchForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.adminBlogPage = 1;
+    render();
+  });
   document.getElementById("businessAdminSearch")?.addEventListener("input", (event) => {
     state.businessAdminFilters.q = event.target.value;
   });
@@ -6952,6 +7129,7 @@ function bindInputs() {
   if (searchInput) {
     searchInput.addEventListener("input", (event) => {
       state.query = event.target.value;
+      state.homePage = 1;
       state.searchOpen = true;
       state.serverSearchSuggestions = [];
       scheduleServerSearch(true);
@@ -7118,6 +7296,12 @@ function bindInputs() {
   });
   document.getElementById("blogPremium")?.addEventListener("change", (event) => {
     state.blogForm.premium = event.target.checked;
+  });
+  document.getElementById("writerBlogAds")?.addEventListener("change", (event) => {
+    state.blogForm.ads = event.target.checked;
+  });
+  document.getElementById("writerBlogEarning")?.addEventListener("change", (event) => {
+    state.blogForm.earning = event.target.checked;
   });
   document.getElementById("draftNoteType")?.addEventListener("change", (event) => {
     state.draftNoteType = event.target.value;
@@ -7412,6 +7596,8 @@ document.addEventListener("click", async (event) => {
   const copyLink = target.dataset.copyLink;
   const nativeShare = target.dataset.nativeShare;
   const clap = target.dataset.clap;
+  const homePage = target.dataset.homePage;
+  const adminBlogPage = target.dataset.adminBlogPage;
   const checkout = target.dataset.checkout;
   const paymentSubmit = target.dataset.paymentSubmit;
   const gateway = target.dataset.gateway;
@@ -8667,10 +8853,27 @@ document.addEventListener("click", async (event) => {
     render();
   }
   if (clap) {
-    state.claps[clap] = (state.claps[clap] || 0) + 1;
-    const story = state.stories.find((item) => item.slug === clap);
-    if (story) recordRecommendationActivity(story, "clap");
-    render();
+    await toggleStoryLike(clap);
+  }
+  if (homePage) {
+    const page = Number(homePage);
+    const totalPages = Math.max(1, Math.ceil(filteredStories().length / 20));
+    if (Number.isInteger(page) && page >= 1 && page <= totalPages && page !== state.homePage) {
+      state.homePage = page;
+      render();
+      document.getElementById("homeStoryResults")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    }
+  }
+  if (adminBlogPage) {
+    const page = Number(adminBlogPage);
+    const query = state.adminBlogQuery.trim().toLowerCase();
+    const total = state.stories.filter((story) => !query || `${story.title} ${story.slug} ${story.author} ${story.topic} ${story.status}`.toLowerCase().includes(query)).length;
+    const totalPages = Math.max(1, Math.ceil(total / 20));
+    if (Number.isInteger(page) && page >= 1 && page <= totalPages && page !== state.adminBlogPage) {
+      state.adminBlogPage = page;
+      render();
+      document.getElementById("adminBlogResults")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    }
   }
   if (checkout) {
     state.checkoutPlan = state.plans.find((plan) => plan.id === checkout);
@@ -8957,6 +9160,9 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "save-writer-draft") {
     await saveWriterStory("draft");
+  }
+  if (action === "save-writer-review") {
+    await saveWriterStory("review");
   }
   if (action === "login-passkey") {
     await loginWithPasskey();
@@ -9261,7 +9467,7 @@ document.addEventListener("click", async (event) => {
       const credential = await navigator.credentials.create({
         publicKey: {
           challenge: urlBase64ToUint8Array(options.challenge),
-          rp: options.rp?.id && options.rp.id !== "localhost" ? options.rp : { name: options.rp?.name || "InkRiver" },
+          rp: options.rp?.id && options.rp.id !== "localhost" ? options.rp : { name: options.rp?.name || siteName() },
           user: {
             id: urlBase64ToUint8Array(options.user.idEncoded),
             name: options.user.name,
@@ -9428,6 +9634,11 @@ document.addEventListener("click", async (event) => {
     state.blogMessage = "Blog form cleared.";
     render();
   }
+  if (action === "clear-admin-blog-search") {
+    state.adminBlogQuery = "";
+    state.adminBlogPage = 1;
+    render();
+  }
   if (action === "remove-blog-image") {
     state.blogForm.imageUrl = "";
     state.blogMessage = "Image removed from the blog form.";
@@ -9502,6 +9713,12 @@ async function bootstrapApp() {
     await loadRecommendationFeed();
   } catch (error) {
     state.userMessage = `Platform data could not be synchronized: ${error.message}`;
+  }
+  if (state.path === "/write") {
+    state.blogForm = emptyBlogForm();
+    state.blogForm.author = state.user?.name || "";
+    state.blogForm.role = "Writer";
+    state.blogForm.publication = siteName();
   }
   state.sessionReady = true;
   const protectedUserRoute = state.path.startsWith("/dashboard") || state.path === "/me";

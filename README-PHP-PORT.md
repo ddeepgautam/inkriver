@@ -28,6 +28,10 @@ Completed:
 - Server-side recommendation training with persisted user profiles, story scores, transparent factors, feedback controls, and admin rebuild/status APIs.
 - SQLite FTS5 full-text search with filters, autocomplete, fallback search, and admin index rebuild.
 - Business Network discovery for companies and founders with 12-profile server pagination, linked roles, subscriber-only contact details, profile claiming, suggested corrections, and staff review workflows. The admin profile manager also uses 12-item pages with name search, profile type, industry, and status filters.
+- Editorial discovery uses 20-story homepage pagination, while the admin blog manager uses 20-entry pagination with title, slug, author, topic, and status search.
+- Story likes are unique per signed-in user and work as a reversible like/unlike toggle backed by the database.
+- The writer studio includes the rich editor, featured images, post SEO, interactive polls/surveys/quizzes, and safe post settings without staff-only approval, scheduling, or publishing controls.
+- Unknown routes render a dedicated creative 404 page, and the configured Site SEO title is used as the platform name in the application shell and generated web manifest.
 
 Remaining production services to connect with live provider credentials:
 

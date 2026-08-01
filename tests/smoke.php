@@ -60,6 +60,89 @@ assert_true(str_starts_with($jobId, 'JOB-'), 'payout execution job can be queued
 $pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-BIZ-ADMIN', 'Business Admin', 'business-admin@example.com', ?, 'admin', 'Pro', 'active', 1, ?, ?)")
     ->execute([hash_password_value('SmokePassword!23'), $now, $now]);
 $adminSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin', 'email' => 'business-admin@example.com', 'role' => 'admin', 'subscription' => 'Pro']];
+$pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-SMOKE-WRITER', 'Smoke Writer', 'smoke-writer@example.com', ?, 'writer', 'Pro', 'active', 1, ?, ?)")
+    ->execute([hash_password_value('SmokePassword!24'), $now, $now]);
+$writerSession = ['user' => ['id' => 'USR-SMOKE-WRITER', 'name' => 'Smoke Writer', 'email' => 'smoke-writer@example.com', 'role' => 'writer', 'subscription' => 'Pro']];
+$pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?)')->execute([
+    'site-seo-public',
+    json_encode(['siteTitle' => 'Smoke Gazette'], JSON_UNESCAPED_SLASHES),
+    'USR-BIZ-ADMIN',
+    $now,
+]);
+assert_true(configured_site_name() === 'Smoke Gazette', 'configured site title is the server-side platform name');
+$likeStoryResult = create_or_update_story_from_payload($adminSession, [
+    'title' => 'A Story Worth Liking',
+    'publication' => 'Smoke Gazette',
+    'status' => 'published',
+    'contentHtml' => '<p>A complete smoke-test article.</p>',
+], 'smoke');
+$likeStory = $likeStoryResult['story'];
+$firstLike = toggle_story_like($likeStory['slug'], 'USR-BIZ-ADMIN');
+$removedLike = toggle_story_like($likeStory['slug'], 'USR-BIZ-ADMIN');
+$writerLike = toggle_story_like($likeStory['slug'], 'USR-SMOKE-WRITER');
+$secondAdminLike = toggle_story_like($likeStory['slug'], 'USR-BIZ-ADMIN');
+assert_true($firstLike['liked'] && $firstLike['count'] === 1, 'first story like is stored once');
+assert_true(!$removedLike['liked'] && $removedLike['count'] === 0, 'second story like click removes the same user reaction');
+assert_true($writerLike['count'] === 1 && $secondAdminLike['count'] === 2, 'story like count represents unique users');
+assert_true((int) $pdo->query("SELECT COUNT(*) FROM story_likes WHERE story_slug = 'a-story-worth-liking'")->fetchColumn() === 2, 'story likes enforce one row per user and story');
+$writerStoryResult = create_or_update_story_from_payload($writerSession, [
+    'title' => 'Writer Studio Feature Test',
+    'publication' => 'Smoke Gazette',
+    'status' => 'review',
+    'featuredImageUrl' => '/uploads/writer-feature.webp',
+    'contentHtml' => '<h2>Writer editor</h2><p>Rich content.</p>',
+    'interactiveBlocks' => [['type' => 'poll', 'question' => 'Useful?', 'options' => ['Yes', 'No']]],
+    'seo' => ['seoTitle' => 'Writer Studio SEO Title', 'metaDescription' => 'Writer studio metadata test.'],
+], 'smoke');
+assert_true(
+    ($writerStoryResult['story']['status'] ?? '') === 'review'
+    && ($writerStoryResult['story']['authorUserId'] ?? '') === 'USR-SMOKE-WRITER'
+    && ($writerStoryResult['story']['imageUrl'] ?? '') === '/uploads/writer-feature.webp'
+    && count($writerStoryResult['story']['interactiveBlocks'] ?? []) === 1
+    && ($writerStoryResult['story']['seo']['seoTitle'] ?? '') === 'Writer Studio SEO Title',
+    'writer publishing API stores image, rich content, interactive blocks, and SEO without staff approval rights'
+);
+$writerCouldOverwriteAdminStory = true;
+try {
+    create_or_update_story_from_payload($writerSession, ['id' => $likeStory['id'], 'title' => 'Unauthorized overwrite'], 'smoke');
+} catch (RuntimeException) {
+    $writerCouldOverwriteAdminStory = false;
+}
+assert_true(!$writerCouldOverwriteAdminStory, 'writers cannot overwrite another author or admin story');
+$paginationStories = document_value('stories', []);
+for ($index = 1; $index <= 43; $index++) {
+    $paginationStories[] = [
+        'id' => 'SMOKE-PAGE-' . $index,
+        'slug' => 'homepage-pagination-story-' . str_pad((string) $index, 2, '0', STR_PAD_LEFT),
+        'title' => 'Homepage Pagination Story ' . str_pad((string) $index, 2, '0', STR_PAD_LEFT),
+        'dek' => 'A published story used to verify twenty-item list pages.',
+        'author' => 'Business Admin',
+        'authorUserId' => 'USR-BIZ-ADMIN',
+        'role' => 'Editorial desk',
+        'publication' => 'Smoke Gazette',
+        'topic' => 'Marketing',
+        'readTime' => '4 min read',
+        'premium' => false,
+        'status' => 'published',
+        'color' => 'mint',
+        'imageUrl' => '',
+        'tags' => ['pagination'],
+        'body' => ['Pagination smoke content.'],
+        'contentHtml' => '<p>Pagination smoke content.</p>',
+        'interactiveBlocks' => [],
+        'seo' => default_post_seo_payload(['title' => 'Homepage Pagination Story ' . $index, 'dek' => 'Pagination test.']),
+        'claps' => 0,
+        'comments' => 0,
+        'reads' => 0,
+        'revenue' => 0,
+        'publishedAt' => $now,
+        'createdAt' => $now,
+        'updatedAt' => $now,
+    ];
+}
+$pdo->prepare("UPDATE platform_documents SET value_json = ?, updated_at = ? WHERE key = 'stories'")
+    ->execute([json_encode($paginationStories, JSON_UNESCAPED_SLASHES), $now]);
+assert_true(count(array_filter(document_value('stories', []), fn($story) => ($story['status'] ?? '') === 'published')) === 44, 'smoke catalog includes enough published stories for three homepage pages');
 $founder = business_save_profile('person', [
     'full_name' => 'Smoke Founder',
     'headline' => 'Founder and builder',

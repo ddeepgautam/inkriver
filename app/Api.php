@@ -109,6 +109,50 @@ function document_value(string $key, mixed $fallback): mixed
     return $row ? parse_json_field($row['value_json'], $fallback) : $fallback;
 }
 
+function configured_site_name(): string
+{
+    $seo = document_value('site-seo-public', document_value('site-seo', []));
+    $name = is_array($seo) ? trim((string) ($seo['siteTitle'] ?? '')) : '';
+    return $name !== '' ? substr($name, 0, 120) : 'InkRiver';
+}
+
+function story_base_like_count(string $slug): int
+{
+    foreach (document_value('stories', []) as $story) {
+        if (is_array($story) && ($story['slug'] ?? '') === $slug) return max(0, (int) ($story['claps'] ?? 0));
+    }
+    return 0;
+}
+
+function story_like_state(string $slug, ?string $userId = null): array
+{
+    $pdo = Database::pdo();
+    $countStmt = $pdo->prepare('SELECT COUNT(*) FROM story_likes WHERE story_slug = ?');
+    $countStmt->execute([$slug]);
+    $liked = false;
+    if ($userId) {
+        $likedStmt = $pdo->prepare('SELECT 1 FROM story_likes WHERE story_slug = ? AND user_id = ?');
+        $likedStmt->execute([$slug, $userId]);
+        $liked = (bool) $likedStmt->fetchColumn();
+    }
+    return ['liked' => $liked, 'count' => story_base_like_count($slug) + (int) $countStmt->fetchColumn()];
+}
+
+function toggle_story_like(string $slug, string $userId): array
+{
+    $pdo = Database::pdo();
+    $existing = $pdo->prepare('SELECT 1 FROM story_likes WHERE story_slug = ? AND user_id = ?');
+    $existing->execute([$slug, $userId]);
+    if ($existing->fetchColumn()) {
+        $pdo->prepare('DELETE FROM story_likes WHERE story_slug = ? AND user_id = ?')->execute([$slug, $userId]);
+        $liked = false;
+    } else {
+        $pdo->prepare('INSERT INTO story_likes (story_slug, user_id, created_at) VALUES (?, ?, ?)')->execute([$slug, $userId, now_iso()]);
+        $liked = true;
+    }
+    return ['liked' => $liked, 'count' => story_like_state($slug)['count']];
+}
+
 function app_url(string $path = '/'): string
 {
     $configured = rtrim((string) (env_value('APP_URL') ?? ''), '/');
@@ -818,7 +862,10 @@ function create_or_update_story_from_payload(array $session, array $body, string
         $slug = $baseSlug . '-' . $i++;
     }
     $now = now_iso();
-    $publication = substr((string) ($body['publication'] ?? $previous['publication'] ?? 'InkRiver'), 0, 120);
+    if ($previous && ($session['user']['role'] ?? '') !== 'admin' && ($previous['authorUserId'] ?? '') !== $session['user']['id']) {
+        throw new RuntimeException('You can only update stories created under your writer account.');
+    }
+    $publication = substr((string) ($body['publication'] ?? $previous['publication'] ?? configured_site_name()), 0, 120);
     $requestedStatus = in_array(($body['status'] ?? $previous['status'] ?? 'draft'), ['draft', 'review', 'approved', 'scheduled', 'published'], true) ? (string) ($body['status'] ?? $previous['status'] ?? 'draft') : 'draft';
     if (in_array($requestedStatus, ['approved', 'scheduled', 'published'], true) && !can_manage_publication_content($session, $publication)) {
         $requestedStatus = 'review';
@@ -907,7 +954,7 @@ function mcp_authorize_session(): array
         $stmt = Database::pdo()->prepare("SELECT users.*, oauth_access_tokens.client_id, oauth_access_tokens.scope FROM oauth_access_tokens JOIN users ON users.id = oauth_access_tokens.user_id WHERE oauth_access_tokens.token_hash = ? AND oauth_access_tokens.expires_at > ? AND oauth_access_tokens.revoked_at IS NULL AND users.status = 'active' LIMIT 1");
         $stmt->execute([hash('sha256', $provided), now_iso()]);
         if ($row = $stmt->fetch()) {
-            if (($row['role'] ?? '') !== 'admin') throw new RuntimeException('Only administrator accounts can use InkRiver MCP publishing.');
+            if (($row['role'] ?? '') !== 'admin') throw new RuntimeException('Only administrator accounts can use ' . configured_site_name() . ' MCP publishing.');
             return ['user' => public_user($row), 'sessionId' => 'oauth-mcp', 'raw' => $row];
         }
     }
@@ -998,13 +1045,14 @@ function oauth_login_page(array $params, string $message = ''): never
     $hidden = '';
     foreach ($params as $key => $value) $hidden .= '<input type="hidden" name="' . htmlspecialchars($key, ENT_QUOTES) . '" value="' . htmlspecialchars((string) $value, ENT_QUOTES) . '">';
     $error = $message ? '<div class="oauth-error">' . htmlspecialchars($message, ENT_QUOTES) . '</div>' : '';
-    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect InkRiver MCP</title><style>body{margin:0;font-family:Inter,system-ui,sans-serif;background:#f6f4ee;color:#1b1b18;display:grid;min-height:100dvh;place-items:center}.box{width:min(440px,92vw);background:#fff;border:1px solid #ded8cc;border-radius:12px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.08)}h1{margin:0 0 8px;font-family:Georgia,serif}.note{color:#6d6a62;line-height:1.5}.oauth-error{padding:12px;border:1px solid #c94b4b;background:#fff1f1;color:#8a1f1f;border-radius:8px;margin:14px 0}label{display:grid;gap:6px;margin-top:14px;font-size:13px;font-weight:700}input{min-height:44px;border:1px solid #d8d1c4;border-radius:8px;padding:0 12px;font:inherit}button{width:100%;min-height:46px;margin-top:18px;border:0;border-radius:8px;background:#176b48;color:white;font-weight:800;cursor:pointer}</style></head><body><main class="box"><h1>Connect InkRiver MCP</h1><p class="note">Sign in with an administrator account to allow this MCP client to publish and manage blog drafts.</p>' . $error . '<form method="post" action="/oauth/authorize">' . $hidden . '<label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Authorize admin access</button></form></main></body></html>';
+    $siteName = htmlspecialchars(configured_site_name(), ENT_QUOTES, 'UTF-8');
+    echo '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect ' . $siteName . ' MCP</title><style>body{margin:0;font-family:Inter,system-ui,sans-serif;background:#f6f4ee;color:#1b1b18;display:grid;min-height:100dvh;place-items:center}.box{width:min(440px,92vw);background:#fff;border:1px solid #ded8cc;border-radius:12px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.08)}h1{margin:0 0 8px;font-family:Georgia,serif}.note{color:#6d6a62;line-height:1.5}.oauth-error{padding:12px;border:1px solid #c94b4b;background:#fff1f1;color:#8a1f1f;border-radius:8px;margin:14px 0}label{display:grid;gap:6px;margin-top:14px;font-size:13px;font-weight:700}input{min-height:44px;border:1px solid #d8d1c4;border-radius:8px;padding:0 12px;font:inherit}button{width:100%;min-height:46px;margin-top:18px;border:0;border-radius:8px;background:#176b48;color:white;font-weight:800;cursor:pointer}</style></head><body><main class="box"><h1>Connect ' . $siteName . ' MCP</h1><p class="note">Sign in with an administrator account to allow this MCP client to publish and manage blog drafts.</p>' . $error . '<form method="post" action="/oauth/authorize">' . $hidden . '<label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Authorize admin access</button></form></main></body></html>';
     exit;
 }
 
 function oauth_issue_code(array $params, array $user): never
 {
-    if (($user['role'] ?? '') !== 'admin') oauth_error_redirect($params['redirect_uri'], 'access_denied', 'Only administrator accounts can connect InkRiver MCP.', $params['state']);
+    if (($user['role'] ?? '') !== 'admin') oauth_error_redirect($params['redirect_uri'], 'access_denied', 'Only administrator accounts can connect ' . configured_site_name() . ' MCP.', $params['state']);
     $code = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
     Database::pdo()->prepare('INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, redirect_uri, scope, code_challenge, code_challenge_method, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
         ->execute([hash('sha256', $code), $params['client_id'], $user['id'], $params['redirect_uri'], substr($params['scope'] ?: 'mcp:publish', 0, 200), $params['code_challenge'] ?: null, $params['code_challenge_method'] ?: null, gmdate('Y-m-d\TH:i:s.v\Z', time() + 600), now_iso()]);
@@ -1085,14 +1133,14 @@ function handle_oauth(string $path, string $method): void
             $userStmt->execute([$email]);
             $user = $userStmt->fetch();
             if (!$user || !verify_password_value($password, (string) $user['password_hash'])) oauth_login_page($params, 'Invalid email or password.');
-            if (($user['role'] ?? '') !== 'admin') oauth_login_page($params, 'You are not allowed to connect InkRiver MCP. Only administrator accounts can perform this task.');
+            if (($user['role'] ?? '') !== 'admin') oauth_login_page($params, 'You are not allowed to connect ' . configured_site_name() . ' MCP. Only administrator accounts can perform this task.');
             $sessionToken = create_session_for_user($user['id']);
             set_session_cookie($sessionToken);
             oauth_issue_code($params, public_user($user));
         }
         $session = current_session();
         if (!$session) oauth_login_page($params);
-        if (($session['user']['role'] ?? '') !== 'admin') oauth_login_page($params, 'You are not allowed to connect InkRiver MCP. Only administrator accounts can perform this task.');
+        if (($session['user']['role'] ?? '') !== 'admin') oauth_login_page($params, 'You are not allowed to connect ' . configured_site_name() . ' MCP. Only administrator accounts can perform this task.');
         oauth_issue_code($params, $session['user']);
     }
     if ($method === 'POST' && $path === '/oauth/token') {
@@ -1384,7 +1432,7 @@ function mcp_tool_definitions(): array
     return [
         [
             'name' => 'get_blog_editor_schema',
-            'description' => 'Return the full InkRiver blog editor field map, SEO fields, status options, and interactive block shape.',
+            'description' => 'Return the full ' . configured_site_name() . ' blog editor field map, SEO fields, status options, and interactive block shape.',
             'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
             'outputSchema' => $outputSchemas['get_blog_editor_schema'],
         ],
@@ -1506,15 +1554,15 @@ function mcp_handle_request(array $request): ?array
             'initialize' => [
                 'protocolVersion' => '2025-11-25',
                 'capabilities' => ['tools' => ['listChanged' => false], 'resources' => ['listChanged' => false]],
-                'serverInfo' => ['name' => 'InkRiver MCP', 'title' => 'InkRiver Publishing and Business Network MCP', 'version' => '1.3.0'],
+                'serverInfo' => ['name' => configured_site_name() . ' MCP', 'title' => configured_site_name() . ' Publishing and Business Network MCP', 'version' => '1.3.0'],
                 'instructions' => 'Founder and company profiles are separate from article authors. Use get_company_profile_schema or get_founder_profile_schema, check existing records with list_company_profiles or list_founder_profiles, upload logos/headshots with upload_profile_image, then call create_or_update_company_profile or create_or_update_founder_profile. Use link_founder_to_company to add a relationship without replacing other links.',
             ],
             'ping' => new stdClass(),
             'tools/list' => ['tools' => array_merge(mcp_tool_definitions(), business_mcp_tool_definitions())],
             'tools/call' => mcp_call_tool((string) ($request['params']['name'] ?? ''), is_array($request['params']['arguments'] ?? null) ? $request['params']['arguments'] : []),
             'resources/list' => ['resources' => [
-                ['uri' => 'inkriver://blog-editor/schema', 'name' => 'InkRiver blog editor schema', 'mimeType' => 'application/json'],
-                ['uri' => 'inkriver://business-network/schema', 'name' => 'InkRiver company and founder profile schema', 'mimeType' => 'application/json'],
+                ['uri' => 'inkriver://blog-editor/schema', 'name' => configured_site_name() . ' blog editor schema', 'mimeType' => 'application/json'],
+                ['uri' => 'inkriver://business-network/schema', 'name' => configured_site_name() . ' company and founder profile schema', 'mimeType' => 'application/json'],
             ]],
             'resources/read' => ['contents' => [[
                 'uri' => (string) ($request['params']['uri'] ?? 'inkriver://blog-editor/schema'),
@@ -1535,14 +1583,14 @@ function mcp_handle_request(array $request): ?array
 function handle_mcp(string $method): void
 {
     if ($method === 'GET') {
-        mcp_unauthorized_response('Connect with OAuth to use the InkRiver MCP endpoint.');
+        mcp_unauthorized_response('Connect with OAuth to use the ' . configured_site_name() . ' MCP endpoint.');
     }
     if ($method !== 'POST') mcp_json_response(['error' => 'METHOD_NOT_ALLOWED', 'message' => 'Use POST for MCP JSON-RPC calls.'], 405);
     try {
         mcp_authorize_session();
     } catch (Throwable $error) {
         if (str_contains($error->getMessage(), 'Only administrator')) {
-            mcp_json_response(['error' => 'FORBIDDEN', 'message' => 'Only administrator accounts can connect and use InkRiver MCP.'], 403);
+            mcp_json_response(['error' => 'FORBIDDEN', 'message' => 'Only administrator accounts can connect and use ' . configured_site_name() . ' MCP.'], 403);
         }
         mcp_unauthorized_response($error->getMessage());
     }
@@ -1853,6 +1901,7 @@ function rec_signal_weight(string $eventType): float
         'complete' => 5.0,
         'long_read' => 3.4,
         'clap' => 3.8,
+        'unlike' => -3.8,
         'save' => 7.0,
         'share' => 4.0,
         'follow' => 5.5,
@@ -2029,7 +2078,7 @@ function search_stories(array $params): array
             'title' => (string) ($story['title'] ?? ''),
             'dek' => (string) ($story['dek'] ?? ''),
             'author' => (string) ($story['author'] ?? ''),
-            'publication' => (string) ($story['publication'] ?? $story['role'] ?? 'InkRiver'),
+            'publication' => (string) ($story['publication'] ?? $story['role'] ?? configured_site_name()),
             'topic' => (string) ($story['topic'] ?? ''),
             'readTime' => (string) ($story['readTime'] ?? '5 min read'),
             'premium' => (bool) ($story['premium'] ?? false),
@@ -2584,7 +2633,7 @@ function create_provider_order(string $provider, array $payment, array $user): a
     }
     if ($provider === 'payu') {
         $txnid = $payment['id'];
-        $product = preg_replace('/[^A-Za-z0-9 _.-]/', '', (string) ($payment['purpose'] ?? 'InkRiver payment'));
+        $product = preg_replace('/[^A-Za-z0-9 _.-]/', '', (string) ($payment['purpose'] ?? (configured_site_name() . ' payment')));
         $fields = [
             'key' => provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key'),
             'txnid' => $txnid,
@@ -2649,7 +2698,7 @@ function create_provider_subscription_checkout(string $provider, array $payment,
                 'plan_id' => $paypalPlanId,
                 'custom_id' => $payment['id'],
                 'application_context' => [
-                    'brand_name' => 'InkRiver',
+                    'brand_name' => configured_site_name(),
                     'user_action' => 'SUBSCRIBE_NOW',
                     'return_url' => $origin . '/api/payments/paypal/return?paymentId=' . rawurlencode($payment['id']) . '&mode=subscription',
                     'cancel_url' => $origin . '/pricing?payment=cancelled',
@@ -2686,7 +2735,7 @@ function create_provider_subscription_checkout(string $provider, array $payment,
             'key' => provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key'),
             'txnid' => $payment['id'],
             'amount' => number_format(((int) $payment['amount']) / 100, 2, '.', ''),
-            'productinfo' => preg_replace('/[^A-Za-z0-9 _.-]/', '', (string) ($payment['purpose'] ?? 'InkRiver membership')),
+            'productinfo' => preg_replace('/[^A-Za-z0-9 _.-]/', '', (string) ($payment['purpose'] ?? (configured_site_name() . ' membership'))),
             'firstname' => $user['name'],
             'email' => $user['email'],
             'plan_id' => $planReference,
@@ -2729,7 +2778,7 @@ function cancel_provider_subscription(array $subscription): array
         http_request_json($base . '/v1/billing/subscriptions/' . rawurlencode($providerSubscriptionId) . '/cancel', [
             'method' => 'POST',
             'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
-            'body' => json_encode(['reason' => 'Customer requested cancellation from InkRiver.'], JSON_UNESCAPED_SLASHES),
+            'body' => json_encode(['reason' => 'Customer requested cancellation from ' . configured_site_name() . '.'], JSON_UNESCAPED_SLASHES),
         ]);
         return ['remote' => true, 'status' => 'cancelled'];
     }
@@ -2907,12 +2956,12 @@ function execute_payout_transfer(array $payout): array
             'method' => 'POST',
             'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
             'body' => json_encode([
-                'sender_batch_header' => ['sender_batch_id' => $payout['id'], 'email_subject' => 'InkRiver writer payout'],
+                'sender_batch_header' => ['sender_batch_id' => $payout['id'], 'email_subject' => configured_site_name() . ' writer payout'],
                 'items' => [[
                     'recipient_type' => 'EMAIL',
                     'receiver' => $snapshot['account_reference'] ?? '',
                     'amount' => ['value' => number_format(((int) $payout['amount']) / 100, 2, '.', ''), 'currency' => $payout['currency']],
-                    'note' => 'InkRiver writer payout',
+                    'note' => configured_site_name() . ' writer payout',
                     'sender_item_id' => $payout['id'],
                 ]],
             ], JSON_UNESCAPED_SLASHES),
@@ -3065,7 +3114,7 @@ function tracked_newsletter_html(array $letter, array $user): string
         return '<a ' . $match[1] . htmlspecialchars($target, ENT_QUOTES, 'UTF-8') . $match[3] . '>';
     }, $content) ?? $content;
     $pixel = '<img src="' . htmlspecialchars($base . 'api/newsletters/' . $newsletterId . '/open?u=' . $userId, ENT_QUOTES, 'UTF-8') . '" width="1" height="1" alt="" style="display:none" />';
-    $unsubscribe = '<p style="font-size:12px;color:#667085;margin-top:24px">You are receiving this because you joined InkRiver. <a href="' . htmlspecialchars($base . 'api/newsletters/unsubscribe?n=' . $newsletterId . '&u=' . $userId . '&t=' . $unsubscribeToken, ENT_QUOTES, 'UTF-8') . '">Unsubscribe</a></p>';
+    $unsubscribe = '<p style="font-size:12px;color:#667085;margin-top:24px">You are receiving this because you joined ' . htmlspecialchars(configured_site_name(), ENT_QUOTES, 'UTF-8') . '. <a href="' . htmlspecialchars($base . 'api/newsletters/unsubscribe?n=' . $newsletterId . '&u=' . $userId . '&t=' . $unsubscribeToken, ENT_QUOTES, 'UTF-8') . '">Unsubscribe</a></p>';
     return $content . $pixel . $unsubscribe;
 }
 
@@ -3104,7 +3153,7 @@ function queue_abandoned_checkout_recovery(): array
         $exists = $pdo->prepare("SELECT id FROM checkout_recovery_events WHERE payment_id = ? AND event_type = 'reminder' LIMIT 1");
         $exists->execute([$row['id']]);
         if ($exists->fetch()) continue;
-        send_email_message($row['email'], 'Complete your InkRiver membership', ['name' => $row['name'], 'paymentId' => $row['id'], 'amount' => $row['amount']]);
+        send_email_message($row['email'], 'Complete your ' . configured_site_name() . ' membership', ['name' => $row['name'], 'paymentId' => $row['id'], 'amount' => $row['amount']]);
         $pdo->prepare("INSERT INTO checkout_recovery_events (id, payment_id, user_id, event_type, created_at) VALUES (?, ?, ?, 'reminder', ?)")
             ->execute([uuid_value('REC-'), $row['id'], $row['user_id'], now_iso()]);
         $queued++;
@@ -3954,7 +4003,7 @@ function handle_api(string $path, string $method): void
         set_session_cookie($token, $sessionDays);
         audit_log($row['id'], 'auth.login', 'user', $row['id']);
         if (!empty($securityRow['login_alerts_enabled'])) {
-            send_email_message($row['email'], 'New InkRiver sign-in', [
+            send_email_message($row['email'], 'New ' . configured_site_name() . ' sign-in', [
                 'name' => $row['name'],
                 'ip' => request_ip_address(),
                 'userAgent' => substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500),
@@ -4078,7 +4127,7 @@ function handle_api(string $path, string $method): void
         $fallbackUrl = null;
         if ($user) {
             $reset = create_password_reset_token($user);
-            $sent = send_email_message($user['email'], 'Reset your InkRiver password', ['name' => $user['name'], 'resetUrl' => $reset['url'], 'expiresAt' => $reset['expiresAt']]);
+            $sent = send_email_message($user['email'], 'Reset your ' . configured_site_name() . ' password', ['name' => $user['name'], 'resetUrl' => $reset['url'], 'expiresAt' => $reset['expiresAt']]);
             if (!$sent) $fallbackUrl = $reset['url'];
             audit_log($user['id'], 'auth.password_reset_requested', 'user', $user['id']);
         }
@@ -4128,12 +4177,28 @@ function handle_api(string $path, string $method): void
         foreach ($pdo->query("SELECT story_slug, event_type, COUNT(*) AS count FROM engagement_events WHERE story_slug IS NOT NULL GROUP BY story_slug, event_type")->fetchAll() as $row) {
             $storyStats[$row['story_slug']] ??= ['reads' => 0, 'claps' => 0, 'comments' => 0];
             if ($row['event_type'] === 'open') $storyStats[$row['story_slug']]['reads'] = (int) $row['count'];
-            if ($row['event_type'] === 'clap') $storyStats[$row['story_slug']]['claps'] = (int) $row['count'];
+        }
+        $storedLikeCounts = [];
+        foreach ($pdo->query('SELECT story_slug, COUNT(*) AS count FROM story_likes GROUP BY story_slug')->fetchAll() as $row) {
+            $storedLikeCounts[(string) $row['story_slug']] = (int) $row['count'];
+        }
+        foreach (document_value('stories', []) as $story) {
+            if (!is_array($story) || empty($story['slug'])) continue;
+            $slug = (string) $story['slug'];
+            $storyStats[$slug] ??= ['reads' => 0, 'claps' => 0, 'comments' => 0];
+            $storyStats[$slug]['claps'] = max(0, (int) ($story['claps'] ?? 0)) + ($storedLikeCounts[$slug] ?? 0);
+        }
+        $likedStorySlugs = [];
+        if ($session) {
+            $likedStmt = $pdo->prepare('SELECT story_slug FROM story_likes WHERE user_id = ? ORDER BY created_at DESC');
+            $likedStmt->execute([$session['user']['id']]);
+            $likedStorySlugs = array_column($likedStmt->fetchAll(), 'story_slug');
         }
         json_response([
             'documents' => $documents,
             'userDocuments' => $userDocuments,
             'storyStats' => $storyStats,
+            'likedStorySlugs' => $likedStorySlugs,
             'translations' => stored_translations(),
             'translationLanguages' => configured_translation_languages(),
             'ads' => active_ads(),
@@ -4195,7 +4260,7 @@ function handle_api(string $path, string $method): void
         $pdo->prepare("INSERT INTO newsletter_suppressions (email, user_id, reason, source_newsletter_id, created_at) VALUES (?, ?, 'unsubscribe', ?, ?) ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, source_newsletter_id = excluded.source_newsletter_id, created_at = excluded.created_at")
             ->execute([strtolower((string) $user['email']), $userId, $newsletterId ?: null, now_iso()]);
         header('Content-Type: text/html; charset=UTF-8');
-        echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribed</title><body style="font-family:system-ui;margin:40px;line-height:1.5"><h1>You are unsubscribed</h1><p>You will no longer receive InkRiver newsletters at this email address.</p></body>';
+        echo '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribed</title><body style="font-family:system-ui;margin:40px;line-height:1.5"><h1>You are unsubscribed</h1><p>You will no longer receive ' . htmlspecialchars(configured_site_name(), ENT_QUOTES, 'UTF-8') . ' newsletters at this email address.</p></body>';
         exit;
     }
 
@@ -4614,7 +4679,7 @@ function handle_api(string $path, string $method): void
         $publicationId = ($body['publicationId'] ?? '') ?: null;
         $scheduledAt = ($body['scheduledAt'] ?? '') ?: null;
         $pdo->prepare('INSERT INTO newsletters (id, title, publication_id, subject, content_html, audience, status, scheduled_at, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            ->execute([$id, substr((string) ($body['title'] ?? 'Newsletter'), 0, 180), $publicationId, substr((string) ($body['subject'] ?? 'InkRiver newsletter'), 0, 240), (string) ($body['contentHtml'] ?? ''), substr((string) ($body['audience'] ?? 'all'), 0, 120), $status, $scheduledAt, $session['user']['id'], $now, $now]);
+            ->execute([$id, substr((string) ($body['title'] ?? 'Newsletter'), 0, 180), $publicationId, substr((string) ($body['subject'] ?? (configured_site_name() . ' newsletter')), 0, 240), (string) ($body['contentHtml'] ?? ''), substr((string) ($body['audience'] ?? 'all'), 0, 120), $status, $scheduledAt, $session['user']['id'], $now, $now]);
         if ($status === 'scheduled') enqueue_background_job('newsletters.send', [], (string) $scheduledAt);
         json_response(['newsletterId' => $id], 201);
     }
@@ -4701,7 +4766,7 @@ function handle_api(string $path, string $method): void
                     }
                 }
                 $item['status'] = $item['status'] ?? $defaultStatus;
-                $item['author'] = $item['author'] ?? ($defaultAuthor ?: 'InkRiver Team');
+                $item['author'] = $item['author'] ?? ($defaultAuthor ?: configured_site_name() . ' Team');
                 $item['topic'] = $item['topic'] ?? ($defaultTopic ?: 'Imported');
                 $item['contentHtml'] = $item['contentHtml'] ?? ($item['content_html'] ?? '');
                 $item['dek'] = $item['dek'] ?? substr(trim(strip_tags((string) $item['contentHtml'])), 0, 180);
@@ -4807,13 +4872,19 @@ function handle_api(string $path, string $method): void
     }
 
     if ($method === 'GET' && $path === '/api/admin/media') {
-        require_auth(['admin']);
-        $rows = $pdo->query('SELECT * FROM media_assets ORDER BY created_at DESC LIMIT 200')->fetchAll();
+        $session = require_auth(['admin', 'writer']);
+        if (($session['user']['role'] ?? '') === 'admin') {
+            $rows = $pdo->query('SELECT * FROM media_assets ORDER BY created_at DESC LIMIT 200')->fetchAll();
+        } else {
+            $stmt = $pdo->prepare('SELECT * FROM media_assets WHERE uploader_user_id = ? ORDER BY created_at DESC LIMIT 100');
+            $stmt->execute([$session['user']['id']]);
+            $rows = $stmt->fetchAll();
+        }
         json_response(['assets' => array_map('public_media_asset', $rows)]);
     }
 
     if ($method === 'POST' && $path === '/api/admin/media') {
-        $session = require_auth(['admin']);
+        $session = require_auth(['admin', 'writer']);
         if (empty($_FILES['file']) || !is_uploaded_file($_FILES['file']['tmp_name'])) {
             json_response(['error' => 'NO_FILE', 'message' => 'Choose an image file to upload.'], 400);
         }
@@ -4838,7 +4909,7 @@ function handle_api(string $path, string $method): void
         $stmt = $pdo->prepare('SELECT * FROM media_assets WHERE id = ?');
         $stmt->execute([$id]);
         enqueue_background_job('media.variants', ['mediaAssetId' => $id]);
-        audit_log($session['user']['id'], 'admin.media_upload', 'media_asset', $id);
+        audit_log($session['user']['id'], 'media.upload', 'media_asset', $id);
         json_response(['asset' => public_media_asset($stmt->fetch())], 201);
     }
 
@@ -4863,6 +4934,20 @@ function handle_api(string $path, string $method): void
         json_response(['ok' => true], 201);
     }
 
+    if ($method === 'POST' && preg_match('#^/api/stories/([^/]+)/like$#', $path, $m)) {
+        $session = require_auth();
+        $slug = rawurldecode($m[1]);
+        $story = null;
+        foreach (document_value('stories', []) as $candidate) {
+            if (is_array($candidate) && ($candidate['slug'] ?? '') === $slug && ($candidate['status'] ?? 'published') === 'published') {
+                $story = $candidate;
+                break;
+            }
+        }
+        if (!$story) json_response(['error' => 'NOT_FOUND', 'message' => 'Published story not found.'], 404);
+        json_response(toggle_story_like($slug, $session['user']['id']));
+    }
+
     if ($method === 'GET' && $path === '/api/recommendations/feed') {
         $session = require_auth();
         $feed = recommendation_feed_for_user($session['user']['id'], max(1, min(80, (int) ($_GET['limit'] ?? 24))));
@@ -4879,7 +4964,7 @@ function handle_api(string $path, string $method): void
         if ($type === 'reset_recommendations') {
             $pdo->prepare('DELETE FROM recommendation_profiles WHERE user_id = ?')->execute([$session['user']['id']]);
             $pdo->prepare('DELETE FROM recommendation_story_scores WHERE user_id = ?')->execute([$session['user']['id']]);
-            $pdo->prepare("DELETE FROM engagement_events WHERE user_id = ? AND event_type IN ('open','read_midpoint','read_complete','complete','long_read','clap','save','unsave','share','not_interested','less_like_this','more_like_this','hide_topic','interest_added','interest_removed')")->execute([$session['user']['id']]);
+            $pdo->prepare("DELETE FROM engagement_events WHERE user_id = ? AND event_type IN ('open','read_midpoint','read_complete','complete','long_read','clap','unlike','save','unsave','share','not_interested','less_like_this','more_like_this','hide_topic','interest_added','interest_removed')")->execute([$session['user']['id']]);
             json_response(['ok' => true, 'training' => ['signals' => 0, 'stories' => 0, 'trainedAt' => now_iso(), 'modelVersion' => 2], 'feed' => []]);
         }
         $storySlug = substr((string) ($body['storySlug'] ?? ''), 0, 200);
@@ -5156,7 +5241,7 @@ function handle_api(string $path, string $method): void
             ->execute([$session['user']['id'], 'passkey-registration-challenge', json_encode(['challenge' => $challenge, 'createdAt' => $now], JSON_UNESCAPED_SLASHES), $now]);
         json_response([
             'challenge' => $challenge,
-            'rp' => ['name' => 'InkRiver', 'id' => webauthn_rp_id()],
+            'rp' => ['name' => configured_site_name(), 'id' => webauthn_rp_id()],
             'user' => [
                 'id' => $session['user']['id'],
                 'idEncoded' => base64url_encode_value(hash('sha256', $session['user']['id'], true)),
@@ -5213,7 +5298,7 @@ function handle_api(string $path, string $method): void
         $url = app_origin() . '/api/security/verify-email?token=' . rawurlencode($token);
         $pdo->prepare("INSERT INTO security_tokens (id, user_id, token_hash, type, expires_at, created_at) VALUES (?, ?, ?, 'email_verification', ?, ?)")
             ->execute([uuid_value(), $session['user']['id'], hash('sha256', $token), gmdate('Y-m-d\TH:i:s.v\Z', time() + 86400), now_iso()]);
-        $sent = send_email_message($session['user']['email'], 'Verify your InkRiver email', ['name' => $session['user']['name'], 'verificationUrl' => $url]);
+        $sent = send_email_message($session['user']['email'], 'Verify your ' . configured_site_name() . ' email', ['name' => $session['user']['name'], 'verificationUrl' => $url]);
         json_response(['sent' => $sent, 'verificationUrl' => $sent ? null : $url], 201);
     }
 
@@ -6037,7 +6122,7 @@ function handle_api(string $path, string $method): void
         $task = trim((string) ($body['task'] ?? 'improve'));
         $prompt = "Task: {$task}\nTitle: " . (string) ($body['title'] ?? '') . "\nExcerpt: " . (string) ($body['excerpt'] ?? '') . "\nContent HTML:\n" . (string) ($body['content'] ?? '');
         try {
-            $result = openai_text_response($prompt, 'You are InkRiver AI. Give concise, actionable editorial help. Keep all changes optional and visible.');
+            $result = openai_text_response($prompt, 'You are ' . configured_site_name() . ' AI. Give concise, actionable editorial help. Keep all changes optional and visible.');
             $result = $result ?: 'The AI provider returned an empty response.';
             $review = null;
             if (str_starts_with($task, 'review-')) {
@@ -6110,7 +6195,7 @@ function handle_api(string $path, string $method): void
         require_auth(['admin']);
         $body = read_json();
         $payload = [
-            'title' => substr((string) ($body['title'] ?? 'InkRiver'), 0, 80),
+            'title' => substr((string) ($body['title'] ?? configured_site_name()), 0, 80),
             'body' => substr((string) ($body['body'] ?? 'A new update is available.'), 0, 180),
             'url' => substr((string) ($body['url'] ?? '/'), 0, 500),
         ];
@@ -6197,7 +6282,8 @@ function handle_api(string $path, string $method): void
         $now = now_iso();
         $pdo->prepare("INSERT INTO user_security_settings (user_id, two_factor_secret, two_factor_enabled, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(user_id) DO UPDATE SET two_factor_secret = excluded.two_factor_secret, two_factor_enabled = 0, updated_at = excluded.updated_at")
             ->execute([$session['user']['id'], $secret, $now]);
-        json_response(['secret' => $secret, 'otpauthUrl' => 'otpauth://totp/InkRiver:' . rawurlencode($session['user']['email']) . '?secret=' . $secret . '&issuer=InkRiver']);
+        $siteName = configured_site_name();
+        json_response(['secret' => $secret, 'otpauthUrl' => 'otpauth://totp/' . rawurlencode($siteName) . ':' . rawurlencode($session['user']['email']) . '?secret=' . $secret . '&issuer=' . rawurlencode($siteName)]);
     }
 
     if ($method === 'POST' && $path === '/api/me/security/totp/enable') {

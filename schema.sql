@@ -124,6 +124,13 @@
     PRIMARY KEY (comment_id, user_id)
   );
 
+  CREATE TABLE IF NOT EXISTS story_likes (
+    story_slug TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (story_slug, user_id)
+  );
+
   CREATE TABLE IF NOT EXISTS story_translations (
     story_slug TEXT NOT NULL,
     locale TEXT NOT NULL,
@@ -984,6 +991,7 @@
   CREATE INDEX IF NOT EXISTS idx_user_documents_user ON user_documents(user_id);
   CREATE INDEX IF NOT EXISTS idx_engagement_user_created ON engagement_events(user_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_engagement_story_type ON engagement_events(story_slug, event_type);
+  CREATE INDEX IF NOT EXISTS idx_story_likes_story ON story_likes(story_slug);
   CREATE INDEX IF NOT EXISTS idx_recommendation_scores_user_score ON recommendation_story_scores(user_id, score DESC);
   CREATE INDEX IF NOT EXISTS idx_comments_story_created ON comments(story_slug, created_at);
   CREATE INDEX IF NOT EXISTS idx_story_translations_locale ON story_translations(locale, status);

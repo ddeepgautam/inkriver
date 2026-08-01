@@ -437,7 +437,7 @@ function business_review_queue_item(string $kind, string $id, array $body, array
         }
     }
     $email = $isClaim ? $item['claimant_email'] : $item['submitter_email'];
-    send_email_message($email, 'Your InkRiver profile ' . ($isClaim ? 'claim' : 'suggestion') . ' was ' . $status, [
+    send_email_message($email, 'Your ' . configured_site_name() . ' profile ' . ($isClaim ? 'claim' : 'suggestion') . ' was ' . $status, [
         'type' => 'business_profile_review',
         'status' => $status,
         'reviewNote' => trim((string) ($body['reviewNote'] ?? '')),
