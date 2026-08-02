@@ -246,7 +246,7 @@ function slugifyName(value) {
   return String(value || "reader").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-const reservedProfileRoutes = new Set(["about", "admin", "administrator", "api", "auth", "billing", "blog", "category", "dashboard", "help", "lists", "login", "logout", "me", "moderator", "pricing", "privacy", "publications", "publication-invites", "root", "search", "security", "settings", "signup", "stories", "support", "terms", "write"]);
+const reservedProfileRoutes = new Set(["about", "admin", "administrator", "api", "auth", "billing", "blog", "category", "dashboard", "help", "lists", "login", "logout", "me", "moderator", "notifications", "pricing", "privacy", "publications", "publication-invites", "root", "search", "security", "settings", "signup", "stories", "support", "terms", "write"]);
 
 function cleanProfileRouteSlug(path = state.path) {
   const slug = decodeURIComponent(String(path || "").replace(/^\/+|\/+$/g, "")).toLowerCase();
@@ -1200,7 +1200,12 @@ async function apiRequest(path, options = {}) {
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || "The request could not be completed.");
+  if (!response.ok) {
+    const error = new Error(payload.message || "The request could not be completed.");
+    error.code = payload.error || "REQUEST_FAILED";
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
@@ -1721,6 +1726,7 @@ const state = {
   loginOpen: false,
   loginMessage: "",
   authMode: "login",
+  authStep: "credentials",
   authForm: { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false },
   authPasswordVisible: false,
   authBusy: false,
@@ -1781,6 +1787,7 @@ const state = {
   publications: [],
   notifications: [],
   unreadNotifications: 0,
+  notificationOpen: false,
   invoices: [],
   seoArtifacts: [],
   moderationDictionary: [],
@@ -1890,11 +1897,13 @@ const state = {
   businessEditingId: "",
   businessEditingAdmin: false,
   businessImageUploading: false,
+  businessSaving: false,
   businessForm: {},
   businessLinkQuery: "",
   businessLinkSuggestions: [],
   businessOverlay: { type: "", profileType: "", profileId: "", profileName: "", message: "" },
-  businessAdmin: { profiles: [], claims: [], suggestions: [], industries: [], counts: { profiles: 0, claims: 0, suggestions: 0 }, pagination: { page: 1, perPage: 12, total: 0, totalPages: 1 }, loaded: false },
+  businessSubmissionResult: null,
+  businessAdmin: { profiles: [], submissions: [], claims: [], suggestions: [], industries: [], counts: { profiles: 0, submissions: 0, claims: 0, suggestions: 0 }, pagination: { page: 1, perPage: 12, total: 0, totalPages: 1 }, loaded: false },
   businessAdminView: "profiles",
   businessAdminFilters: { q: "", profileType: "all", industry: "", status: "", page: 1 },
   businessAdminLoading: false,
@@ -2859,6 +2868,7 @@ function applyAuthenticatedUser(user, newAccount = false) {
   state.onboardingSelection = new Set(state.recommendation.selectedInterests);
   state.onboardingOpen = newAccount && !state.recommendation.completedOnboarding;
   state.loginOpen = false;
+  state.authStep = "credentials";
   state.authForm = { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false };
 }
 
@@ -2892,12 +2902,27 @@ async function submitAuthentication() {
     else if (!state.onboardingOpen) setRoute(payload.user.role === "admin" ? "/admin" : "/dashboard");
     else render();
   } catch (error) {
+    if (!registering && error.code === "TWO_FACTOR_REQUIRED") {
+      state.authStep = "two-factor";
+      state.loginMessage = "Enter the code from your authenticator app or use a recovery code.";
+      state.loginOpen = true;
+      render();
+      return;
+    }
     state.loginMessage = error.message;
     state.loginOpen = true;
     render();
   } finally {
     state.authBusy = false;
+    if (state.loginOpen) render();
   }
+}
+
+function socialProviderLogo(provider) {
+  if (provider === "google") {
+    return `<svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.5-.2-2.2H12v4.3h5.4a4.6 4.6 0 0 1-2 3v2.8h3.3c1.9-1.8 2.9-4.4 2.9-7.9Z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.7-2.4l-3.3-2.8c-.9.6-2.1 1-3.4 1a5.9 5.9 0 0 1-5.5-4.1H3.1v2.9A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.5 13.7a6 6 0 0 1 0-3.4v-2.9H3.1a10 10 0 0 0 0 9.2l3.4-2.9Z"/><path fill="#EA4335" d="M12 6.2c1.5 0 2.8.5 3.9 1.5l2.9-2.9A9.8 9.8 0 0 0 3.1 7.4l3.4 2.9A5.9 5.9 0 0 1 12 6.2Z"/></svg>`;
+  }
+  return `<svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="#1877F2" d="M24 12a12 12 0 1 0-13.9 11.9v-8.4H7.1V12h3V9.3c0-3 1.8-4.7 4.6-4.7 1.3 0 2.7.2 2.7.2v3h-1.5c-1.5 0-2 .9-2 1.9V12h3.4l-.5 3.5h-2.9v8.4A12 12 0 0 0 24 12Z"/><path fill="#fff" d="m16.8 15.5.5-3.5h-3.4V9.7c0-1 .5-1.9 2-1.9h1.5v-3s-1.4-.2-2.7-.2c-2.8 0-4.6 1.7-4.6 4.7V12h-3v3.5h3v8.4a12.2 12.2 0 0 0 3.8 0v-8.4h2.9Z"/></svg>`;
 }
 
 async function requestAuthorAccess(showRender = true) {
@@ -3120,7 +3145,7 @@ function icon(name, size = 17) {
 }
 
 function setRoute(to) {
-  if ((to.startsWith("/dashboard") || to === "/me") && !state.user) {
+  if ((to.startsWith("/dashboard") || to === "/me" || to === "/notifications") && !state.user) {
     state.authMode = "login";
     state.loginMessage = "Sign in to open your dashboard.";
     state.loginOpen = true;
@@ -3172,12 +3197,13 @@ function setRoute(to) {
   window.history.pushState({}, "", to);
   state.path = to;
   state.mobileOpen = false;
+  state.notificationOpen = false;
   state.loginOpen = false;
   window.scrollTo({ top: 0, behavior: "smooth" });
   render();
   if (to.startsWith("/admin/users")) loadAdminUsers();
   if (to.startsWith("/search")) runServerSearch(false);
-  if (to.startsWith("/business-network")) loadBusinessNetwork();
+  if (to === "/business-network") loadBusinessNetwork();
   if (to.startsWith("/companies/") || to.startsWith("/founders/")) loadBusinessProfileRoute();
   if (to.startsWith("/admin/business-network")) loadBusinessAdmin();
   if (to.startsWith("/dashboard") && state.dashboardSection === "business") loadMyBusinessProfiles();
@@ -3189,7 +3215,7 @@ function filteredStories(topic = state.activeTopic) {
     const matchesTopic = topic === "For you" || story.topic === topic;
     return matchesTopic && `${story.title} ${story.dek} ${story.author} ${story.topic}`.toLowerCase().includes(query);
   });
-  if (topic !== "For you" || query) return matches;
+  if (topic !== "For you" || query) return query ? matches : rotatingCategoryStories(matches, topic);
   if (state.serverRecommendations.length) {
     const bySlug = new Map(matches.map((story) => [story.slug, story]));
     const ranked = state.serverRecommendations
@@ -3210,6 +3236,26 @@ function filteredStories(topic = state.activeTopic) {
   return (relevantMatches.length ? relevantMatches : matches)
     .filter((story) => !state.recommendation.hiddenStories.includes(story.slug))
     .sort((a, b) => recommendationScore(b) - recommendationScore(a));
+}
+
+function rotatingCategoryStories(stories, topic) {
+  let visitorId = localStorage.getItem("inkriver-feed-visitor");
+  if (!visitorId) {
+    visitorId = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    localStorage.setItem("inkriver-feed-visitor", visitorId);
+  }
+  const refreshWindow = Math.floor(Date.now() / (4 * 60 * 60 * 1000));
+  const audienceKey = state.user?.id || visitorId;
+  const score = (slug) => {
+    const value = `${audienceKey}|${topic}|${refreshWindow}|${slug}`;
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  };
+  return [...stories].sort((a, b) => score(a.slug) - score(b.slug));
 }
 
 function emptyBusinessForm(type = "company") {
@@ -3309,7 +3355,7 @@ async function loadBusinessAdmin() {
   render();
   try {
     const params = new URLSearchParams({ view: state.businessAdminView });
-    if (state.businessAdminView === "profiles") {
+    if (["profiles", "submissions"].includes(state.businessAdminView)) {
       const filters = state.businessAdminFilters;
       params.set("page", String(filters.page || 1));
       if (filters.q) params.set("q", filters.q);
@@ -3322,6 +3368,7 @@ async function loadBusinessAdmin() {
       ...state.businessAdmin,
       ...payload,
       profiles: payload.profiles || [],
+      submissions: payload.submissions || [],
       claims: payload.claims || [],
       suggestions: payload.suggestions || [],
       loaded: true,
@@ -3538,7 +3585,7 @@ async function uploadBusinessProfileImage(file) {
     const payload = await apiRequest("/api/business-network/media", { method: "POST", body: formData });
     const imageKey = state.businessEditorType === "company" ? "logo_url" : "image_url";
     state.businessForm[imageKey] = payload.url;
-    state.businessMessage = `${state.businessEditorType === "company" ? "Company logo" : "Founder photo"} uploaded. Save the profile to publish it.`;
+    state.businessMessage = `${state.businessEditorType === "company" ? "Company logo" : "Founder photo"} uploaded. Submit the profile when you are ready for review.`;
   } catch (error) {
     state.businessMessage = error.message;
   } finally {
@@ -3549,6 +3596,7 @@ async function uploadBusinessProfileImage(file) {
 
 function businessEditorTemplate(type) {
   const company = type === "company";
+  const staffEditor = state.businessEditingAdmin;
   return `<form id="businessProfileForm" class="business-profile-form">
     <div class="business-editor-head"><div><span>${state.businessEditingId ? "Editing" : "New profile"}</span><h2>${state.businessEditingId ? "Update" : "Create"} ${company ? "company" : "founder"} profile</h2><p>Complete profiles are easier to discover and verify.</p></div><button type="button" class="icon-button" data-action="close-business-editor" aria-label="Close editor">${icon("close", 17)}</button></div>
     <section class="business-form-section"><div class="business-form-section-head"><div><span>Identity</span><h3>Core profile</h3></div></div>${businessProfileImageEditor(type)}<div class="business-form-grid">
@@ -3561,16 +3609,21 @@ function businessEditorTemplate(type) {
     <section class="business-form-section"><div class="business-form-section-head"><div><span>Location & links</span><h3>Where to find ${company ? "the business" : "this founder"}</h3></div></div><div class="business-form-grid">${company ? businessFormField("headquarters", "Headquarters") : ""}${businessFormField("city", "City")}${businessFormField("state_region", "State / region")}${businessFormField("country", "Country")}${businessFormField("website", "Website", "url")}${businessFormField("linkedin_url", "LinkedIn URL", "url")}${businessFormField("x_url", "X / Twitter URL", "url")}</div></section>
     ${businessLinkedProfilesEditor(type)}
     <section class="business-form-section private-section"><div class="business-form-section-head"><div><span>${icon("lock", 14)}Private contact data</span><h3>Subscriber-only contact details</h3></div><p>These fields are never shown to public visitors.</p></div><div class="business-form-grid">${company ? businessFormField("contact_name", "Contact person") + businessFormField("contact_role", "Contact role") : ""}${businessFormField("contact_email", "Contact email", "email")}${businessFormField("contact_phone", "Contact number", "tel")}${company ? businessFormField("contact_address", "Contact address", "textarea") : ""}</div></section>
-    <div class="business-form-actions"><span>${escapeHtml(state.businessMessage || "You can update this profile later from your dashboard.")}</span><button type="button" class="secondary-button" data-action="close-business-editor">Cancel</button><button class="primary-button" type="submit">${icon("check", 15)}Save ${company ? "company" : "founder"} profile</button></div>
+    <div class="business-form-actions"><span>${escapeHtml(state.businessMessage || (staffEditor ? "You can update this profile later." : "Your profile will stay private until an admin or moderator approves it."))}</span><button type="button" class="secondary-button" data-action="close-business-editor">Cancel</button><button class="primary-button" type="submit" ${state.businessSaving ? "disabled" : ""}>${icon("check", 15)}${state.businessSaving ? (staffEditor ? "Saving…" : "Submitting…") : staffEditor ? `Save ${company ? "company" : "founder"} profile` : "Submit for approval"}</button></div>
   </form>`;
 }
 
 function businessWorkspaceTemplate() {
   if (state.businessEditorType) return businessEditorTemplate(state.businessEditorType);
-  const cards = (profiles, type) => profiles.length ? profiles.map((profile) => `<article class="managed-business-card">${businessAvatar(profile, type)}<span><strong>${escapeHtml(type === "company" ? profile.name : profile.full_name)}</strong><small>${escapeHtml((type === "company" ? profile.industry : profile.headline) || "Profile")}</small><i class="status-pill">${escapeHtml(profile.status)}</i></span><button class="secondary-button" data-route="${businessProfileRoute(profile, type)}">View</button><button class="secondary-button" data-business-edit="${profile.id}" data-business-profile-type="${type}">Edit</button></article>`).join("") : `<div class="empty-state">No ${type === "company" ? "company" : "founder"} profiles under your account yet.</div>`;
+  const cards = (profiles, type) => profiles.length ? profiles.map((profile) => `<article class="managed-business-card">${businessAvatar(profile, type)}<span><strong>${escapeHtml(type === "company" ? profile.name : profile.full_name)}</strong><small>${escapeHtml((type === "company" ? profile.industry : profile.headline) || "Profile")}</small><i class="status-pill">${escapeHtml(profile.status === "draft" ? "Awaiting review" : profile.status === "rejected" ? "Rejected" : profile.status === "unpublished" ? "Unpublished" : profile.status)}</i></span>${profile.status === "published" ? `<button class="secondary-button" data-route="${businessProfileRoute(profile, type)}">View</button>` : ""}<button class="secondary-button" data-business-edit="${profile.id}" data-business-profile-type="${type}">Edit</button></article>`).join("") : `<div class="empty-state">No ${type === "company" ? "company" : "founder"} profiles under your account yet.</div>`;
   return `<section class="business-workspace-intro"><div><span class="eyebrow">Business Network</span><h2>Build your organization graph</h2><p>Create accurate, linked profiles for your companies, founders, and key people. Contact details remain member-only.</p></div><div><button class="primary-button" data-action="create-company-profile">${icon("gauge", 15)}Add company</button><button class="secondary-button" data-action="create-founder-profile">${icon("users", 15)}Add founder</button></div></section>
     ${state.businessMessage ? `<div class="form-message">${escapeHtml(state.businessMessage)}</div>` : ""}
     <section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("gauge")}<h2>My companies</h2></div><div class="managed-business-list">${cards(state.myBusinessProfiles.companies, "company")}</div></div><div class="work-panel"><div class="panel-title">${icon("users")}<h2>My founder profiles</h2></div><div class="managed-business-list">${cards(state.myBusinessProfiles.founders, "person")}</div></div></section>`;
+}
+
+function businessSubmissionSuccessTemplate() {
+  const result = state.businessSubmissionResult || {};
+  return `<main class="submission-success-page"><section class="submission-success-card"><span class="submission-success-icon">${icon("check", 30)}</span><span class="eyebrow">Submission received</span><h1>Your ${escapeHtml(result.type === "person" ? "founder" : "company")} profile is ready for review.</h1><p><strong>${escapeHtml(result.name || "Your profile")}</strong> is private for now. It will become available on the Business Network after an admin or moderator reviews and approves it.</p><p>We’ll notify you from the bell in the header when the profile is approved or rejected.</p><div><button class="primary-button" data-route="/dashboard" data-dashboard-section="business">Return to business profiles</button><button class="secondary-button" data-route="/business-network">Browse the Business Network</button></div></section></main>`;
 }
 
 function businessOverlayTemplate() {
@@ -3628,6 +3681,18 @@ function businessAdminProfileRow(profile, index, total) {
   </div>`;
 }
 
+function businessSubmissionRow(profile) {
+  const type = profile.profile_type === "company" ? "company" : "person";
+  const avatarProfile = type === "company"
+    ? { name: profile.display_name, logo_url: profile.profile_image }
+    : { full_name: profile.display_name, image_url: profile.profile_image };
+  return `<article class="business-submission-card">
+    <div class="business-submission-profile">${businessAvatar(avatarProfile, type)}<span><i class="status-pill">Awaiting review</i><strong>${escapeHtml(profile.display_name)}</strong><small>${escapeHtml(profile.meta || (type === "company" ? "Company profile" : "Founder profile"))}</small></span></div>
+    <div class="business-submission-meta"><span>${icon(type === "company" ? "gauge" : "users", 14)}${type === "company" ? "Company" : "Founder"}</span><time datetime="${escapeHtml(profile.updated_at)}">Submitted ${new Date(profile.updated_at).toLocaleString("en-IN")}</time></div>
+    <div class="business-review-actions"><button class="secondary-button" data-business-submission-review="${profile.id}" data-business-profile-type="${type}" data-review-status="rejected">${icon("close", 14)}Reject</button><button class="primary-button" data-business-submission-review="${profile.id}" data-business-profile-type="${type}" data-review-status="approved">${icon("check", 14)}Approve</button></div>
+  </article>`;
+}
+
 function adminBusinessNetworkTemplate() {
   if (state.businessEditorType && state.businessEditingAdmin) {
     return adminShellTemplate(
@@ -3640,22 +3705,23 @@ function adminBusinessNetworkTemplate() {
   const data = state.businessAdmin;
   const view = state.businessAdminView;
   const profileRows = data.profiles || [];
+  const submissions = data.submissions || [];
   const queue = view === "claims" ? data.claims || [] : data.suggestions || [];
-  const counts = data.counts || { profiles: 0, claims: 0, suggestions: 0 };
+  const counts = data.counts || { profiles: 0, submissions: 0, claims: 0, suggestions: 0 };
   const filters = state.businessAdminFilters;
-  const content = `<section class="business-admin-tabs"><button class="${view === "profiles" ? "active" : ""}" data-business-admin-view="profiles">Profiles <span>${counts.profiles || 0}</span></button><button class="${view === "claims" ? "active" : ""}" data-business-admin-view="claims">Claims <span>${counts.claims || 0}</span></button><button class="${view === "suggestions" ? "active" : ""}" data-business-admin-view="suggestions">Suggested changes <span>${counts.suggestions || 0}</span></button></section>
+  const content = `<section class="business-admin-tabs"><button class="${view === "profiles" ? "active" : ""}" data-business-admin-view="profiles">Profiles <span>${counts.profiles || 0}</span></button><button class="${view === "submissions" ? "active" : ""}" data-business-admin-view="submissions">New submissions <span>${counts.submissions || 0}</span></button><button class="${view === "claims" ? "active" : ""}" data-business-admin-view="claims">Claims <span>${counts.claims || 0}</span></button><button class="${view === "suggestions" ? "active" : ""}" data-business-admin-view="suggestions">Suggested changes <span>${counts.suggestions || 0}</span></button></section>
     ${state.businessMessage ? `<div class="form-message" role="status">${escapeHtml(state.businessMessage)}</div>` : ""}
-    ${view === "profiles" ? `<section class="business-admin-directory" aria-busy="${state.businessAdminLoading}">
+    ${["profiles", "submissions"].includes(view) ? `<section class="business-admin-directory" aria-busy="${state.businessAdminLoading}">
       <div class="business-admin-directory-head"><div><span>Profile management</span><h2>Company and founder profiles</h2><p>${Number(data.pagination?.total || 0).toLocaleString("en-IN")} matching profiles · 12 per page</p></div></div>
       <form id="businessAdminSearchForm" class="business-admin-filters">
         <label class="business-admin-search"><span>Search by name</span><div>${icon("search", 16)}<input id="businessAdminSearch" value="${escapeHtml(filters.q)}" placeholder="Search company or founder name" /></div></label>
         <label><span>Profile type</span><select id="businessAdminTypeFilter"><option value="all" ${filters.profileType === "all" ? "selected" : ""}>All profiles</option><option value="company" ${filters.profileType === "company" ? "selected" : ""}>Companies</option><option value="person" ${filters.profileType === "person" ? "selected" : ""}>Founders</option></select></label>
         <label><span>Industry</span><select id="businessAdminIndustryFilter" ${filters.profileType === "person" ? "disabled" : ""}><option value="">All industries</option>${(data.industries || []).map((industry) => `<option value="${escapeHtml(industry)}" ${filters.industry === industry ? "selected" : ""}>${escapeHtml(industry)}</option>`).join("")}</select></label>
-        <label><span>Status</span><select id="businessAdminStatusFilter"><option value="">All statuses</option>${["published", "draft", "unpublished"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${status[0].toUpperCase() + status.slice(1)}</option>`).join("")}</select></label>
+        ${view === "profiles" ? `<label><span>Status</span><select id="businessAdminStatusFilter"><option value="">All statuses</option>${["published", "unpublished"].map((status) => `<option value="${status}" ${filters.status === status ? "selected" : ""}>${status[0].toUpperCase() + status.slice(1)}</option>`).join("")}</select></label>` : ""}
         <button class="primary-button" type="submit">${icon("search", 15)}Search</button>
         <button class="secondary-button" type="button" data-action="clear-business-admin-filters">Reset</button>
       </form>
-      ${state.businessAdminLoading ? `<div class="business-admin-loading" role="status">Loading business profiles…</div>` : profileRows.length ? `<div class="business-admin-profile-table" role="table" aria-label="Company and founder profiles">
+      ${state.businessAdminLoading ? `<div class="business-admin-loading" role="status">Loading business profiles…</div>` : view === "submissions" ? `<div class="business-submission-list">${submissions.map((profile) => businessSubmissionRow(profile)).join("") || `<div class="empty-state">No new profile submissions are waiting for review.</div>`}</div>` : profileRows.length ? `<div class="business-admin-profile-table" role="table" aria-label="Company and founder profiles">
         <div class="business-admin-profile-header" role="row"><span role="columnheader">Profile</span><span role="columnheader">Type</span><span role="columnheader">Status</span><span role="columnheader">Ownership</span><span role="columnheader">Updated</span><span role="columnheader">Actions</span></div>
         ${profileRows.map((profile, index) => businessAdminProfileRow(profile, index, profileRows.length)).join("")}
       </div>` : `<div class="business-admin-no-results"><span>${icon("search", 24)}</span><h3>No matching profiles</h3><p>Try a different name, profile type, industry, or status.</p><button class="secondary-button" data-action="clear-business-admin-filters">Clear filters</button></div>`}
@@ -3665,6 +3731,7 @@ function adminBusinessNetworkTemplate() {
 }
 
 async function saveBusinessProfile() {
+  if (state.businessSaving) return;
   const type = state.businessEditorType;
   const listFields = type === "company"
     ? ["industries", "products", "technologies", "markets", "keywords", "milestones"]
@@ -3677,7 +3744,8 @@ async function saveBusinessProfile() {
     payload.companies = (payload.links || []).map((item) => ({ companyId: item.id, roleTitle: item.roleTitle || "Founder", isFounder: item.isFounder !== false, isCurrent: item.isCurrent !== false }));
   }
   delete payload.links;
-  state.businessMessage = "Saving profile…";
+  state.businessSaving = true;
+  state.businessMessage = state.businessEditingAdmin ? "Saving profile…" : "Submitting profile for approval…";
   render();
   try {
     const plural = type === "company" ? "companies" : "founders";
@@ -3687,21 +3755,29 @@ async function saveBusinessProfile() {
         : `/api/me/${plural}/${encodeURIComponent(state.businessEditingId)}`
       : `/api/me/${plural}`;
     const response = await apiRequest(path, { method: state.businessEditingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
-    state.businessMessage = `${type === "company" ? "Company" : "Founder"} profile saved.`;
     const returnToAdmin = state.businessEditingAdmin;
     state.businessEditorType = "";
     state.businessEditingId = "";
     state.businessEditingAdmin = false;
     if (returnToAdmin) {
+      state.businessMessage = `${type === "company" ? "Company" : "Founder"} profile saved.`;
       await loadBusinessAdmin();
       setRoute("/admin/business-network");
     } else {
       await loadMyBusinessProfiles();
-      setRoute(businessProfileRoute(response.profile, type));
+      state.businessSubmissionResult = {
+        type,
+        name: type === "company" ? response.profile.name : response.profile.full_name,
+      };
+      state.businessMessage = "";
+      setRoute("/business-network/submission-success");
     }
   } catch (error) {
     state.businessMessage = error.message;
     render();
+  } finally {
+    state.businessSaving = false;
+    if (state.businessEditorType) render();
   }
 }
 
@@ -3764,8 +3840,12 @@ function appTemplate() {
             ? homeTemplate(selectedCategory)
           : state.path.startsWith("/companies/") || state.path.startsWith("/founders/")
             ? businessProfilePageTemplate()
+          : state.path === "/business-network/submission-success"
+            ? businessSubmissionSuccessTemplate()
           : state.path.startsWith("/business-network")
             ? businessNetworkTemplate()
+          : state.path === "/notifications"
+            ? notificationsPageTemplate()
           : state.path === "/me"
             ? readerProfileTemplate()
           : state.path.startsWith("/search")
@@ -3851,6 +3931,20 @@ function adminRouteTemplate() {
   return adminTemplate();
 }
 
+function notificationItemsTemplate(limit = 5) {
+  const items = state.notifications.slice(0, limit);
+  return items.map((item) => `<button class="notification-item ${item.read_at ? "" : "unread"}" data-notification-id="${escapeHtml(item.id)}" data-notification-route="${escapeHtml(item.url || "/dashboard")}"><span class="notification-item-icon">${icon(item.type?.startsWith("business") ? "gauge" : "bell", 16)}</span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.body || item.type)}</small><time datetime="${escapeHtml(item.created_at)}">${new Date(item.created_at).toLocaleString("en-IN")}</time></span>${item.read_at ? "" : `<i aria-label="Unread notification"></i>`}</button>`).join("") || `<div class="notification-empty">You’re all caught up.</div>`;
+}
+
+function notificationDropdownTemplate() {
+  if (!state.notificationOpen || !state.user) return "";
+  return `<section class="notification-popover" aria-label="Recent notifications"><div class="notification-popover-head"><div><strong>Notifications</strong><span>${state.unreadNotifications ? `${state.unreadNotifications} unread` : "All caught up"}</span></div>${state.unreadNotifications ? `<button class="text-button" data-action="mark-notifications-read">Mark all read</button>` : ""}</div><div class="notification-popover-list">${notificationItemsTemplate(5)}</div><div class="notification-popover-foot"><button data-route="/notifications">View all notifications</button><button data-action="toggle-push">Enable browser alerts</button></div></section>`;
+}
+
+function notificationsPageTemplate() {
+  return `<main class="notifications-page"><section class="notifications-page-head"><div><span class="eyebrow">Activity</span><h1>Notifications</h1><p>Profile reviews, account updates, and other important activity in one place.</p></div><button class="secondary-button" data-action="mark-notifications-read" ${state.unreadNotifications ? "" : "disabled"}>Mark all as read</button></section><section class="notifications-list">${notificationItemsTemplate(100)}</section></main>`;
+}
+
 function headerTemplate() {
   const links = [
     ["Topics", "/"],
@@ -3873,7 +3967,7 @@ function headerTemplate() {
           <button class="icon-button theme-button" data-action="toggle-theme" aria-label="Switch to ${state.theme === "day" ? "night" : "day"} mode" title="Switch to ${state.theme === "day" ? "night" : "day"} mode">
             ${icon(state.theme === "day" ? "moon" : "sun")}
           </button>
-          <button class="icon-button notification-button" data-action="toggle-push" aria-label="Notifications" title="Notifications">${icon("bell")}</button>
+          <div class="notification-shell"><button class="icon-button notification-button" data-action="toggle-notifications" aria-label="Notifications${state.unreadNotifications ? `, ${state.unreadNotifications} unread` : ""}" aria-expanded="${state.notificationOpen}" title="Notifications">${icon("bell")}${state.user && state.unreadNotifications ? `<span class="notification-badge">${state.unreadNotifications > 99 ? "99+" : state.unreadNotifications}</span>` : ""}</button>${notificationDropdownTemplate()}</div>
           <button class="member-pill" data-action="${state.user ? "open-account" : "open-login"}">${state.user ? state.user.name.split(" ")[0] : "Join"}</button>
           <button class="menu-button" data-action="toggle-menu" aria-label="${state.mobileOpen ? "Close menu" : "Open menu"}" aria-expanded="${state.mobileOpen ? "true" : "false"}">${icon(state.mobileOpen ? "close" : "menu", 20)}</button>
         </div>
@@ -4094,7 +4188,6 @@ function homeTemplate(selectedCategory = null) {
           ${!selectedCategory ? personalizedFeedStatusTemplate() : ""}
           ${!selectedCategory && continueReadingEntries(3).length ? continueReadingTemplate("feed") : ""}
           ${adTemplate("leaderboard", "Leaderboard ad 728 x 90")}
-          <div class="feed-result-summary"><span>${matchingStories.length.toLocaleString("en-IN")} published ${matchingStories.length === 1 ? "story" : "stories"}</span><span>Page ${state.homePage} of ${totalPages}</span></div>
           <div class="story-list" id="homeStoryResults">
             ${pageStories.map((story, index) => storyCardTemplate(story, activeTopic === "For you", (state.homePage - 1) * perPage + index)).join("") || `<div class="empty-state">No published stories match this view.</div>`}
           </div>
@@ -6647,6 +6740,9 @@ function loginTemplate() {
       </div>
     `;
   }
+  if (state.authMode === "login" && state.authStep === "two-factor") {
+    return `<div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="two-factor-title"><section class="checkout-modal auth-modal"><button class="close-button" data-action="close-login" aria-label="Close login">${icon("close")}</button><span class="auth-step-icon">${icon("shield", 22)}</span><h2 id="two-factor-title">Verify it’s you</h2><p>Your account has two-factor authentication enabled. Enter the current code from your authenticator app, or a recovery code.</p><form class="auth-form" id="authForm"><label><span>Authenticator or recovery code</span><input id="authTwoFactorCode" name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="20" value="${escapeHtml(state.authForm.twoFactorCode || "")}" autofocus required /></label><button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Verifying…" : "Verify and sign in"}</button></form><button class="text-button auth-forgot" data-action="back-to-login">Back to email and password</button>${state.loginMessage ? `<div class="payment-message">${escapeHtml(state.loginMessage)}</div>` : ""}</section></div>`;
+  }
   const providers = enabledSocialProviders();
   return `
     <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="login-title">
@@ -6661,8 +6757,7 @@ function loginTemplate() {
         <form class="auth-form" id="authForm">
           ${state.authMode === "register" ? `<label><span>Full name</span><input id="authName" name="name" autocomplete="name" maxlength="80" value="${escapeHtml(state.authForm.name)}" required /></label>` : ""}
           <label><span>Email address</span><input id="authEmail" name="email" type="email" autocomplete="email" maxlength="254" value="${escapeHtml(state.authForm.email)}" required /></label>
-          <label><span>Password</span><div class="password-field"><input id="authPassword" name="password" type="${state.authPasswordVisible ? "text" : "password"}" autocomplete="${state.authMode === "register" ? "new-password" : "current-password"}" minlength="10" maxlength="128" required /><button type="button" class="password-toggle" data-action="toggle-auth-password" aria-label="${state.authPasswordVisible ? "Hide password" : "Show password"}">${state.authPasswordVisible ? "Hide" : "Show"}</button></div></label>
-          ${state.authMode === "login" ? `<label><span>Authenticator or recovery code</span><input id="authTwoFactorCode" name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="20" value="${escapeHtml(state.authForm.twoFactorCode || "")}" placeholder="Only needed when 2FA is enabled" /></label>` : ""}
+          <label><span>Password</span><div class="password-field"><input id="authPassword" name="password" type="${state.authPasswordVisible ? "text" : "password"}" value="${escapeHtml(state.authForm.password)}" autocomplete="${state.authMode === "register" ? "new-password" : "current-password"}" minlength="10" maxlength="128" required /><button type="button" class="password-toggle" data-action="toggle-auth-password" aria-label="${state.authPasswordVisible ? "Hide password" : "Show password"}">${state.authPasswordVisible ? "Hide" : "Show"}</button></div></label>
           ${state.authMode === "login" ? `<label class="auth-remember"><input id="authRememberMe" type="checkbox" ${state.authForm.rememberMe ? "checked" : ""} /><span>Remember me on this device</span></label>` : ""}
           ${state.authMode === "register" ? `<small>Use at least 10 characters with uppercase, lowercase, and a number.</small>` : ""}
           <button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait…" : state.authMode === "register" ? "Create secure account" : "Sign in"}</button>
@@ -6675,7 +6770,7 @@ function loginTemplate() {
             providers.length
               ? providers.map((provider) => `
                 <button class="social-login-button ${provider.id}" data-social-login="${provider.id}">
-                  <span>${provider.id === "google" ? "G" : "f"}</span>
+                  <span>${socialProviderLogo(provider.id)}</span>
                   Continue with ${provider.name}
                   <small>${state.providerStatus.social[provider.id] ? "Secure OAuth sign-in" : "Unavailable until server credentials are configured"}</small>
                 </button>
@@ -7678,6 +7773,24 @@ document.addEventListener("click", async (event) => {
   const businessAdminStatus = target.dataset.businessAdminStatus;
   const businessAdminDelete = target.dataset.businessAdminDelete;
   const businessReview = target.dataset.businessReview;
+  const businessSubmissionReview = target.dataset.businessSubmissionReview;
+  const notificationId = target.dataset.notificationId;
+
+  if (notificationId) {
+    try {
+      await apiRequest("/api/me/notifications/read", { method: "PATCH", body: JSON.stringify({ id: notificationId }) });
+      const notification = state.notifications.find((item) => item.id === notificationId);
+      if (notification && !notification.read_at) {
+        notification.read_at = new Date().toISOString();
+        state.unreadNotifications = Math.max(0, state.unreadNotifications - 1);
+      }
+      setRoute(target.dataset.notificationRoute || "/notifications");
+    } catch (error) {
+      state.userMessage = error.message;
+      render();
+    }
+    return;
+  }
 
   if (businessType) {
     state.businessNetwork.type = businessType;
@@ -7828,14 +7941,14 @@ document.addEventListener("click", async (event) => {
   if (action === "remove-business-profile-image") {
     const imageKey = state.businessEditorType === "company" ? "logo_url" : "image_url";
     state.businessForm[imageKey] = "";
-    state.businessMessage = "Profile image removed. Save the profile to publish this change.";
+    state.businessMessage = state.businessEditingAdmin ? "Profile image removed. Save the profile to publish this change." : "Profile image removed. Submit the profile when you are ready for review.";
     render();
     return;
   }
 
   if (businessAdminView) {
     state.businessAdminView = businessAdminView;
-    if (businessAdminView === "profiles") state.businessAdminFilters.page = 1;
+    if (["profiles", "submissions"].includes(businessAdminView)) state.businessAdminFilters.page = 1;
     state.businessMessage = "";
     await loadBusinessAdmin();
     return;
@@ -7898,6 +8011,20 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  if (businessSubmissionReview && businessProfileType) {
+    const reviewNote = window.prompt(`Optional note for the ${target.dataset.reviewStatus} notification:`, "") ?? "";
+    try {
+      const plural = businessProfileType === "company" ? "companies" : "founders";
+      await apiRequest(`/api/admin/business-network/submissions/${plural}/${encodeURIComponent(businessSubmissionReview)}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.reviewStatus, reviewNote }) });
+      state.businessMessage = `Profile submission ${target.dataset.reviewStatus}.`;
+      await loadBusinessAdmin();
+    } catch (error) {
+      state.businessMessage = error.message;
+      render();
+    }
+    return;
+  }
+
   if (dashboardSection) {
     const allowed = new Set(dashboardNavItems(state.user?.role || "reader").map((item) => item[2]));
     state.dashboardSection = allowed.has(dashboardSection) ? dashboardSection : "overview";
@@ -7946,6 +8073,13 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "toggle-auth-password") {
     state.authPasswordVisible = !state.authPasswordVisible;
+    render();
+    return;
+  }
+  if (action === "back-to-login") {
+    state.authStep = "credentials";
+    state.authForm.twoFactorCode = "";
+    state.loginMessage = "";
     render();
     return;
   }
@@ -8538,6 +8672,7 @@ document.addEventListener("click", async (event) => {
 
   if (authMode) {
     state.authMode = authMode;
+    state.authStep = "credentials";
     state.loginMessage = "";
       state.authForm.password = "";
       state.authForm.twoFactorCode = "";
@@ -8965,6 +9100,17 @@ document.addEventListener("click", async (event) => {
     localStorage.setItem("inkriver-theme", state.theme);
     render();
   }
+  if (action === "toggle-notifications") {
+    if (!state.user) {
+      state.authMode = "login";
+      state.authStep = "credentials";
+      state.loginOpen = true;
+      state.loginMessage = "Sign in to view your notifications.";
+    } else {
+      state.notificationOpen = !state.notificationOpen;
+    }
+    render();
+  }
   if (action === "toggle-push") {
     await enablePushNotifications();
   }
@@ -9206,11 +9352,13 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "open-login" || action === "open-account") {
     state.mobileOpen = false;
+    if (!state.user) state.authStep = "credentials";
     state.loginOpen = true;
     render();
   }
   if (action === "close-login") {
     state.loginOpen = false;
+    state.authStep = "credentials";
     if (state.pendingBusinessListing) {
       state.pendingBusinessListing = false;
       sessionStorage.removeItem("inkriver-business-listing-intent");
@@ -9667,7 +9815,7 @@ document.addEventListener("click", async (event) => {
 window.addEventListener("popstate", () => {
   finalizeArticleSession();
   const nextPath = window.location.pathname;
-  if ((nextPath.startsWith("/dashboard") || nextPath === "/me") && !state.user) {
+  if ((nextPath.startsWith("/dashboard") || nextPath === "/me" || nextPath === "/notifications") && !state.user) {
     window.history.replaceState({}, "", "/");
     state.path = "/";
     state.loginOpen = true;
@@ -9721,7 +9869,7 @@ async function bootstrapApp() {
     state.blogForm.publication = siteName();
   }
   state.sessionReady = true;
-  const protectedUserRoute = state.path.startsWith("/dashboard") || state.path === "/me";
+  const protectedUserRoute = state.path.startsWith("/dashboard") || state.path === "/me" || state.path === "/notifications";
   const protectedAdminRoute = state.path.startsWith("/admin");
   if (protectedUserRoute && !state.user) {
     window.history.replaceState({}, "", "/");

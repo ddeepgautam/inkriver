@@ -3276,6 +3276,259 @@ button:disabled {
   font-weight: 950;
 }
 
+.social-login-button > span svg {
+  display: block;
+}
+
+.notification-shell {
+  position: relative;
+}
+
+.notification-button {
+  position: relative;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -5px;
+  right: -6px;
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  place-items: center;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+  background: #e53935;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.notification-popover {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 45;
+  width: min(390px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.notification-popover-head,
+.notification-popover-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.notification-popover-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.notification-popover-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.notification-popover-head span,
+.notification-item small,
+.notification-item time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.notification-popover-list,
+.notifications-list {
+  display: grid;
+}
+
+.notification-item {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 8px;
+  align-items: start;
+  gap: 11px;
+  width: 100%;
+  min-height: 72px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+}
+
+.notification-item:hover,
+.notification-item.unread {
+  background: var(--soft-2);
+}
+
+.notification-item-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--accent-dark);
+}
+
+.notification-item > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.notification-item small {
+  line-height: 1.4;
+}
+
+.notification-item > i {
+  width: 7px;
+  height: 7px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: #e53935;
+}
+
+.notification-popover-foot {
+  padding: 10px 16px;
+}
+
+.notification-popover-foot button {
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.notification-empty {
+  padding: 30px 18px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.notifications-page,
+.submission-success-page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 48px 24px 76px;
+}
+
+.notifications-page-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.notifications-page-head h1 {
+  margin: 5px 0 8px;
+  font-size: clamp(38px, 6vw, 60px);
+}
+
+.notifications-page-head p {
+  color: var(--muted);
+}
+
+.notifications-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.submission-success-card {
+  max-width: 680px;
+  margin: 36px auto;
+  padding: clamp(28px, 6vw, 52px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.submission-success-icon {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--soft-2);
+  color: var(--accent-dark);
+}
+
+.submission-success-card h1 {
+  margin: 8px 0 16px;
+  font-size: clamp(32px, 5vw, 50px);
+}
+
+.submission-success-card p {
+  margin: 10px auto;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.submission-success-card > div {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.business-submission-list {
+  display: grid;
+  gap: 10px;
+}
+
+.business-submission-card {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.4fr) minmax(180px, .8fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.business-submission-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.business-submission-profile > span,
+.business-submission-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.business-submission-profile .status-pill {
+  width: max-content;
+}
+
+.business-submission-profile small,
+.business-submission-meta time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.business-submission-meta span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .social-login-button small {
   grid-column: 2;
   color: var(--muted);
@@ -3302,6 +3555,67 @@ button:disabled {
 .auth-note {
   margin-top: 12px;
   font-size: 13px;
+}
+
+.auth-step-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 14px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--soft-2);
+  color: var(--accent-dark);
+}
+
+.checkout-modal .currency-control {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.checkout-modal .currency-control label {
+  grid-column: 1 / -1;
+}
+
+.checkout-modal .currency-control .secondary-button {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.discount-field {
+  display: grid;
+  gap: 7px;
+  margin: 18px 0;
+}
+
+.discount-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.discount-field > div {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.discount-field input {
+  min-width: 0;
+  min-height: 44px;
+  flex: 1;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--ink);
+  font-weight: 750;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.discount-field button {
+  min-width: 82px;
 }
 
 .checkout-summary {
@@ -3838,8 +4152,7 @@ button:disabled {
     grid-template-columns: auto 1fr auto;
   }
 
-  .desktop-nav,
-  .notification-button {
+  .desktop-nav {
     display: none;
   }
 
@@ -4056,6 +4369,45 @@ button:disabled {
 
   .interactive-editor-row {
     grid-template-columns: 80px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .business-submission-card {
+    grid-template-columns: 1fr;
+  }
+
+  .business-submission-card .business-review-actions {
+    justify-content: stretch;
+  }
+
+  .business-submission-card .business-review-actions button {
+    flex: 1;
+  }
+
+  .notifications-page-head,
+  .submission-success-card > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .checkout-modal .currency-control {
+    grid-template-columns: 1fr;
+  }
+
+  .checkout-modal .currency-control .secondary-button {
+    width: 100%;
+  }
+
+  .discount-field > div {
+    gap: 6px;
+  }
+
+  .discount-field button {
+    min-width: 72px;
+    padding-inline: 12px;
   }
 }
 

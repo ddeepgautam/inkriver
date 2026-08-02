@@ -4222,8 +4222,10 @@ function handle_api(string $path, string $method): void
                 }
             }
             if (!$validTotp && !$validRecovery) {
-                record_auth_rate_limit_failure('login-ip', $ipIdentity, 30, 900, 900);
-                record_auth_rate_limit_failure('login-account', $accountIdentity, 5, 900, 900);
+                if ($twoFactorCode !== '') {
+                    record_auth_rate_limit_failure('login-ip', $ipIdentity, 30, 900, 900);
+                    record_auth_rate_limit_failure('login-account', $accountIdentity, 5, 900, 900);
+                }
                 json_response(['error' => 'TWO_FACTOR_REQUIRED', 'message' => 'Enter a valid authenticator or recovery code.'], 401);
             }
         }

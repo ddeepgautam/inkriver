@@ -100,7 +100,24 @@ $writerSession = ['user' => ['id' => 'USR-SMOKE-WRITER', 'name' => 'Smoke Writer
 $pendingProfile = business_save_profile('company', ['name' => 'Unreviewed Writer Company'], $writerSession);
 assert_true(($pendingProfile['status'] ?? '') === 'draft', 'non-staff business profiles require moderation before publication');
 assert_true(business_get_profile('company', (string) $pendingProfile['id'], null) === null, 'draft business profiles are hidden from public requests');
+$submissionPage = business_admin_paginated_profiles(['status' => 'draft'], 12);
+assert_true(($submissionPage['pagination']['total'] ?? 0) === 1, 'new profile submissions are available in the paginated moderation queue');
+$approval = business_review_submission('company', (string) $pendingProfile['id'], ['status' => 'approved', 'reviewNote' => 'Profile details verified.'], $adminSession);
+assert_true(($approval['status'] ?? '') === 'approved' && business_get_profile('company', (string) $pendingProfile['id'], null) !== null, 'approving a profile submission publishes it');
+$approvalNotification = $pdo->query("SELECT title, body FROM notifications WHERE user_id = 'USR-SMOKE-WRITER' AND type = 'business_submission' ORDER BY created_at DESC LIMIT 1")->fetch();
+assert_true(str_contains((string) ($approvalNotification['title'] ?? ''), 'approved'), 'profile approval creates a user notification');
+
+$rejectedProfile = business_save_profile('person', ['full_name' => 'Rejected Smoke Founder'], $writerSession);
+$rejection = business_review_submission('person', (string) $rejectedProfile['id'], ['status' => 'rejected', 'reviewNote' => 'Please add more background.'], $adminSession);
+assert_true(($rejection['status'] ?? '') === 'rejected' && (business_get_raw_profile('person', (string) $rejectedProfile['id'])['status'] ?? '') === 'rejected' && business_get_profile('person', (string) $rejectedProfile['id'], null) === null, 'rejecting a profile submission keeps it private and outside the profiles list');
+$approvedProfilesOnly = business_admin_paginated_profiles(['excludeDrafts' => 1, 'q' => 'Rejected Smoke Founder'], 12);
+assert_true(($approvedProfilesOnly['pagination']['total'] ?? 0) === 0, 'rejected submissions do not move into the admin profiles list');
+$rejectionNotification = $pdo->query("SELECT title, body FROM notifications WHERE user_id = 'USR-SMOKE-WRITER' AND type = 'business_submission' AND title LIKE '%rejected%' LIMIT 1")->fetch();
+assert_true(str_contains((string) ($rejectionNotification['title'] ?? ''), 'rejected'), 'profile rejection creates a user notification');
+$resubmittedProfile = business_save_profile('person', ['full_name' => 'Rejected Smoke Founder', 'biography' => 'Expanded background for a second review.'], $writerSession, (string) $rejectedProfile['id']);
+assert_true(($resubmittedProfile['status'] ?? '') === 'draft', 'editing a rejected profile returns it to the submission queue');
 $pdo->prepare('DELETE FROM business_companies WHERE id = ?')->execute([$pendingProfile['id']]);
+$pdo->prepare('DELETE FROM business_people WHERE id = ?')->execute([$rejectedProfile['id']]);
 $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?)')->execute([
     'site-seo-public',
     json_encode(['siteTitle' => 'Smoke Gazette'], JSON_UNESCAPED_SLASHES),

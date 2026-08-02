@@ -187,10 +187,10 @@ function business_save_profile(string $type, array $payload, array $session, ?st
     }
     $values[$nameKey] = $name;
     if (!$isStaff) {
-        $values['status'] = $existing['status'] ?? 'draft';
+        $values['status'] = 'draft';
         $values['verified'] = $existing['verified'] ?? 0;
     }
-    if (!in_array($values['status'] ?? '', ['draft', 'published', 'unpublished'], true)) $values['status'] = 'published';
+    if (!in_array($values['status'] ?? '', ['draft', 'published', 'unpublished', 'rejected'], true)) $values['status'] = 'published';
     foreach ($config['jsonFields'] as $public => $column) {
         $values[$column] = json_encode(
             array_key_exists($public, $payload) ? business_clean_list($payload[$public]) : parse_json_field($existing[$column] ?? '[]', []),
@@ -226,6 +226,13 @@ function business_save_profile(string $type, array $payload, array $session, ?st
         $pdo->prepare("INSERT INTO {$config['table']} (" . implode(',', $columns) . ") VALUES ({$placeholders})")->execute(array_values($values));
     }
     business_sync_links($config['type'], $id, $payload);
+    if (!$isStaff) {
+        business_notify_staff(
+            $existing ? 'Updated profile submitted for approval' : 'New profile submitted for approval',
+            $session['user']['name'] . ' submitted the ' . $name . ' ' . $config['type'] . ' profile for review.',
+            '/admin/business-network/submissions'
+        );
+    }
     audit_log($session['user']['id'], $existing ? 'business.profile_updated' : 'business.profile_created', $config['type'], $id, ['source' => $automation ? 'mcp' : 'web']);
     return business_get_profile($config['type'], $id, $session, true) ?? [];
 }
@@ -349,7 +356,8 @@ function business_admin_counts(): array
 {
     $pdo = Database::pdo();
     return [
-        'profiles' => (int) $pdo->query('SELECT (SELECT COUNT(*) FROM business_companies) + (SELECT COUNT(*) FROM business_people)')->fetchColumn(),
+        'profiles' => (int) $pdo->query("SELECT (SELECT COUNT(*) FROM business_companies WHERE status IN ('published', 'unpublished')) + (SELECT COUNT(*) FROM business_people WHERE status IN ('published', 'unpublished'))")->fetchColumn(),
+        'submissions' => (int) $pdo->query("SELECT (SELECT COUNT(*) FROM business_companies WHERE status = 'draft') + (SELECT COUNT(*) FROM business_people WHERE status = 'draft')")->fetchColumn(),
         'claims' => (int) $pdo->query("SELECT COUNT(*) FROM business_profile_claims WHERE status = 'pending'")->fetchColumn(),
         'suggestions' => (int) $pdo->query("SELECT COUNT(*) FROM business_profile_suggestions WHERE status = 'pending'")->fetchColumn(),
     ];
@@ -371,6 +379,7 @@ function business_admin_paginated_profiles(array $filters, int $perPage = 12): a
     $q = trim((string) ($filters['q'] ?? ''));
     $industry = trim((string) ($filters['industry'] ?? ''));
     $status = trim((string) ($filters['status'] ?? ''));
+    $excludeDrafts = !empty($filters['excludeDrafts']);
     if ($q !== '') {
         $where[] = 'display_name LIKE ?';
         $args[] = '%' . $q . '%';
@@ -379,7 +388,13 @@ function business_admin_paginated_profiles(array $filters, int $perPage = 12): a
         $where[] = 'industry = ?';
         $args[] = $industry;
     }
-    if (in_array($status, ['draft', 'published', 'unpublished'], true)) {
+    if ($excludeDrafts) {
+        $where[] = "status IN ('published', 'unpublished')";
+        if (in_array($status, ['published', 'unpublished'], true)) {
+            $where[] = 'status = ?';
+            $args[] = $status;
+        }
+    } elseif (in_array($status, ['draft', 'published', 'unpublished', 'rejected'], true)) {
         $where[] = 'status = ?';
         $args[] = $status;
     }
@@ -408,6 +423,46 @@ function business_admin_paginated_profiles(array $filters, int $perPage = 12): a
             'totalPages' => $totalPages,
         ],
     ];
+}
+
+function business_review_submission(string $type, string $id, array $body, array $session): array
+{
+    $config = business_profile_config($type);
+    $profile = business_get_raw_profile($config['type'], $id);
+    if (!$profile) json_response(['error' => 'NOT_FOUND', 'message' => 'Profile submission not found.'], 404);
+    if (($profile['status'] ?? '') !== 'draft') json_response(['error' => 'ALREADY_REVIEWED', 'message' => 'This submission has already been reviewed.'], 409);
+    $decision = trim((string) ($body['status'] ?? ''));
+    if (!in_array($decision, ['approved', 'rejected'], true)) json_response(['error' => 'INVALID_STATUS', 'message' => 'Choose approved or rejected.'], 400);
+    $now = now_iso();
+    $nextStatus = $decision === 'approved' ? 'published' : 'rejected';
+    $publishedAt = $decision === 'approved' ? $now : ($profile['published_at'] ?? null);
+    Database::pdo()->prepare("UPDATE {$config['table']} SET status = ?, published_at = ?, updated_at = ? WHERE id = ?")
+        ->execute([$nextStatus, $publishedAt, $now, $profile['id']]);
+
+    $creatorId = trim((string) ($profile['created_by_user_id'] ?? ''));
+    if ($creatorId !== '') {
+        $name = (string) $profile[$config['nameColumn']];
+        $reviewNote = trim((string) ($body['reviewNote'] ?? ''));
+        $notificationBody = 'Your ' . $name . ' ' . $config['type'] . ' profile was ' . $decision . '.';
+        if ($reviewNote !== '') $notificationBody .= ' Review note: ' . $reviewNote;
+        $url = $decision === 'approved' ? '/' . ($config['type'] === 'company' ? 'companies' : 'founders') . '/' . $profile['slug'] : '/dashboard';
+        Database::pdo()->prepare('INSERT INTO notifications (id, user_id, type, title, body, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            ->execute([uuid_value('NOT-'), $creatorId, 'business_submission', 'Profile submission ' . $decision, $notificationBody, $url, $now]);
+        $user = Database::pdo()->prepare('SELECT email FROM users WHERE id = ?');
+        $user->execute([$creatorId]);
+        $email = (string) ($user->fetchColumn() ?: '');
+        if ($email !== '') {
+            send_email_message($email, 'Your ' . configured_site_name() . ' profile was ' . $decision, [
+                'type' => 'business_profile_submission_review',
+                'status' => $decision,
+                'reviewNote' => $reviewNote,
+                'profileType' => $config['type'],
+                'profileName' => $name,
+            ]);
+        }
+    }
+    audit_log($session['user']['id'], 'business.submission_' . $decision, $config['type'], $profile['id']);
+    return ['ok' => true, 'status' => $decision];
 }
 
 function business_review_queue_item(string $kind, string $id, array $body, array $session): array
@@ -556,14 +611,21 @@ function handle_business_api(string $path, string $method): bool
     }
     if ($method === 'GET' && $path === '/api/admin/business-network') {
         require_auth(['admin', 'moderator']);
-        $view = in_array((string) ($_GET['view'] ?? 'profiles'), ['profiles', 'claims', 'suggestions'], true) ? (string) $_GET['view'] : 'profiles';
+        $view = in_array((string) ($_GET['view'] ?? 'profiles'), ['profiles', 'submissions', 'claims', 'suggestions'], true) ? (string) $_GET['view'] : 'profiles';
         $response = ['view' => $view, 'counts' => business_admin_counts()];
         if ($view === 'profiles') {
-            $listing = business_admin_paginated_profiles($_GET, 12);
+            $listing = business_admin_paginated_profiles(array_merge($_GET, ['excludeDrafts' => 1]), 12);
             $response += [
                 'profiles' => $listing['profiles'],
                 'pagination' => $listing['pagination'],
                 'industries' => array_values(array_filter(array_column(Database::pdo()->query("SELECT DISTINCT industry FROM business_companies WHERE industry != '' ORDER BY industry")->fetchAll(), 'industry'))),
+            ];
+        } elseif ($view === 'submissions') {
+            $listing = business_admin_paginated_profiles(array_merge($_GET, ['status' => 'draft']), 12);
+            $response += [
+                'submissions' => $listing['profiles'],
+                'pagination' => $listing['pagination'],
+                'industries' => array_values(array_filter(array_column(Database::pdo()->query("SELECT DISTINCT industry FROM business_companies WHERE status = 'draft' AND industry != '' ORDER BY industry")->fetchAll(), 'industry'))),
             ];
         } elseif ($view === 'claims') {
             $response['claims'] = business_admin_queue('claims');
@@ -571,6 +633,10 @@ function handle_business_api(string $path, string $method): bool
             $response['suggestions'] = business_admin_queue('suggestions');
         }
         json_response($response);
+    }
+    if ($method === 'PATCH' && preg_match('#^/api/admin/business-network/submissions/(companies|founders)/([^/]+)$#', $path, $m)) {
+        $auth = require_auth(['admin', 'moderator']);
+        json_response(business_review_submission($m[1], rawurldecode($m[2]), read_json(), $auth));
     }
     if ($method === 'GET' && preg_match('#^/api/admin/business-network/(companies|founders)/([^/]+)$#', $path, $m)) {
         $auth = require_auth(['admin', 'moderator']);
