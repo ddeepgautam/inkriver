@@ -29,6 +29,7 @@ try {
     $publicTraversalRejected = true;
 }
 assert_true($publicTraversalRejected, 'public path resolver rejects directory traversal');
+assert_true(deployment_current_status(false)['enabled'], 'Git updater uses git rev-parse instead of requiring a .git directory');
 
 $sanitized = sanitize_story_html('<p onclick="alert(1)">Safe <a href="javascript:alert(2)">link</a><img src="/uploads/example.jpg" onerror="alert(3)"></p><script>alert(4)</script>');
 assert_true(!str_contains($sanitized, 'onclick') && !str_contains($sanitized, 'onerror') && !str_contains($sanitized, 'javascript:') && !str_contains($sanitized, '<script'), 'server rich HTML sanitizer removes executable markup');

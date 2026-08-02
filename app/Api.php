@@ -3601,9 +3601,10 @@ function deployment_recent_updates(int $limit = 10): array
 
 function deployment_current_status(bool $fetchRemote = false, string $branch = ''): array
 {
+    $shellAvailable = deployment_shell_available();
     $status = [
-        'enabled' => is_dir(deployment_repo_root() . '/.git') && deployment_shell_available(),
-        'shellAvailable' => deployment_shell_available(),
+        'enabled' => $shellAvailable,
+        'shellAvailable' => $shellAvailable,
         'repoPath' => deployment_repo_root(),
         'branch' => '',
         'remote' => '',
