@@ -25,6 +25,12 @@ function public_path(string $relative = ''): string
     return $safeSegments ? public_root() . DIRECTORY_SEPARATOR . implode(DIRECTORY_SEPARATOR, $safeSegments) : public_root();
 }
 
+function configured_document_root(): string
+{
+    $configured = trim((string) env_value('PUBLIC_DOCUMENT_ROOT', ''));
+    return $configured !== '' ? rtrim($configured, "\\/ ") : public_root();
+}
+
 function env_file_values(): array
 {
     static $values = null;
@@ -111,9 +117,9 @@ function validate_sensitive_storage_configuration(): void
     if (!is_production()) return;
     if (PHP_SAPI !== 'cli') {
         $documentRoot = realpath((string) ($_SERVER['DOCUMENT_ROOT'] ?? ''));
-        $expectedRoot = realpath(public_root());
+        $expectedRoot = realpath(configured_document_root());
         if (!$documentRoot || !$expectedRoot || !path_is_within($documentRoot, $expectedRoot) || !path_is_within($expectedRoot, $documentRoot)) {
-            throw new RuntimeException('The production web server document root must be the public directory.');
+            throw new RuntimeException('The production web server document root must match the configured public directory.');
         }
     }
     if (!str_starts_with(strtolower(app_origin()), 'https://')) {

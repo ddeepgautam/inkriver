@@ -4,7 +4,7 @@
 
 1. Set `APP_ENV=production` and an HTTPS `APP_ORIGIN`.
 2. Generate independent random values for `APP_SECRET`, `CRON_SECRET`, and every provider credential. `APP_SECRET` must be at least 32 characters.
-3. Configure the web server's document root to the repository's `public/` directory. Never expose the repository root.
+3. Configure the web server's document root to the repository's `public/` directory. Never expose the repository root. If managed hosting fixes the document root to `public_html`, expose only an explicit allowlist of links to files under `public/` and set `PUBLIC_DOCUMENT_ROOT` to that absolute `public_html` path.
 4. Set `PRIVATE_STORAGE_PATH` and `DATABASE_PATH` to absolute locations outside the repository. Production startup rejects unsafe in-project locations.
 5. Give the web/PHP account read-only access to application code, write access only to `public/uploads/` and private storage, and no access to unrelated account directories. Private directories and database/backup files should be owner-only (`0700` directories, `0600` files where supported).
 6. Keep Apache overrides enabled for `public/.htaccess`, or apply the equivalent Nginx rules. Uploaded media must never execute as scripts.

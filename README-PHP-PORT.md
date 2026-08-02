@@ -238,9 +238,9 @@ Deploy the complete repository outside the public web directory and configure th
 
 Only `public/index.php`, the application shell, frontend assets, the service worker, manifest, and public image uploads are web-accessible. PHP source, `.env` files, SQLite databases, scripts, tests, schemas, documentation, and Git metadata remain above the web boundary. The supplied web-server examples explicitly deny the repository parent and grant access only to `public/`.
 
-Production startup also verifies the server-reported document root and refuses to initialize the database when it does not resolve to `public/`.
+Production startup also verifies the server-reported document root and refuses to initialize the database when it does not resolve to `public/`. On managed hosting that cannot change its fixed document root, create a public-only bridge containing an explicit allowlist of links to `public/`, then set `PUBLIC_DOCUMENT_ROOT` to the bridge's absolute path. Never link the repository root, `app/`, `.env`, `data/`, `scripts/`, `tests/`, or private storage into the bridge.
 
-Apache must allow overrides for `public/.htaccess`; an example virtual host is provided at `deploy/apache-vhost.conf.example`. An equivalent Nginx configuration is provided at `deploy/nginx.conf.example`. On managed hosting such as Hostinger, change the website's document-root setting to `public/` rather than copying private application files into `public_html`.
+Apache must allow overrides for `public/.htaccess`; an example virtual host is provided at `deploy/apache-vhost.conf.example`. An equivalent Nginx configuration is provided at `deploy/nginx.conf.example`. Prefer changing a managed host's document-root setting to `public/`; use the explicit public-only bridge above when the provider does not support changing it.
 
 Keep `PRIVATE_STORAGE_PATH`, `DATABASE_PATH`, backups, and secrets outside the repository as an additional isolation layer. If upgrading an existing installation, move existing public media from the old repository-level `uploads/` directory into `public/uploads/` while the application is stopped.
 
