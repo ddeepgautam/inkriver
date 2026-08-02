@@ -1,7 +1,20 @@
 DirectoryIndex index.php
+Options -Indexes
 
 RewriteEngine On
+RewriteRule ^index\.html$ index.php [L,NC]
+
+# Never expose application internals, private data, dotfiles, backups, or source artifacts.
+RewriteRule "(^|/)\." - [F,L]
+RewriteRule ^(?:app|data|scripts|tests|storage)(?:/|$) - [F,L,NC]
+RewriteRule ^uploads/support(?:/|$) - [F,L,NC]
+RewriteRule ^uploads/.*\.(?:php[0-9]*|phtml|phar|cgi|pl|py|rb|sh|bash|exe|dll|so|htaccess)$ - [F,L,NC]
+RewriteRule ^(?:schema\.sql|composer\.(?:json|lock)|phpunit\.xml|README(?:-[^/]*)?\.md|.*\.(?:sqlite|sqlite3|db|sql|env|ini|log|bak|backup|old|orig|swp|key|pem))$ - [F,L,NC]
+
+<FilesMatch "(^\.|\.(?:sqlite|sqlite3|db|sql|env|ini|log|bak|backup|old|orig|swp|key|pem)$)">
+    Require all denied
+</FilesMatch>
+
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ index.php [L]
-

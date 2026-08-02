@@ -187,7 +187,7 @@ function business_save_profile(string $type, array $payload, array $session, ?st
     }
     $values[$nameKey] = $name;
     if (!$isStaff) {
-        $values['status'] = $existing['status'] ?? 'published';
+        $values['status'] = $existing['status'] ?? 'draft';
         $values['verified'] = $existing['verified'] ?? 0;
     }
     if (!in_array($values['status'] ?? '', ['draft', 'published', 'unpublished'], true)) $values['status'] = 'published';

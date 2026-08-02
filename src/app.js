@@ -2680,7 +2680,7 @@ async function startGatewayPayment(plan, purchase = {}) {
         clientHints: clientLocationHints(),
         discountCode: state.checkoutDiscountCode,
         purpose: purchase.purpose || `${plan.name} membership`,
-        metadata: { planId: plan.id, planName: plan.name, period: plan.period, ...(purchase.metadata || {}) },
+        metadata: { planId: plan.id, ...(purchase.metadata || purchase) },
       }),
     });
     if (gateway.id === "razorpay") {

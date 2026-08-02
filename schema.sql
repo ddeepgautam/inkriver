@@ -317,6 +317,7 @@
     user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
     original_name TEXT NOT NULL,
     url TEXT NOT NULL,
+    storage_path TEXT,
     mime_type TEXT NOT NULL,
     size INTEGER NOT NULL,
     created_at TEXT NOT NULL

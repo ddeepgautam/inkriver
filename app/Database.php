@@ -10,9 +10,11 @@ final class Database
     public static function pdo(): PDO
     {
         if (self::$pdo) return self::$pdo;
+        validate_sensitive_storage_configuration();
         $path = database_path();
         $dir = dirname($path);
-        if (!is_dir($dir)) mkdir($dir, 0775, true);
+        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) throw new RuntimeException('Unable to create the private database directory.');
+        @chmod($dir, 0700);
         self::$pdo = new PDO('sqlite:' . $path, null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -20,6 +22,7 @@ final class Database
         self::$pdo->exec('PRAGMA foreign_keys = ON');
         self::$pdo->exec('PRAGMA journal_mode = WAL');
         self::$pdo->exec('PRAGMA busy_timeout = 5000');
+        @chmod($path, 0600);
         self::migrate();
         return self::$pdo;
     }
@@ -47,6 +50,7 @@ final class Database
         self::ensureColumn('content_imports', 'metadata_json', "TEXT NOT NULL DEFAULT '{}'");
         self::ensureColumn('content_imports', 'snapshot_json', "TEXT NOT NULL DEFAULT '[]'");
         self::ensureColumn('discount_codes', 'deleted_at', 'TEXT');
+        self::ensureColumn('support_ticket_attachments', 'storage_path', 'TEXT');
     }
 
     private static function ensureColumn(string $table, string $column, string $definition): void

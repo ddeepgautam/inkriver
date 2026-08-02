@@ -2,6 +2,9 @@ data/*.sqlite
 data/*.sqlite-*
 uploads/*
 storage/*
+private/*
+*.key
+*.pem
 .env
 .env.*
 !.env.example

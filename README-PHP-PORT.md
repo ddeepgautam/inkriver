@@ -47,8 +47,11 @@ Core:
 
 - `APP_ENV=production`
 - `APP_ORIGIN=https://your-domain.com`
-- `DATABASE_PATH=/absolute/path/to/inkriver.sqlite`
+- `APP_SECRET=` a unique random secret of at least 32 characters; production refuses to start without it
+- `PRIVATE_STORAGE_PATH=/absolute/path/outside/public_html/inkriver-private`
+- `DATABASE_PATH=/absolute/path/outside/public_html/inkriver-private/database/inkriver.sqlite`
 - `SESSION_DAYS=30`
+- `PAYMENT_CURRENCY_RATES_JSON={"INR":1,"USD":0.012}` - server-owned checkout conversion rates
 
 Payments:
 
@@ -66,6 +69,7 @@ Payments:
 - `CASHFREE_CLIENT_SECRET`
 - `CASHFREE_ENVIRONMENT=sandbox` or `production`
 - `CASHFREE_WEBHOOK_SECRET`
+- Configure a distinct recurring provider plan for every public plan ID, for example `RAZORPAY_PLAN_ID_STARTER`, `PAYPAL_PLAN_ID_ANNUAL`, `CASHFREE_PLAN_ID_PATRON`, or the equivalent encrypted provider-vault keys. There is no cross-plan fallback because it could activate a higher tier against a cheaper gateway plan.
 
 Social login:
 
@@ -119,8 +123,9 @@ Search index:
 
 Uploads:
 
-- Uploaded images are stored under `/uploads/YYYY/MM/`.
-- Ensure the PHP process can write to the `uploads` directory.
+- Public editorial images are stored under `/uploads/YYYY/MM/` with server-generated names and image extensions.
+- Support attachments are stored in `PRIVATE_STORAGE_PATH` and are only downloaded through an authenticated authorization check.
+- Ensure PHP can write to `uploads` and the private storage directory. Private storage should use owner-only filesystem permissions.
 
 ## MCP Blog Publishing
 
@@ -229,7 +234,7 @@ php scripts/create-admin.php admin@example.com "StrongPasswordHere" "Site Admini
 
 ## Hostinger PHP Upload
 
-Upload this folder's contents to your PHP-enabled hosting directory.
+Upload this folder's contents to your PHP-enabled hosting directory. Keep `PRIVATE_STORAGE_PATH`, `DATABASE_PATH`, backups, and secrets outside that directory. The bundled Apache rules deny internal application paths as a second layer, but filesystem separation remains mandatory for production.
 
 Required PHP extensions:
 
@@ -238,4 +243,4 @@ Required PHP extensions:
 - SQLite3
 - OpenSSL
 
-Set environment variables where your Hostinger plan allows it, or edit `app/config.php` carefully for deployment values.
+Set environment variables through the hosting control panel or a protected `.env` file. Do not place credentials directly in tracked PHP or JavaScript files. See `SECURITY.md` before enabling production traffic.

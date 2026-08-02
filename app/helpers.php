@@ -46,7 +46,7 @@ function uuid_value(string $prefix = ''): string
 
 function security_headers(): array
 {
-    return [
+    $headers = [
         'Content-Security-Policy' => "default-src 'self'; script-src 'self' https://checkout.razorpay.com https://sdk.cashfree.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:; frame-src https://api.razorpay.com https://checkout.razorpay.com https://sdk.cashfree.com https://payments.cashfree.com https://sandbox.cashfree.com; object-src 'none'; base-uri 'self'; form-action 'self' https://secure.payu.in https://test.payu.in; frame-ancestors 'none'",
         'Cross-Origin-Opener-Policy' => 'same-origin',
         'Referrer-Policy' => 'strict-origin-when-cross-origin',
@@ -54,6 +54,10 @@ function security_headers(): array
         'X-Frame-Options' => 'DENY',
         'Permissions-Policy' => 'camera=(), microphone=(), geolocation=(), payment=(self)',
     ];
+    if (is_production() && str_starts_with(strtolower(app_origin()), 'https://')) {
+        $headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload';
+    }
+    return $headers;
 }
 
 function public_user(?array $row): ?array

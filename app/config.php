@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 const APP_NAME = 'InkRiver';
 
+function project_root(): string
+{
+    return dirname(__DIR__);
+}
+
 function env_file_values(): array
 {
     static $values = null;
@@ -34,9 +39,33 @@ function app_origin(): string
     return rtrim(env_value('APP_ORIGIN', 'http://127.0.0.1:8080') ?? '', '/');
 }
 
+function private_storage_root(): string
+{
+    $configured = trim((string) env_value('PRIVATE_STORAGE_PATH', ''));
+    $path = $configured !== '' ? $configured : dirname(project_root()) . DIRECTORY_SEPARATOR . 'inkriver-private';
+    if (!preg_match('#^(?:[A-Za-z]:[\\\\/]|/)#', $path)) $path = project_root() . DIRECTORY_SEPARATOR . $path;
+    return rtrim($path, "\\/ ");
+}
+
+function private_storage_path(string $relative = ''): string
+{
+    $root = private_storage_root();
+    if (!is_dir($root) && !mkdir($root, 0700, true) && !is_dir($root)) {
+        throw new RuntimeException('Unable to create private application storage.');
+    }
+    @chmod($root, 0700);
+    $relative = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, ltrim($relative, '/\\'));
+    if ($relative === '' || str_contains($relative, '..' . DIRECTORY_SEPARATOR)) return $root;
+    return $root . DIRECTORY_SEPARATOR . $relative;
+}
+
 function database_path(): string
 {
-    return env_value('DATABASE_PATH', dirname(__DIR__) . '/data/inkriver.sqlite') ?? dirname(__DIR__) . '/data/inkriver.sqlite';
+    $configured = trim((string) env_value('DATABASE_PATH', ''));
+    if ($configured !== '') return $configured;
+    $legacyDevelopmentPath = project_root() . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'inkriver.sqlite';
+    if (!is_production() && is_file($legacyDevelopmentPath)) return $legacyDevelopmentPath;
+    return private_storage_path('database' . DIRECTORY_SEPARATOR . 'inkriver.sqlite');
 }
 
 function is_production(): bool
@@ -47,4 +76,47 @@ function is_production(): bool
 function session_days(): int
 {
     return max(1, (int) env_value('SESSION_DAYS', '30'));
+}
+
+function path_is_within(string $path, string $directory): bool
+{
+    $path = str_replace('\\', '/', rtrim($path, "\\/"));
+    $directory = str_replace('\\', '/', rtrim($directory, "\\/"));
+    if (PHP_OS_FAMILY === 'Windows') {
+        $path = strtolower($path);
+        $directory = strtolower($directory);
+    }
+    return $path === $directory || str_starts_with($path . '/', $directory . '/');
+}
+
+function validate_sensitive_storage_configuration(): void
+{
+    if (!is_production()) return;
+    if (!str_starts_with(strtolower(app_origin()), 'https://')) {
+        throw new RuntimeException('APP_ORIGIN must use HTTPS in production.');
+    }
+    if (path_is_within(database_path(), project_root()) || path_is_within(private_storage_root(), project_root())) {
+        throw new RuntimeException('Production database and private storage must be located outside the application web directory.');
+    }
+    application_secret_value();
+}
+
+function application_secret_value(): string
+{
+    $configured = (string) (env_value('APP_SECRET') ?: env_value('APP_KEY') ?: '');
+    if ($configured !== '') {
+        if (is_production() && strlen($configured) < 32) throw new RuntimeException('APP_SECRET must contain at least 32 characters in production.');
+        return $configured;
+    }
+    if (is_production()) throw new RuntimeException('APP_SECRET is required in production.');
+
+    $file = private_storage_path('app-secret.key');
+    if (is_file($file)) {
+        $stored = trim((string) file_get_contents($file));
+        if (strlen($stored) >= 32) return $stored;
+    }
+    $generated = bin2hex(random_bytes(32));
+    if (file_put_contents($file, $generated . PHP_EOL, LOCK_EX) === false) throw new RuntimeException('Unable to persist the local application secret.');
+    @chmod($file, 0600);
+    return $generated;
 }

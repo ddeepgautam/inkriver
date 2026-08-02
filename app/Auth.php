@@ -26,7 +26,7 @@ function set_session_cookie(string $token, ?int $days = null): void
     setcookie('inkriver_session', $token, [
         'expires' => time() + $days * 86400,
         'path' => '/',
-        'secure' => is_production(),
+        'secure' => is_production() || str_starts_with(strtolower(app_origin()), 'https://'),
         'httponly' => true,
         'samesite' => 'Strict',
     ]);
@@ -37,7 +37,7 @@ function clear_session_cookie(): void
     setcookie('inkriver_session', '', [
         'expires' => time() - 3600,
         'path' => '/',
-        'secure' => is_production(),
+        'secure' => is_production() || str_starts_with(strtolower(app_origin()), 'https://'),
         'httponly' => true,
         'samesite' => 'Strict',
     ]);
@@ -106,8 +106,84 @@ function role_permission_allows_request(string $role): bool
         $stmt->execute(array_merge([$role], $candidates));
         $row = $stmt->fetch();
         return !$row || (bool) $row['allowed'];
-    } catch (Throwable) {
-        return true;
+    } catch (Throwable $error) {
+        error_log('InkRiver permission check failed: ' . $error->getMessage());
+        return false;
+    }
+}
+
+function auth_rate_limit_key(string $bucket, string $identity): string
+{
+    return hash('sha256', strtolower(trim($bucket)) . '|' . strtolower(trim($identity)));
+}
+
+function enforce_auth_rate_limit(string $bucket, string $identity, int $maxAttempts = 5, int $windowSeconds = 900): void
+{
+    $key = auth_rate_limit_key($bucket, $identity);
+    $stmt = Database::pdo()->prepare('SELECT attempts, first_attempt_at, blocked_until FROM login_attempts WHERE key = ?');
+    $stmt->execute([$key]);
+    $row = $stmt->fetch();
+    if (!$row) return;
+    $now = time();
+    $blockedUntil = strtotime((string) ($row['blocked_until'] ?? '')) ?: 0;
+    if ($blockedUntil > $now) {
+        json_response(['error' => 'RATE_LIMITED', 'message' => 'Too many attempts. Try again later.', 'retryAfter' => $blockedUntil - $now], 429, ['Retry-After' => (string) ($blockedUntil - $now)]);
+    }
+    $first = strtotime((string) $row['first_attempt_at']) ?: 0;
+    if ($first && $first < $now - $windowSeconds) {
+        Database::pdo()->prepare('DELETE FROM login_attempts WHERE key = ?')->execute([$key]);
+    }
+}
+
+function record_auth_rate_limit_failure(string $bucket, string $identity, int $maxAttempts = 5, int $windowSeconds = 900, int $blockSeconds = 900): void
+{
+    $pdo = Database::pdo();
+    if (random_int(1, 100) === 1) {
+        $pdo->prepare('DELETE FROM login_attempts WHERE first_attempt_at < ? AND (blocked_until IS NULL OR blocked_until < ?)')
+            ->execute([gmdate('Y-m-d\TH:i:s.v\Z', time() - 86400), now_iso()]);
+    }
+    $key = auth_rate_limit_key($bucket, $identity);
+    $now = now_iso();
+    $stmt = $pdo->prepare('SELECT attempts, first_attempt_at FROM login_attempts WHERE key = ?');
+    $stmt->execute([$key]);
+    $row = $stmt->fetch();
+    $first = $row ? (strtotime((string) $row['first_attempt_at']) ?: 0) : 0;
+    $attempts = (!$row || $first < time() - $windowSeconds) ? 1 : ((int) $row['attempts'] + 1);
+    $firstAt = (!$row || $first < time() - $windowSeconds) ? $now : $row['first_attempt_at'];
+    $blockedUntil = $attempts >= $maxAttempts ? gmdate('Y-m-d\TH:i:s.v\Z', time() + $blockSeconds) : null;
+    $pdo->prepare('INSERT INTO login_attempts (key, attempts, first_attempt_at, blocked_until) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET attempts = excluded.attempts, first_attempt_at = excluded.first_attempt_at, blocked_until = excluded.blocked_until')
+        ->execute([$key, $attempts, $firstAt, $blockedUntil]);
+}
+
+function clear_auth_rate_limit(string $bucket, string $identity): void
+{
+    Database::pdo()->prepare('DELETE FROM login_attempts WHERE key = ?')->execute([auth_rate_limit_key($bucket, $identity)]);
+}
+
+function request_rate_limit_identity(string $account = ''): array
+{
+    $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    return [$ip, $account !== '' ? strtolower(trim($account)) : $ip];
+}
+
+function enforce_same_origin_for_cookie_request(): void
+{
+    if (empty($_COOKIE['inkriver_session'])) return;
+    $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+    if (!in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) return;
+    $expected = strtolower(rtrim(app_origin(), '/'));
+    $origin = strtolower(rtrim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''), '/'));
+    $referer = (string) ($_SERVER['HTTP_REFERER'] ?? '');
+    $refererOrigin = '';
+    if ($referer !== '') {
+        $parts = parse_url($referer);
+        if (is_array($parts) && isset($parts['scheme'], $parts['host'])) {
+            $refererOrigin = strtolower($parts['scheme'] . '://' . $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : ''));
+        }
+    }
+    $fetchSite = strtolower((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? ''));
+    if ($fetchSite === 'cross-site' || ($origin !== '' && !hash_equals($expected, $origin)) || ($origin === '' && $refererOrigin !== '' && !hash_equals($expected, $refererOrigin))) {
+        json_response(['error' => 'INVALID_REQUEST_ORIGIN', 'message' => 'The request origin is not allowed.'], 403);
     }
 }
 

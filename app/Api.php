@@ -34,6 +34,13 @@ function clean_username_value(string $value): string
     return strtolower(trim($value));
 }
 
+function image_dimensions_are_safe(array $info): bool
+{
+    $width = (int) ($info[0] ?? 0);
+    $height = (int) ($info[1] ?? 0);
+    return $width > 0 && $height > 0 && $width <= 12000 && $height <= 12000 && ($width * $height) <= 40000000;
+}
+
 function username_error(string $username): ?string
 {
     if ($username === '') return null;
@@ -52,6 +59,7 @@ function store_profile_avatar_upload(string $fieldName = 'avatar'): string
     if ((int) $file['size'] > 4 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Profile photos must be 4 MB or smaller.'], 413);
     $info = getimagesize($file['tmp_name']);
     if (!$info) json_response(['error' => 'INVALID_IMAGE', 'message' => 'Only valid image files can be uploaded.'], 400);
+    if (!image_dimensions_are_safe($info)) json_response(['error' => 'IMAGE_DIMENSIONS_TOO_LARGE', 'message' => 'The image dimensions are too large to process safely.'], 400);
     $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
     $mime = $info['mime'] ?? '';
     if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_IMAGE', 'message' => 'Use JPG, PNG, WebP, or GIF for profile photos.'], 400);
@@ -164,7 +172,7 @@ function app_url(string $path = '/'): string
 
 function credential_crypto_key(): string
 {
-    return hash('sha256', env_value('APP_SECRET', env_value('APP_KEY', database_path())) ?? database_path(), true);
+    return hash('sha256', application_secret_value(), true);
 }
 
 function encrypt_secret_value(string $value): string
@@ -774,10 +782,70 @@ function default_post_seo_payload(array $story = []): array
 
 function sanitize_story_html(string $html): string
 {
-    $html = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $html) ?? '';
-    $html = preg_replace('#<style\b[^>]*>.*?</style>#is', '', $html) ?? '';
-    $allowed = '<p><br><strong><b><em><i><u><s><blockquote><ul><ol><li><a><h2><h3><h4><figure><figcaption><img><table><thead><tbody><tr><th><td>';
-    return trim(strip_tags($html, $allowed));
+    $html = substr($html, 0, 300000);
+    $html = preg_replace('#<(script|style|iframe|object|embed|form|svg|math)\b[^>]*>.*?</\1>#is', '', $html) ?? '';
+    if (!class_exists('DOMDocument')) {
+        $plain = trim(html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        return $plain === '' ? '' : '<p>' . nl2br(htmlspecialchars($plain, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')) . '</p>';
+    }
+
+    $allowedTags = ['p', 'br', 'strong', 'b', 'em', 'i', 'u', 's', 'blockquote', 'ul', 'ol', 'li', 'a', 'h2', 'h3', 'h4', 'figure', 'figcaption', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr'];
+    $allowedAttributes = [
+        'a' => ['href', 'target', 'title'],
+        'img' => ['src', 'alt', 'title', 'loading', 'decoding', 'width', 'height'],
+        'th' => ['colspan', 'rowspan'],
+        'td' => ['colspan', 'rowspan'],
+    ];
+    $document = new DOMDocument('1.0', 'UTF-8');
+    $previous = libxml_use_internal_errors(true);
+    $document->loadHTML('<?xml encoding="utf-8" ?><div id="inkriver-rich-root">' . $html . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+    libxml_clear_errors();
+    libxml_use_internal_errors($previous);
+    $root = $document->getElementById('inkriver-rich-root');
+    if (!$root) return '';
+
+    $nodes = [];
+    foreach ($root->getElementsByTagName('*') as $node) $nodes[] = $node;
+    foreach ($nodes as $node) {
+        $tag = strtolower($node->nodeName);
+        if (!in_array($tag, $allowedTags, true)) {
+            $parent = $node->parentNode;
+            if (!$parent) continue;
+            while ($node->firstChild) $parent->insertBefore($node->firstChild, $node);
+            $parent->removeChild($node);
+            continue;
+        }
+        $attributeNames = [];
+        foreach ($node->attributes ?? [] as $attribute) $attributeNames[] = strtolower($attribute->name);
+        foreach ($attributeNames as $attributeName) {
+            if (!in_array($attributeName, $allowedAttributes[$tag] ?? [], true)) $node->removeAttribute($attributeName);
+        }
+        if ($tag === 'a') {
+            $href = trim($node->getAttribute('href'));
+            if ($href !== '' && !preg_match('#^(?:https?://|mailto:|/(?!/)|\#)#i', $href)) $node->removeAttribute('href');
+            if ($node->getAttribute('target') === '_blank') $node->setAttribute('rel', 'noopener noreferrer nofollow');
+            else $node->removeAttribute('target');
+        }
+        if ($tag === 'img') {
+            $src = trim($node->getAttribute('src'));
+            if (!preg_match('#^(?:https?://|/uploads/)#i', $src)) {
+                $node->parentNode?->removeChild($node);
+                continue;
+            }
+            $node->setAttribute('loading', 'lazy');
+            $node->setAttribute('decoding', 'async');
+        }
+        foreach (['colspan', 'rowspan', 'width', 'height'] as $numericAttribute) {
+            if ($node->hasAttribute($numericAttribute)) {
+                $value = (int) $node->getAttribute($numericAttribute);
+                if ($value < 1 || $value > 10000) $node->removeAttribute($numericAttribute);
+                else $node->setAttribute($numericAttribute, (string) $value);
+            }
+        }
+    }
+    $output = '';
+    foreach (iterator_to_array($root->childNodes) as $child) $output .= $document->saveHTML($child);
+    return trim($output);
 }
 
 function story_body_from_html(string $html): array
@@ -1128,12 +1196,20 @@ function handle_oauth(string $path, string $method): void
         }
         if ($method === 'POST') {
             $email = strtolower(trim((string) ($_POST['email'] ?? '')));
+            [$ipIdentity, $accountIdentity] = request_rate_limit_identity($email);
+            enforce_auth_rate_limit('oauth-admin-ip', $ipIdentity, 20, 900);
+            enforce_auth_rate_limit('oauth-admin-account', $accountIdentity, 5, 900);
             $password = (string) ($_POST['password'] ?? '');
             $userStmt = Database::pdo()->prepare("SELECT * FROM users WHERE email = ? AND status = 'active' LIMIT 1");
             $userStmt->execute([$email]);
             $user = $userStmt->fetch();
-            if (!$user || !verify_password_value($password, (string) $user['password_hash'])) oauth_login_page($params, 'Invalid email or password.');
+            if (!$user || !verify_password_value($password, (string) $user['password_hash'])) {
+                record_auth_rate_limit_failure('oauth-admin-ip', $ipIdentity, 20, 900, 900);
+                record_auth_rate_limit_failure('oauth-admin-account', $accountIdentity, 5, 900, 900);
+                oauth_login_page($params, 'Invalid email or password.');
+            }
             if (($user['role'] ?? '') !== 'admin') oauth_login_page($params, 'You are not allowed to connect ' . configured_site_name() . ' MCP. Only administrator accounts can perform this task.');
+            clear_auth_rate_limit('oauth-admin-account', $accountIdentity);
             $sessionToken = create_session_for_user($user['id']);
             set_session_cookie($sessionToken);
             oauth_issue_code($params, public_user($user));
@@ -1496,6 +1572,7 @@ function store_mcp_image_asset(array $arguments, string $userId): array
     if (strlen($bytes) > 8 * 1024 * 1024) throw new RuntimeException('Images must be 8 MB or smaller.');
     $info = @getimagesizefromstring($bytes);
     if (!$info) throw new RuntimeException('Only valid image files can be uploaded.');
+    if (!image_dimensions_are_safe($info)) throw new RuntimeException('The image dimensions are too large to process safely.');
     $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
     $mime = $info['mime'] ?? '';
     if (!isset($allowed[$mime])) throw new RuntimeException('Use JPG, PNG, WebP, or GIF.');
@@ -1672,6 +1749,9 @@ function process_paid_provider_event(string $provider, string $paymentId, string
         $paymentId = (string) (($stmt->fetch()['id'] ?? ''));
     }
     if ($paymentId === '') return false;
+    $local = $pdo->prepare("SELECT id FROM payments WHERE id = ? AND provider = ? AND status IN ('pending', 'paid') LIMIT 1");
+    $local->execute([$paymentId, $provider]);
+    if (!$local->fetch()) return false;
     return activate_paid_payment($paymentId, $providerPaymentId) !== null;
 }
 
@@ -2239,6 +2319,94 @@ function recommendation_feed_for_user(string $userId, int $limit = 24): array
     ], $stmt->fetchAll());
 }
 
+function trusted_payment_plans(): array
+{
+    $fallback = [
+        ['id' => 'starter', 'name' => 'Reader', 'price' => 299, 'period' => 'month'],
+        ['id' => 'annual', 'name' => 'Annual Plus', 'price' => 2499, 'period' => 'year'],
+        ['id' => 'patron', 'name' => 'Patron', 'price' => 4999, 'period' => 'year'],
+    ];
+    $configured = document_value('plans', $fallback);
+    $plans = [];
+    foreach (is_array($configured) ? $configured : $fallback as $plan) {
+        if (!is_array($plan)) continue;
+        $id = strtolower(trim((string) ($plan['id'] ?? '')));
+        $name = trim((string) ($plan['name'] ?? ''));
+        $price = (int) round((float) ($plan['price'] ?? 0));
+        $period = strtolower(trim((string) ($plan['period'] ?? 'month')));
+        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,79}$/', $id) || $name === '' || $price < 1 || $price > 10000000) continue;
+        $plans[$id] = ['id' => $id, 'name' => substr($name, 0, 120), 'price' => $price, 'period' => $period === 'year' ? 'year' : 'month'];
+    }
+    return $plans ?: array_column($fallback, null, 'id');
+}
+
+function trusted_payment_currency_rates(): array
+{
+    $fallback = ['INR' => 1.0, 'USD' => 0.012, 'EUR' => 0.011, 'GBP' => 0.0095, 'AED' => 0.044, 'SGD' => 0.015, 'AUD' => 0.018, 'CAD' => 0.016];
+    $configured = json_decode((string) env_value('PAYMENT_CURRENCY_RATES_JSON', ''), true);
+    if (!is_array($configured)) return $fallback;
+    $rates = ['INR' => 1.0];
+    foreach ($configured as $currency => $rate) {
+        $currency = strtoupper((string) $currency);
+        $rate = (float) $rate;
+        if (preg_match('/^[A-Z]{3}$/', $currency) && $rate > 0 && $rate < 100000) $rates[$currency] = $rate;
+    }
+    return $rates;
+}
+
+function authoritative_payment_checkout(array $body): array
+{
+    $requestedMetadata = is_array($body['metadata'] ?? null) ? $body['metadata'] : [];
+    $kind = in_array(($requestedMetadata['kind'] ?? 'membership'), ['membership', 'tip', 'gift'], true) ? (string) ($requestedMetadata['kind'] ?? 'membership') : 'membership';
+    $currency = strtoupper(trim((string) ($body['currency'] ?? 'INR')));
+    $rates = trusted_payment_currency_rates();
+    if (!isset($rates[$currency])) json_response(['error' => 'UNSUPPORTED_CURRENCY', 'message' => 'This checkout currency is not supported by the server.'], 400);
+    $metadata = ['kind' => $kind];
+
+    if ($kind === 'tip') {
+        $amount = (int) ($body['amount'] ?? 0);
+        if ($amount < 100 || $amount > 100000000) json_response(['error' => 'INVALID_TIP_AMOUNT', 'message' => 'Choose a tip amount within the allowed range.'], 400);
+        $storySlug = trim((string) ($requestedMetadata['storySlug'] ?? ''));
+        $story = null;
+        foreach (document_value('stories', []) as $candidate) {
+            if (is_array($candidate) && ($candidate['slug'] ?? '') === $storySlug && ($candidate['status'] ?? '') === 'published') { $story = $candidate; break; }
+        }
+        if (!$story) json_response(['error' => 'INVALID_TIP_STORY', 'message' => 'The selected story cannot receive tips.'], 400);
+        $creatorTools = document_value('creator-tools', []);
+        $metadata += [
+            'storySlug' => $storySlug,
+            'writerName' => substr((string) ($story['author'] ?? ''), 0, 180),
+            'commission' => max(0, min(30, (int) ($creatorTools['tipCommission'] ?? 10))),
+        ];
+        $purpose = 'Tip for ' . substr((string) ($story['title'] ?? $storySlug), 0, 160);
+    } else {
+        $planId = strtolower(trim((string) ($requestedMetadata['planId'] ?? '')));
+        $plans = trusted_payment_plans();
+        if ($planId === '' || !isset($plans[$planId])) json_response(['error' => 'INVALID_PLAN', 'message' => 'Choose a currently available membership plan.'], 400);
+        $plan = $plans[$planId];
+        $months = $kind === 'gift' ? max(1, min(24, (int) ($requestedMetadata['months'] ?? 1))) : ($plan['period'] === 'year' ? 12 : 1);
+        $baseInr = $kind === 'gift' && $plan['period'] === 'month' ? $plan['price'] * $months : $plan['price'];
+        $amount = max(1, (int) round($baseInr * $rates[$currency] * 100));
+        $metadata += ['planId' => $plan['id'], 'planName' => $plan['name'], 'period' => $plan['period'], 'months' => $months];
+        $purpose = $kind === 'gift' ? $plan['name'] . ' gift membership' : $plan['name'] . ' membership';
+        if ($kind === 'gift') {
+            $recipientEmail = strtolower(trim((string) ($requestedMetadata['recipientEmail'] ?? '')));
+            if (!filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_GIFT_RECIPIENT', 'message' => 'Enter a valid gift recipient email address.'], 400);
+            $metadata += [
+                'recipientEmail' => $recipientEmail,
+                'message' => substr((string) ($requestedMetadata['message'] ?? ''), 0, 500),
+                'deliverAt' => substr((string) ($requestedMetadata['deliverAt'] ?? now_iso()), 0, 40),
+            ];
+        }
+    }
+    if (!empty($body['discountCode'])) $metadata['discountCode'] = strtoupper(substr(trim((string) $body['discountCode']), 0, 80));
+    $metadata['originalAmount'] = $amount;
+    $payment = ['amount' => $amount, 'currency' => $currency, 'purpose' => $purpose];
+    $payment['amount'] = payment_amount_for_checkout($payment, $metadata);
+    if ($payment['amount'] < 1) json_response(['error' => 'INVALID_PAYMENT_AMOUNT', 'message' => 'The final payment amount must be greater than zero.'], 400);
+    return ['payment' => $payment, 'metadata' => $metadata];
+}
+
 function payment_amount_for_checkout(array $payment, array $metadata): int
 {
     $amount = (int) $payment['amount'];
@@ -2667,7 +2835,7 @@ function create_provider_subscription_checkout(string $provider, array $payment,
     if ($provider === 'razorpay') {
         $keyId = (string) provider_config_value('RAZORPAY_KEY_ID', 'razorpay', 'key_id');
         $keySecret = (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret');
-        $razorpayPlanId = (string) (provider_config_value(provider_plan_config_key('RAZORPAY_PLAN_ID', $planId), 'razorpay', 'plan_' . strtolower($planId), '') ?: provider_config_value('RAZORPAY_PLAN_ID', 'razorpay', 'plan_id', ''));
+        $razorpayPlanId = (string) provider_config_value(provider_plan_config_key('RAZORPAY_PLAN_ID', $planId), 'razorpay', 'plan_' . strtolower($planId), '');
         if ($razorpayPlanId === '') throw new RuntimeException('Razorpay recurring plan ID is not configured for this package.');
         $subscription = http_request_json('https://api.razorpay.com/v1/subscriptions', [
             'method' => 'POST',
@@ -2683,7 +2851,7 @@ function create_provider_subscription_checkout(string $provider, array $payment,
     }
 
     if ($provider === 'paypal') {
-        $paypalPlanId = (string) (provider_config_value(provider_plan_config_key('PAYPAL_PLAN_ID', $planId), 'paypal', 'plan_' . strtolower($planId), '') ?: provider_config_value('PAYPAL_PLAN_ID', 'paypal', 'plan_id', ''));
+        $paypalPlanId = (string) provider_config_value(provider_plan_config_key('PAYPAL_PLAN_ID', $planId), 'paypal', 'plan_' . strtolower($planId), '');
         if ($paypalPlanId === '') throw new RuntimeException('PayPal recurring plan ID is not configured for this package.');
         $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
         $token = http_request_json($base . '/v1/oauth2/token', [
@@ -2712,7 +2880,7 @@ function create_provider_subscription_checkout(string $provider, array $payment,
 
     if ($provider === 'cashfree') {
         $base = provider_config_value('CASHFREE_SUBSCRIPTIONS_API_URL', 'cashfree', 'subscriptions_api_url', '');
-        $planReference = (string) (provider_config_value(provider_plan_config_key('CASHFREE_PLAN_ID', $planId), 'cashfree', 'plan_' . strtolower($planId), '') ?: provider_config_value('CASHFREE_PLAN_ID', 'cashfree', 'plan_id', ''));
+        $planReference = (string) provider_config_value(provider_plan_config_key('CASHFREE_PLAN_ID', $planId), 'cashfree', 'plan_' . strtolower($planId), '');
         if ($base === '' || $planReference === '') throw new RuntimeException('Cashfree recurring subscription API URL and plan ID are required.');
         $subscription = http_request_json(rtrim($base, '/'), [
             'method' => 'POST',
@@ -2729,7 +2897,7 @@ function create_provider_subscription_checkout(string $provider, array $payment,
 
     if ($provider === 'payu') {
         $action = provider_config_value('PAYU_SUBSCRIPTION_CREATE_URL', 'payu', 'subscription_create_url', '');
-        $planReference = (string) (provider_config_value(provider_plan_config_key('PAYU_PLAN_ID', $planId), 'payu', 'plan_' . strtolower($planId), '') ?: provider_config_value('PAYU_PLAN_ID', 'payu', 'plan_id', ''));
+        $planReference = (string) provider_config_value(provider_plan_config_key('PAYU_PLAN_ID', $planId), 'payu', 'plan_' . strtolower($planId), '');
         if ($action === '' || $planReference === '') throw new RuntimeException('PayU recurring subscription create URL and plan ID are required.');
         $fields = [
             'key' => provider_config_value('PAYU_MERCHANT_KEY', 'payu', 'merchant_key'),
@@ -2803,6 +2971,21 @@ function cancel_provider_subscription(array $subscription): array
     throw new RuntimeException('Unsupported subscription provider: ' . $provider);
 }
 
+function payment_for_gateway_verification(string $paymentId, string $provider, ?string $userId = null): ?array
+{
+    $sql = "SELECT * FROM payments WHERE id = ? AND provider = ? AND status IN ('pending', 'paid')";
+    $args = [$paymentId, $provider];
+    if ($userId !== null) { $sql .= ' AND user_id = ?'; $args[] = $userId; }
+    $stmt = Database::pdo()->prepare($sql . ' LIMIT 1');
+    $stmt->execute($args);
+    return $stmt->fetch() ?: null;
+}
+
+function decimal_amount_to_minor_units(mixed $amount): int
+{
+    return (int) round(((float) $amount) * 100);
+}
+
 function activate_paid_payment(string $paymentId, string $providerPaymentId = ''): ?array
 {
     $pdo = Database::pdo();
@@ -2811,10 +2994,13 @@ function activate_paid_payment(string $paymentId, string $providerPaymentId = ''
     $payment = $stmt->fetch();
     if (!$payment) return null;
     if ($payment['status'] === 'paid') return public_user($payment);
+    if ($payment['status'] !== 'pending') return null;
     $metadata = parse_json_field($payment['metadata'] ?? '{}', []);
     $now = now_iso();
     $providerSubscriptionId = (string) ($metadata['providerSubscriptionId'] ?? '');
-    $pdo->prepare("UPDATE payments SET status = 'paid', provider_payment_id = COALESCE(NULLIF(?, ''), provider_payment_id), updated_at = ? WHERE id = ?")->execute([$providerPaymentId, $now, $paymentId]);
+    $update = $pdo->prepare("UPDATE payments SET status = 'paid', provider_payment_id = COALESCE(NULLIF(?, ''), provider_payment_id), updated_at = ? WHERE id = ? AND status = 'pending'");
+    $update->execute([$providerPaymentId, $now, $paymentId]);
+    if ($update->rowCount() !== 1) return null;
     create_invoice_for_payment($payment, $payment, $metadata);
     create_notification($payment['user_id'] ?? null, 'payment_paid', 'Payment received', 'Your payment has been captured and your receipt is ready.', '/dashboard');
     $discount = active_discount_for_payment($payment, $metadata);
@@ -3238,31 +3424,58 @@ function support_upload_attachments(PDO $pdo, string $ticketId, ?string $message
     $errors = is_array($files['error']) ? $files['error'] : [$files['error']];
     $sizes = is_array($files['size']) ? $files['size'] : [$files['size']];
     $types = is_array($files['type']) ? $files['type'] : [$files['type']];
-    $allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf', 'text/plain', 'text/csv', 'application/zip'];
-    $relativeDir = 'uploads/support/' . gmdate('Y/m');
-    $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
-    if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
+    $allowed = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        'image/gif' => 'gif',
+        'application/pdf' => 'pdf',
+        'text/plain' => 'txt',
+        'text/csv' => 'csv',
+        'application/zip' => 'zip',
+    ];
+    $relativeDir = 'support' . DIRECTORY_SEPARATOR . gmdate('Y') . DIRECTORY_SEPARATOR . gmdate('m');
+    $absoluteDir = private_storage_path($relativeDir);
+    if (!is_dir($absoluteDir) && !mkdir($absoluteDir, 0700, true) && !is_dir($absoluteDir)) {
+        json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not prepare private attachment storage.'], 500);
+    }
+    @chmod($absoluteDir, 0700);
     foreach ($names as $index => $name) {
         if (($errors[$index] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) continue;
         if (($errors[$index] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) json_response(['error' => 'UPLOAD_FAILED', 'message' => 'One attachment could not be uploaded.'], 400);
         $size = (int) ($sizes[$index] ?? 0);
-        if ($size > 10 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Support attachments must be 10 MB or smaller.'], 413);
+        if ($size <= 0 || $size > 10 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Support attachments must be between 1 byte and 10 MB.'], 413);
         $tmp = (string) ($tmpNames[$index] ?? '');
         if (!is_uploaded_file($tmp)) continue;
         $mime = mime_content_type($tmp) ?: (string) ($types[$index] ?? 'application/octet-stream');
-        if (!in_array($mime, $allowed, true)) json_response(['error' => 'UNSUPPORTED_ATTACHMENT', 'message' => 'Use JPG, PNG, WebP, GIF, PDF, TXT, CSV, or ZIP attachments.'], 400);
-        $extension = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
-        $safeExtension = preg_replace('/[^a-z0-9]/', '', $extension) ?: 'bin';
-        $filename = uuid_value('SUP-') . '.' . $safeExtension;
+        if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_ATTACHMENT', 'message' => 'Use JPG, PNG, WebP, GIF, PDF, TXT, CSV, or ZIP attachments.'], 400);
+        $filename = uuid_value('SUP-') . '.' . $allowed[$mime];
         $target = $absoluteDir . '/' . $filename;
         if (!move_uploaded_file($tmp, $target)) json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not save a support attachment.'], 500);
+        @chmod($target, 0600);
         $id = uuid_value('SFA-');
-        $url = '/' . $relativeDir . '/' . $filename;
-        $pdo->prepare('INSERT INTO support_ticket_attachments (id, ticket_id, message_id, user_id, original_name, url, mime_type, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            ->execute([$id, $ticketId, $messageId, $userId, substr((string) $name, 0, 180), $url, $mime, $size, now_iso()]);
+        $storagePath = str_replace(DIRECTORY_SEPARATOR, '/', $relativeDir . DIRECTORY_SEPARATOR . $filename);
+        $url = '/api/support/attachments/' . rawurlencode($id);
+        $pdo->prepare('INSERT INTO support_ticket_attachments (id, ticket_id, message_id, user_id, original_name, url, storage_path, mime_type, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, $ticketId, $messageId, $userId, substr((string) basename((string) $name), 0, 180), $url, $storagePath, $mime, $size, now_iso()]);
         $uploaded[] = ['id' => $id, 'name' => (string) $name, 'url' => $url, 'mimeType' => $mime, 'size' => $size];
     }
     return $uploaded;
+}
+
+function support_attachment_path(array $attachment): ?string
+{
+    $storagePath = trim((string) ($attachment['storage_path'] ?? ''));
+    if ($storagePath !== '') {
+        $candidate = realpath(private_storage_path($storagePath));
+        $root = realpath(private_storage_root());
+        return $candidate && $root && path_is_within($candidate, $root) && is_file($candidate) ? $candidate : null;
+    }
+    $legacyUrl = (string) ($attachment['url'] ?? '');
+    if (!str_starts_with($legacyUrl, '/uploads/support/')) return null;
+    $candidate = realpath(dirname(__DIR__) . $legacyUrl);
+    $legacyRoot = realpath(dirname(__DIR__) . '/uploads/support');
+    return $candidate && $legacyRoot && path_is_within($candidate, $legacyRoot) && is_file($candidate) ? $candidate : null;
 }
 
 function production_readiness(array $installer, array $providers): array
@@ -3456,8 +3669,9 @@ function deployment_write_update(string $id, array $fields): void
 
 function deployment_database_backup_path(string $id): string
 {
-    $dir = deployment_repo_root() . '/storage/backups';
-    if (!is_dir($dir)) mkdir($dir, 0775, true);
+    $dir = private_storage_path('backups');
+    if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) throw new RuntimeException('Unable to create private backup storage.');
+    @chmod($dir, 0700);
     return $dir . '/pre-deploy-' . preg_replace('/[^A-Za-z0-9_.-]/', '', $id) . '.sqlite';
 }
 
@@ -3496,7 +3710,8 @@ function deployment_run_update(array $session, array $body): array
         if (is_file(database_path())) {
             $dbBackup = deployment_database_backup_path($id);
             if (!copy(database_path(), $dbBackup)) throw new RuntimeException('Unable to create SQLite backup before update.');
-            $log[] = 'Database backup created: storage/backups/' . basename($dbBackup);
+            @chmod($dbBackup, 0600);
+            $log[] = 'Database backup created in private storage: ' . basename($dbBackup);
         }
 
         $pull = deployment_git(['pull', '--ff-only', 'origin', $branch], 240);
@@ -3828,6 +4043,7 @@ function finish_oauth_login(string $provider, array $profile): never
 function handle_api(string $path, string $method): void
 {
     $pdo = Database::pdo();
+    enforce_same_origin_for_cookie_request();
     handle_business_api($path, $method);
 
     if ($method === 'POST' && $path === '/api/cron/run') {
@@ -3938,6 +4154,9 @@ function handle_api(string $path, string $method): void
         $body = read_json();
         $name = trim((string) ($body['name'] ?? ''));
         $email = strtolower(trim((string) ($body['email'] ?? '')));
+        [$ipIdentity] = request_rate_limit_identity();
+        enforce_auth_rate_limit('register-ip', $ipIdentity, 10, 3600);
+        record_auth_rate_limit_failure('register-ip', $ipIdentity, 10, 3600, 3600);
         $password = (string) ($body['password'] ?? '');
         $passwordError = password_policy_error($password);
         if (strlen($name) < 2 || !filter_var($email, FILTER_VALIDATE_EMAIL) || $passwordError) {
@@ -3963,11 +4182,16 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/auth/login') {
         $body = read_json();
         $email = strtolower(trim((string) ($body['email'] ?? '')));
+        [$ipIdentity, $accountIdentity] = request_rate_limit_identity($email);
+        enforce_auth_rate_limit('login-ip', $ipIdentity, 30, 900);
+        enforce_auth_rate_limit('login-account', $accountIdentity, 5, 900);
         $password = (string) ($body['password'] ?? '');
         $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND status != 'deleted'");
         $stmt->execute([$email]);
         $row = $stmt->fetch();
         if (!$row || !verify_password_value($password, $row['password_hash'])) {
+            record_auth_rate_limit_failure('login-ip', $ipIdentity, 30, 900, 900);
+            record_auth_rate_limit_failure('login-account', $accountIdentity, 5, 900, 900);
             json_response(['error' => 'INVALID_LOGIN', 'message' => 'Email or password is incorrect.'], 401);
         }
         if ($row['status'] !== 'active') json_response(['error' => 'ACCOUNT_DISABLED', 'message' => 'This account is not active.'], 403);
@@ -3992,9 +4216,12 @@ function handle_api(string $path, string $method): void
                 }
             }
             if (!$validTotp && !$validRecovery) {
+                record_auth_rate_limit_failure('login-ip', $ipIdentity, 30, 900, 900);
+                record_auth_rate_limit_failure('login-account', $accountIdentity, 5, 900, 900);
                 json_response(['error' => 'TWO_FACTOR_REQUIRED', 'message' => 'Enter a valid authenticator or recovery code.'], 401);
             }
         }
+        clear_auth_rate_limit('login-account', $accountIdentity);
         $now = now_iso();
         $pdo->prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')->execute([$now, $now, $row['id']]);
         $row['last_login_at'] = $now;
@@ -4121,6 +4348,11 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/auth/password/forgot') {
         $body = read_json();
         $email = strtolower(trim((string) ($body['email'] ?? '')));
+        [$ipIdentity, $accountIdentity] = request_rate_limit_identity($email);
+        enforce_auth_rate_limit('password-reset-ip', $ipIdentity, 20, 3600);
+        enforce_auth_rate_limit('password-reset-account', $accountIdentity, 5, 3600);
+        record_auth_rate_limit_failure('password-reset-ip', $ipIdentity, 20, 3600, 3600);
+        record_auth_rate_limit_failure('password-reset-account', $accountIdentity, 5, 3600, 3600);
         $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND status = 'active'");
         $stmt->execute([$email]);
         $user = $stmt->fetch();
@@ -4131,11 +4363,13 @@ function handle_api(string $path, string $method): void
             if (!$sent) $fallbackUrl = $reset['url'];
             audit_log($user['id'], 'auth.password_reset_requested', 'user', $user['id']);
         }
-        json_response(['ok' => true, 'sent' => $user ? provider_status()['email'] : false, 'resetUrl' => is_production() ? null : $fallbackUrl]);
+        json_response(['ok' => true, 'sent' => provider_status()['email'], 'resetUrl' => is_production() ? null : $fallbackUrl]);
     }
 
     if ($method === 'POST' && $path === '/api/auth/password/reset') {
         $body = read_json();
+        [$ipIdentity] = request_rate_limit_identity();
+        enforce_auth_rate_limit('password-reset-submit', $ipIdentity, 10, 3600);
         $token = (string) ($body['token'] ?? '');
         $password = (string) ($body['password'] ?? '');
         $passwordError = password_policy_error($password);
@@ -4143,7 +4377,11 @@ function handle_api(string $path, string $method): void
         $stmt = $pdo->prepare("SELECT security_tokens.*, users.status FROM security_tokens JOIN users ON users.id = security_tokens.user_id WHERE token_hash = ? AND type = 'password_recovery' AND consumed_at IS NULL AND expires_at > ?");
         $stmt->execute([hash('sha256', $token), now_iso()]);
         $row = $stmt->fetch();
-        if (!$row || $row['status'] !== 'active') json_response(['error' => 'INVALID_RESET_TOKEN', 'message' => 'This reset link is invalid or expired.'], 400);
+        if (!$row || $row['status'] !== 'active') {
+            record_auth_rate_limit_failure('password-reset-submit', $ipIdentity, 10, 3600, 3600);
+            json_response(['error' => 'INVALID_RESET_TOKEN', 'message' => 'This reset link is invalid or expired.'], 400);
+        }
+        clear_auth_rate_limit('password-reset-submit', $ipIdentity);
         $now = now_iso();
         $pdo->prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')->execute([hash_password_value($password), $now, $row['user_id']]);
         $pdo->prepare('UPDATE security_tokens SET consumed_at = ? WHERE id = ?')->execute([$now, $row['id']]);
@@ -4607,7 +4845,7 @@ function handle_api(string $path, string $method): void
             'phpVersion' => PHP_VERSION,
             'sqlite' => extension_loaded('pdo_sqlite'),
             'uploadsWritable' => is_writable(dirname(__DIR__) . '/uploads') || is_writable(dirname(__DIR__)),
-            'storageWritable' => is_writable(dirname(__DIR__) . '/storage') || is_writable(dirname(__DIR__)),
+            'storageWritable' => is_writable(private_storage_root()),
             'cronConfigured' => (bool) (env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret')),
             'adminUsers' => (int) $pdo->query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")->fetch()['count'],
         ];
@@ -4857,7 +5095,7 @@ function handle_api(string $path, string $method): void
             'phpVersion' => PHP_VERSION,
             'sqlite' => extension_loaded('pdo_sqlite'),
             'uploadsWritable' => is_writable(dirname(__DIR__) . '/uploads') || is_writable(dirname(__DIR__)),
-            'storageWritable' => is_writable(dirname(__DIR__) . '/storage') || is_writable(dirname(__DIR__)),
+            'storageWritable' => is_writable(private_storage_root()),
             'cronConfigured' => (bool) (env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret')),
             'adminUsers' => (int) $pdo->query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")->fetch()['count'],
         ];
@@ -4893,6 +5131,7 @@ function handle_api(string $path, string $method): void
         if ((int) $file['size'] > 8 * 1024 * 1024) json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Images must be 8 MB or smaller.'], 413);
         $info = getimagesize($file['tmp_name']);
         if (!$info) json_response(['error' => 'INVALID_IMAGE', 'message' => 'Only valid image files can be uploaded.'], 400);
+        if (!image_dimensions_are_safe($info)) json_response(['error' => 'IMAGE_DIMENSIONS_TOO_LARGE', 'message' => 'The image dimensions are too large to process safely.'], 400);
         $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
         $mime = $info['mime'] ?? '';
         if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_IMAGE', 'message' => 'Use JPG, PNG, WebP, or GIF.'], 400);
@@ -5392,6 +5631,30 @@ function handle_api(string $path, string $method): void
         json_response(['liked' => $liked, 'likes' => (int) $count->fetch()['likes']]);
     }
 
+    if ($method === 'GET' && preg_match('#^/api/support/attachments/([^/]+)$#', $path, $m)) {
+        $session = require_auth();
+        $attachmentId = rawurldecode($m[1]);
+        $stmt = $pdo->prepare('SELECT * FROM support_ticket_attachments WHERE id = ?');
+        $stmt->execute([$attachmentId]);
+        $attachment = $stmt->fetch();
+        if (!$attachment || !support_ticket_for_session($pdo, (string) $attachment['ticket_id'], $session)) {
+            json_response(['error' => 'NOT_FOUND', 'message' => 'Attachment not found.'], 404);
+        }
+        $filePath = support_attachment_path($attachment);
+        if (!$filePath) json_response(['error' => 'NOT_FOUND', 'message' => 'Attachment file is unavailable.'], 404);
+        $downloadName = preg_replace('/[^A-Za-z0-9_. -]/', '_', basename((string) $attachment['original_name'])) ?: 'attachment';
+        http_response_code(200);
+        foreach (security_headers() + [
+            'Content-Type' => (string) $attachment['mime_type'],
+            'Content-Length' => (string) filesize($filePath),
+            'Content-Disposition' => 'attachment; filename="' . addcslashes($downloadName, '"\\') . '"',
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ] as $key => $value) header($key . ': ' . $value);
+        readfile($filePath);
+        exit;
+    }
+
     if ($path === '/api/support/tickets') {
         $session = require_auth();
         if ($method === 'GET') {
@@ -5435,7 +5698,7 @@ function handle_api(string $path, string $method): void
                 $byMessage[$attachment['message_id'] ?: 'ticket'][] = [
                     'id' => $attachment['id'],
                     'name' => $attachment['original_name'],
-                    'url' => $attachment['url'],
+                    'url' => '/api/support/attachments/' . rawurlencode((string) $attachment['id']),
                     'mimeType' => $attachment['mime_type'],
                     'size' => (int) $attachment['size'],
                     'createdAt' => $attachment['created_at'],
@@ -5531,10 +5794,12 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/admin/security/backups/verify') {
         require_auth(['admin']);
         $source = database_path();
-        $backupDir = dirname(__DIR__) . '/storage/backups';
-        if (!is_dir($backupDir)) mkdir($backupDir, 0775, true);
+        $backupDir = private_storage_path('backups');
+        if (!is_dir($backupDir) && !mkdir($backupDir, 0700, true) && !is_dir($backupDir)) json_response(['error' => 'BACKUP_FAILED', 'message' => 'Private backup storage is unavailable.'], 500);
+        @chmod($backupDir, 0700);
         $target = $backupDir . '/inkriver-' . gmdate('Ymd-His') . '.sqlite';
         $ok = is_file($source) && copy($source, $target);
+        if ($ok) @chmod($target, 0600);
         $details = [
             'source' => basename($source),
             'backup' => $ok ? $target : null,
@@ -5910,20 +6175,18 @@ function handle_api(string $path, string $method): void
             }
         }
         if (empty(provider_status()['payments'][$provider])) json_response(['error' => 'PROVIDER_NOT_CONFIGURED', 'message' => 'Payment provider is not configured.'], 503);
+        $checkout = authoritative_payment_checkout($body);
+        $payment = $checkout['payment'];
+        $metadata = $checkout['metadata'];
         $id = 'PAY-' . uuid_value();
+        $payment['id'] = $id;
         $now = now_iso();
-        $metadata = is_array($body['metadata'] ?? null) ? $body['metadata'] : [];
         if (($metadata['kind'] ?? '') === 'tip' && !feature_flag_enabled('tips')) {
             json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Writer tipping is disabled.'], 403);
         }
-        if (!empty($body['discountCode'])) $metadata['discountCode'] = strtoupper(trim((string) $body['discountCode']));
-        $metadata['originalAmount'] = (int) ($body['amount'] ?? 0);
-        $paymentPreview = ['id' => $id, 'amount' => (int) ($body['amount'] ?? 0), 'currency' => strtoupper((string) ($body['currency'] ?? 'INR')), 'purpose' => $body['purpose'] ?? 'payment'];
-        $amount = payment_amount_for_checkout($paymentPreview, $metadata);
         $isRecurringMembership = !in_array(($metadata['kind'] ?? 'membership'), ['tip', 'gift'], true);
         $pdo->prepare("INSERT INTO payments (id, user_id, provider, purpose, amount, currency, status, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, ?, ?)")
-            ->execute([$id, $session['user']['id'], $provider, $body['purpose'] ?? 'payment', $amount, strtoupper((string) ($body['currency'] ?? 'INR')), json_encode($metadata, JSON_UNESCAPED_SLASHES), $now, $now]);
-        $payment = ['id' => $id, 'amount' => $amount, 'currency' => strtoupper((string) ($body['currency'] ?? 'INR')), 'purpose' => $body['purpose'] ?? 'payment'];
+            ->execute([$id, $session['user']['id'], $provider, $payment['purpose'], $payment['amount'], $payment['currency'], json_encode($metadata, JSON_UNESCAPED_SLASHES), $now, $now]);
         try {
             $order = $isRecurringMembership
                 ? create_provider_subscription_checkout($provider, $payment, $session['user'], $metadata)
@@ -5938,7 +6201,7 @@ function handle_api(string $path, string $method): void
         }
         $pdo->prepare("UPDATE payments SET status = 'pending', provider_order_id = ?, metadata = ?, updated_at = ? WHERE id = ?")
             ->execute([$order['providerOrderId'] ?? '', json_encode($metadata, JSON_UNESCAPED_SLASHES), now_iso(), $id]);
-        json_response(['paymentId' => $id, 'provider' => $provider, 'amount' => $amount, 'currency' => $payment['currency'], 'checkout' => $order['checkout'] ?? []], 201);
+        json_response(['paymentId' => $id, 'provider' => $provider, 'amount' => $payment['amount'], 'currency' => $payment['currency'], 'checkout' => $order['checkout'] ?? []], 201);
     }
 
     if ($method === 'POST' && $path === '/api/payments/razorpay/verify') {
@@ -5949,12 +6212,18 @@ function handle_api(string $path, string $method): void
         $subscriptionId = (string) ($body['razorpay_subscription_id'] ?? '');
         $razorpayPaymentId = (string) ($body['razorpay_payment_id'] ?? '');
         $signature = (string) ($body['razorpay_signature'] ?? '');
+        $localPayment = payment_for_gateway_verification($paymentId, 'razorpay', $session['user']['id']);
+        $providerOrderId = $subscriptionId !== '' ? $subscriptionId : $orderId;
+        if (!$localPayment || !hash_equals((string) ($localPayment['provider_order_id'] ?? ''), $providerOrderId)) {
+            json_response(['error' => 'PAYMENT_MISMATCH', 'message' => 'This gateway transaction does not match the local checkout.'], 400);
+        }
         $signedValue = $subscriptionId !== '' ? $razorpayPaymentId . '|' . $subscriptionId : $orderId . '|' . $razorpayPaymentId;
         $expected = hash_hmac('sha256', $signedValue, (string) provider_config_value('RAZORPAY_KEY_SECRET', 'razorpay', 'key_secret'));
         if (!$paymentId || (!$orderId && !$subscriptionId) || !$razorpayPaymentId || !hash_equals($expected, $signature)) {
             json_response(['error' => 'INVALID_PAYMENT_SIGNATURE', 'message' => 'Payment verification failed.'], 400);
         }
         $user = activate_paid_payment($paymentId, $razorpayPaymentId);
+        if (!$user) json_response(['error' => 'PAYMENT_NOT_ACTIVATABLE', 'message' => 'This payment is not pending activation.'], 409);
         audit_log($session['user']['id'], 'payment.razorpay_verified', 'payment', $paymentId);
         json_response(['ok' => true, 'user' => $user]);
     }
@@ -5964,6 +6233,8 @@ function handle_api(string $path, string $method): void
         $tokenId = (string) ($_GET['token'] ?? '');
         $subscriptionId = (string) ($_GET['subscription_id'] ?? $_GET['ba_token'] ?? '');
         if ($paymentId === '' || ($tokenId === '' && $subscriptionId === '')) redirect_response('/pricing?payment=invalid');
+        $localPayment = payment_for_gateway_verification($paymentId, 'paypal');
+        if (!$localPayment) redirect_response('/pricing?payment=invalid');
         $base = provider_config_value('PAYPAL_ENVIRONMENT', 'paypal', 'environment', 'sandbox') === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
         $token = http_request_json($base . '/v1/oauth2/token', [
             'method' => 'POST',
@@ -5971,23 +6242,26 @@ function handle_api(string $path, string $method): void
             'body' => ['grant_type' => 'client_credentials'],
         ]);
         if (($_GET['mode'] ?? '') === 'subscription' || $subscriptionId !== '') {
-            $local = $pdo->prepare('SELECT provider_order_id FROM payments WHERE id = ?');
-            $local->execute([$paymentId]);
-            $storedSubscriptionId = (string) (($local->fetch()['provider_order_id'] ?? '') ?: $subscriptionId);
+            $storedSubscriptionId = (string) ($localPayment['provider_order_id'] ?? '');
+            if ($storedSubscriptionId === '' || ($subscriptionId !== '' && !hash_equals($storedSubscriptionId, $subscriptionId))) redirect_response('/pricing?payment=invalid');
             $remote = http_request_json($base . '/v1/billing/subscriptions/' . rawurlencode($storedSubscriptionId), [
                 'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
             ]);
-            if (!in_array(($remote['status'] ?? ''), ['ACTIVE', 'APPROVAL_PENDING'], true)) redirect_response('/pricing?payment=failed');
-            activate_paid_payment($paymentId, $storedSubscriptionId);
+            if (($remote['status'] ?? '') !== 'ACTIVE') redirect_response('/pricing?payment=failed');
+            if (!activate_paid_payment($paymentId, $storedSubscriptionId)) redirect_response('/pricing?payment=failed');
             redirect_response('/dashboard?payment=success');
         }
+        if (!hash_equals((string) ($localPayment['provider_order_id'] ?? ''), $tokenId)) redirect_response('/pricing?payment=invalid');
         $capture = http_request_json($base . '/v2/checkout/orders/' . rawurlencode($tokenId) . '/capture', [
             'method' => 'POST',
             'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? ''), 'Content-Type' => 'application/json'],
             'body' => '{}',
         ]);
         if (($capture['status'] ?? '') !== 'COMPLETED') redirect_response('/pricing?payment=failed');
-        activate_paid_payment($paymentId, $capture['id'] ?? $tokenId);
+        $capturedAmount = $capture['purchase_units'][0]['payments']['captures'][0]['amount'] ?? $capture['purchase_units'][0]['amount'] ?? [];
+        if (strtoupper((string) ($capturedAmount['currency_code'] ?? '')) !== strtoupper((string) $localPayment['currency'])
+            || decimal_amount_to_minor_units($capturedAmount['value'] ?? 0) !== (int) $localPayment['amount']) redirect_response('/pricing?payment=failed');
+        if (!activate_paid_payment($paymentId, $capture['id'] ?? $tokenId)) redirect_response('/pricing?payment=failed');
         redirect_response('/dashboard?payment=success');
     }
 
@@ -5997,6 +6271,7 @@ function handle_api(string $path, string $method): void
         $paymentStmt = $pdo->prepare('SELECT * FROM payments WHERE id = ?');
         $paymentStmt->execute([$paymentId]);
         $localPayment = $paymentStmt->fetch();
+        if (!$localPayment || $localPayment['provider'] !== 'cashfree' || !in_array($localPayment['status'], ['pending', 'paid'], true)) redirect_response('/pricing?payment=invalid');
         $localMetadata = $localPayment ? parse_json_field($localPayment['metadata'] ?? '{}', []) : [];
         if (!empty($localMetadata['recurring'])) {
             $subscriptionBase = provider_config_value('CASHFREE_SUBSCRIPTIONS_API_URL', 'cashfree', 'subscriptions_api_url', '');
@@ -6004,8 +6279,8 @@ function handle_api(string $path, string $method): void
             $subscription = http_request_json(rtrim($subscriptionBase, '/') . '/' . rawurlencode((string) ($localPayment['provider_order_id'] ?? $paymentId)), [
                 'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret')],
             ]);
-            if (!in_array(strtoupper((string) ($subscription['status'] ?? $subscription['subscription_status'] ?? '')), ['ACTIVE', 'APPROVED', 'BANK_APPROVAL_PENDING'], true)) redirect_response('/pricing?payment=failed');
-            activate_paid_payment($paymentId, (string) ($subscription['subscription_id'] ?? $localPayment['provider_order_id'] ?? $paymentId));
+            if (strtoupper((string) ($subscription['status'] ?? $subscription['subscription_status'] ?? '')) !== 'ACTIVE') redirect_response('/pricing?payment=failed');
+            if (!activate_paid_payment($paymentId, (string) ($subscription['subscription_id'] ?? $localPayment['provider_order_id'] ?? $paymentId))) redirect_response('/pricing?payment=failed');
             redirect_response('/dashboard?payment=success');
         }
         $base = provider_config_value('CASHFREE_ENVIRONMENT', 'cashfree', 'environment', 'sandbox') === 'production' ? 'https://api.cashfree.com/pg/orders/' : 'https://sandbox.cashfree.com/pg/orders/';
@@ -6013,15 +6288,20 @@ function handle_api(string $path, string $method): void
             'headers' => ['x-api-version' => '2023-08-01', 'x-client-id' => provider_config_value('CASHFREE_CLIENT_ID', 'cashfree', 'client_id'), 'x-client-secret' => provider_config_value('CASHFREE_CLIENT_SECRET', 'cashfree', 'client_secret')],
         ]);
         if (($order['order_status'] ?? '') !== 'PAID') redirect_response('/pricing?payment=failed');
-        activate_paid_payment($paymentId, $order['cf_order_id'] ?? $paymentId);
+        if (($order['order_id'] ?? $paymentId) !== $paymentId
+            || strtoupper((string) ($order['order_currency'] ?? '')) !== strtoupper((string) $localPayment['currency'])
+            || decimal_amount_to_minor_units($order['order_amount'] ?? 0) !== (int) $localPayment['amount']) redirect_response('/pricing?payment=failed');
+        if (!activate_paid_payment($paymentId, $order['cf_order_id'] ?? $paymentId)) redirect_response('/pricing?payment=failed');
         redirect_response('/dashboard?payment=success');
     }
 
     if ($method === 'POST' && $path === '/api/payments/payu/return') {
         $body = $_POST;
         $paymentId = (string) ($body['udf1'] ?? $body['txnid'] ?? '');
-        if (($body['status'] ?? '') !== 'success' || $paymentId === '' || !payu_response_hash_valid($body)) redirect_response('/pricing?payment=failed');
-        activate_paid_payment($paymentId, (string) ($body['subscription_id'] ?? $body['mihpayid'] ?? $body['txnid'] ?? ''));
+        $localPayment = payment_for_gateway_verification($paymentId, 'payu');
+        if (($body['status'] ?? '') !== 'success' || !$localPayment || !payu_response_hash_valid($body)
+            || decimal_amount_to_minor_units($body['amount'] ?? 0) !== (int) $localPayment['amount']) redirect_response('/pricing?payment=failed');
+        if (!activate_paid_payment($paymentId, (string) ($body['subscription_id'] ?? $body['mihpayid'] ?? $body['txnid'] ?? ''))) redirect_response('/pricing?payment=failed');
         redirect_response('/dashboard?payment=success');
     }
 

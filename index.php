@@ -48,9 +48,13 @@ if ($method === 'GET' && $path === '/manifest.webmanifest') {
     exit;
 }
 
-$file = realpath(__DIR__ . $path);
+$publicAsset = preg_match('#^/src/[A-Za-z0-9_./-]+\.(?:css|js|svg|png|jpe?g|webp|gif|woff2?)$#i', $path)
+    || preg_match('#^/uploads/(?!support(?:/|$))[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif)$#i', $path)
+    || in_array($path, ['/sw.js'], true);
+$file = $publicAsset ? realpath(__DIR__ . $path) : false;
 $root = realpath(__DIR__);
-if ($file && $root && str_starts_with($file, $root) && is_file($file) && !in_array(basename($file), ['index.php', 'index.html'], true)) {
+$insideRoot = $file && $root && path_is_within($file, $root);
+if ($insideRoot && is_file($file)) {
     $types = [
         'css' => 'text/css; charset=utf-8',
         'js' => 'text/javascript; charset=utf-8',
@@ -60,10 +64,26 @@ if ($file && $root && str_starts_with($file, $root) && is_file($file) && !in_arr
         'jpg' => 'image/jpeg',
         'jpeg' => 'image/jpeg',
         'webp' => 'image/webp',
+        'gif' => 'image/gif',
+        'woff' => 'font/woff',
+        'woff2' => 'font/woff2',
     ];
     $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+    foreach (security_headers() as $key => $value) header($key . ': ' . $value);
     header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
+    header('Cache-Control: public, max-age=3600');
     readfile($file);
+    exit;
+}
+
+$sensitivePath = preg_match('#^/(?:app|data|scripts|tests|storage|uploads/support)(?:/|$)#i', $path)
+    || preg_match('#(?:^|/)\.[^/]+#', $path)
+    || preg_match('#/(?:schema\.sql|composer\.(?:json|lock)|phpunit\.xml|README(?:-[^/]*)?\.md)$#i', $path)
+    || preg_match('#\.(?:sqlite|sqlite3|db|sql|env|ini|log|bak|backup|old|orig|swp|key|pem)$#i', $path);
+if ($sensitivePath) {
+    http_response_code(404);
+    foreach (security_headers() + ['Content-Type' => 'text/plain; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);
+    echo 'Not found';
     exit;
 }
 

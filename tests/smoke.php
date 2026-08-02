@@ -2,10 +2,12 @@
 declare(strict_types=1);
 
 $root = dirname(__DIR__);
-$db = $root . '/data/test-smoke.sqlite';
+$db = rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'inkriver-test-smoke.sqlite';
 if (is_file($db)) unlink($db);
 putenv('DATABASE_PATH=' . $db);
 putenv('APP_ENV=production');
+putenv('APP_ORIGIN=https://inkriver.test');
+putenv('APP_SECRET=smoke-test-secret-that-is-at-least-32-characters');
 
 require_once $root . '/app/Api.php';
 
@@ -18,6 +20,28 @@ function assert_true(bool $condition, string $message): void
 }
 
 $pdo = Database::pdo();
+
+$sanitized = sanitize_story_html('<p onclick="alert(1)">Safe <a href="javascript:alert(2)">link</a><img src="/uploads/example.jpg" onerror="alert(3)"></p><script>alert(4)</script>');
+assert_true(!str_contains($sanitized, 'onclick') && !str_contains($sanitized, 'onerror') && !str_contains($sanitized, 'javascript:') && !str_contains($sanitized, '<script'), 'server rich HTML sanitizer removes executable markup');
+
+$trustedCheckout = authoritative_payment_checkout([
+    'amount' => 1,
+    'currency' => 'INR',
+    'metadata' => ['planId' => 'starter', 'planName' => 'Attacker Plan', 'period' => 'year'],
+]);
+assert_true(
+    ($trustedCheckout['payment']['amount'] ?? 0) === 29900
+    && ($trustedCheckout['metadata']['planName'] ?? '') === 'Reader'
+    && ($trustedCheckout['metadata']['period'] ?? '') === 'month',
+    'membership checkout ignores client-controlled amount, name, and duration'
+);
+
+record_auth_rate_limit_failure('smoke-login', 'smoke@example.com', 5, 900, 900);
+$rateLimitKey = auth_rate_limit_key('smoke-login', 'smoke@example.com');
+$rateLimitStmt = $pdo->prepare('SELECT attempts FROM login_attempts WHERE key = ?');
+$rateLimitStmt->execute([$rateLimitKey]);
+assert_true((int) $rateLimitStmt->fetchColumn() === 1, 'authentication failures persist rate-limit state');
+clear_auth_rate_limit('smoke-login', 'smoke@example.com');
 
 $columns = array_column($pdo->query('PRAGMA table_info(feature_flags)')->fetchAll(), 'name');
 assert_true(in_array('environment', $columns, true), 'feature_flags.environment column exists');
@@ -63,6 +87,10 @@ $adminSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin',
 $pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-SMOKE-WRITER', 'Smoke Writer', 'smoke-writer@example.com', ?, 'writer', 'Pro', 'active', 1, ?, ?)")
     ->execute([hash_password_value('SmokePassword!24'), $now, $now]);
 $writerSession = ['user' => ['id' => 'USR-SMOKE-WRITER', 'name' => 'Smoke Writer', 'email' => 'smoke-writer@example.com', 'role' => 'writer', 'subscription' => 'Pro']];
+$pendingProfile = business_save_profile('company', ['name' => 'Unreviewed Writer Company'], $writerSession);
+assert_true(($pendingProfile['status'] ?? '') === 'draft', 'non-staff business profiles require moderation before publication');
+assert_true(business_get_profile('company', (string) $pendingProfile['id'], null) === null, 'draft business profiles are hidden from public requests');
+$pdo->prepare('DELETE FROM business_companies WHERE id = ?')->execute([$pendingProfile['id']]);
 $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?)')->execute([
     'site-seo-public',
     json_encode(['siteTitle' => 'Smoke Gazette'], JSON_UNESCAPED_SLASHES),
