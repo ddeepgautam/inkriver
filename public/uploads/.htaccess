@@ -1,0 +1,9 @@
+Options -Indexes
+
+# Uploaded files are data, never executable application code.
+<FilesMatch "\.(?:php[0-9]*|phtml|phar|cgi|pl|py|rb|sh|bash|exe|dll|so|htaccess)$">
+    Require all denied
+</FilesMatch>
+
+RemoveHandler .php .php3 .php4 .php5 .php7 .php8 .phtml .phar .cgi .pl .py .rb .sh
+RemoveType .php .php3 .php4 .php5 .php7 .php8 .phtml .phar .cgi .pl .py .rb .sh

@@ -1,7 +1,12 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/app/Api.php';
+require_once dirname(__DIR__) . '/app/Api.php';
+
+if (is_production()) {
+    ini_set('display_errors', '0');
+    ini_set('log_errors', '1');
+}
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -76,10 +81,11 @@ if ($insideRoot && is_file($file)) {
     exit;
 }
 
-$sensitivePath = preg_match('#^/(?:app|data|scripts|tests|storage|uploads/support)(?:/|$)#i', $path)
+$sensitivePath = $path !== '/index.html' && (
+    preg_match('#^/(?:app|data|scripts|tests|storage|uploads/support)(?:/|$)#i', $path)
     || preg_match('#(?:^|/)\.[^/]+#', $path)
-    || preg_match('#/(?:schema\.sql|composer\.(?:json|lock)|phpunit\.xml|README(?:-[^/]*)?\.md)$#i', $path)
-    || preg_match('#\.(?:sqlite|sqlite3|db|sql|env|ini|log|bak|backup|old|orig|swp|key|pem)$#i', $path);
+    || preg_match('#(?:^|/)[^/]+\.[A-Za-z0-9]{1,12}$#', $path)
+);
 if ($sensitivePath) {
     http_response_code(404);
     foreach (security_headers() + ['Content-Type' => 'text/plain; charset=utf-8', 'Cache-Control' => 'no-store'] as $key => $value) header($key . ': ' . $value);

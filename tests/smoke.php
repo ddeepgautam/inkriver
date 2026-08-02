@@ -21,6 +21,15 @@ function assert_true(bool $condition, string $message): void
 
 $pdo = Database::pdo();
 
+assert_true(public_root() === $root . DIRECTORY_SEPARATOR . 'public', 'public document root is isolated from application source');
+$publicTraversalRejected = false;
+try {
+    public_path('../app/config.php');
+} catch (InvalidArgumentException) {
+    $publicTraversalRejected = true;
+}
+assert_true($publicTraversalRejected, 'public path resolver rejects directory traversal');
+
 $sanitized = sanitize_story_html('<p onclick="alert(1)">Safe <a href="javascript:alert(2)">link</a><img src="/uploads/example.jpg" onerror="alert(3)"></p><script>alert(4)</script>');
 assert_true(!str_contains($sanitized, 'onclick') && !str_contains($sanitized, 'onerror') && !str_contains($sanitized, 'javascript:') && !str_contains($sanitized, '<script'), 'server rich HTML sanitizer removes executable markup');
 
@@ -297,7 +306,7 @@ $mcpImage = business_mcp_call_tool('upload_profile_image', [
     'altText' => 'Smoke founder headshot',
 ], $adminSession);
 assert_true(($mcpImage['assignToField'] ?? '') === 'image_url' && !empty($mcpImage['asset']['url']), 'MCP uploads founder image and maps it to image_url');
-$mcpImagePath = $root . str_replace('/', DIRECTORY_SEPARATOR, (string) $mcpImage['asset']['url']);
+$mcpImagePath = $root . DIRECTORY_SEPARATOR . 'public' . str_replace('/', DIRECTORY_SEPARATOR, (string) $mcpImage['asset']['url']);
 if (is_file($mcpImagePath)) unlink($mcpImagePath);
 
 echo "Smoke tests passed\n";

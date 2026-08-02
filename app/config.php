@@ -8,6 +8,23 @@ function project_root(): string
     return dirname(__DIR__);
 }
 
+function public_root(): string
+{
+    return project_root() . DIRECTORY_SEPARATOR . 'public';
+}
+
+function public_path(string $relative = ''): string
+{
+    $segments = preg_split('#[\\\\/]+#', ltrim($relative, '/\\')) ?: [];
+    $safeSegments = [];
+    foreach ($segments as $segment) {
+        if ($segment === '' || $segment === '.') continue;
+        if ($segment === '..') throw new InvalidArgumentException('Public paths cannot traverse outside the document root.');
+        $safeSegments[] = $segment;
+    }
+    return $safeSegments ? public_root() . DIRECTORY_SEPARATOR . implode(DIRECTORY_SEPARATOR, $safeSegments) : public_root();
+}
+
 function env_file_values(): array
 {
     static $values = null;
@@ -92,11 +109,18 @@ function path_is_within(string $path, string $directory): bool
 function validate_sensitive_storage_configuration(): void
 {
     if (!is_production()) return;
+    if (PHP_SAPI !== 'cli') {
+        $documentRoot = realpath((string) ($_SERVER['DOCUMENT_ROOT'] ?? ''));
+        $expectedRoot = realpath(public_root());
+        if (!$documentRoot || !$expectedRoot || !path_is_within($documentRoot, $expectedRoot) || !path_is_within($expectedRoot, $documentRoot)) {
+            throw new RuntimeException('The production web server document root must be the public directory.');
+        }
+    }
     if (!str_starts_with(strtolower(app_origin()), 'https://')) {
         throw new RuntimeException('APP_ORIGIN must use HTTPS in production.');
     }
     if (path_is_within(database_path(), project_root()) || path_is_within(private_storage_root(), project_root())) {
-        throw new RuntimeException('Production database and private storage must be located outside the application web directory.');
+        throw new RuntimeException('Production database and private storage must be located outside the application repository.');
     }
     application_secret_value();
 }

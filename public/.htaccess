@@ -1,0 +1,27 @@
+DirectoryIndex index.php
+Options -Indexes -MultiViews
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+</IfModule>
+
+RewriteEngine On
+RewriteRule ^index\.html$ index.php [L,NC]
+RewriteRule ^\.well-known/(?:oauth-(?:protected-resource|authorization-server)(?:/.*)?|openid-configuration)$ index.php [L,NC]
+
+# The document root contains public files only. Keep dotfiles and executable uploads blocked.
+RewriteRule "(^|/)\." - [F,L]
+RewriteRule ^uploads/support(?:/|$) - [F,L,NC]
+RewriteRule ^uploads/.*\.(?:php[0-9]*|phtml|phar|cgi|pl|py|rb|sh|bash|exe|dll|so|htaccess)$ - [F,L,NC]
+RewriteRule ^.*\.(?:sqlite|sqlite3|db|sql|env|ini|log|bak|backup|old|orig|swp|key|pem)$ - [F,L,NC]
+
+<FilesMatch "\.(?:sqlite|sqlite3|db|sql|env|ini|log|bak|backup|old|orig|swp|key|pem)$">
+    Require all denied
+</FilesMatch>
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [L]

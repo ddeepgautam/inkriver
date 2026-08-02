@@ -123,9 +123,9 @@ Search index:
 
 Uploads:
 
-- Public editorial images are stored under `/uploads/YYYY/MM/` with server-generated names and image extensions.
+- Public editorial images are stored under `public/uploads/YYYY/MM/` and served as `/uploads/YYYY/MM/...`, with server-generated names and image extensions.
 - Support attachments are stored in `PRIVATE_STORAGE_PATH` and are only downloaded through an authenticated authorization check.
-- Ensure PHP can write to `uploads` and the private storage directory. Private storage should use owner-only filesystem permissions.
+- Ensure PHP can write to `public/uploads` and the private storage directory. Private storage should use owner-only filesystem permissions.
 
 ## MCP Blog Publishing
 
@@ -220,10 +220,10 @@ Example MCP `tools/call` payload:
 
 ## Local Run
 
-From `InkRiver-PHP`:
+From `InkRiver-PHP`, explicitly use `public/` as the document root:
 
 ```bash
-php -S 127.0.0.1:8080 index.php
+php -S 127.0.0.1:8080 -t public public/index.php
 ```
 
 Create an admin:
@@ -232,9 +232,17 @@ Create an admin:
 php scripts/create-admin.php admin@example.com "StrongPasswordHere" "Site Administrator"
 ```
 
-## Hostinger PHP Upload
+## Production Web Root
 
-Upload this folder's contents to your PHP-enabled hosting directory. Keep `PRIVATE_STORAGE_PATH`, `DATABASE_PATH`, backups, and secrets outside that directory. The bundled Apache rules deny internal application paths as a second layer, but filesystem separation remains mandatory for production.
+Deploy the complete repository outside the public web directory and configure the domain's document root to the repository's `public/` directory. For example, deploy to `/home/account/inkriver` and set the domain document root to `/home/account/inkriver/public`. Do not configure the repository root as the document root.
+
+Only `public/index.php`, the application shell, frontend assets, the service worker, manifest, and public image uploads are web-accessible. PHP source, `.env` files, SQLite databases, scripts, tests, schemas, documentation, and Git metadata remain above the web boundary. The supplied web-server examples explicitly deny the repository parent and grant access only to `public/`.
+
+Production startup also verifies the server-reported document root and refuses to initialize the database when it does not resolve to `public/`.
+
+Apache must allow overrides for `public/.htaccess`; an example virtual host is provided at `deploy/apache-vhost.conf.example`. An equivalent Nginx configuration is provided at `deploy/nginx.conf.example`. On managed hosting such as Hostinger, change the website's document-root setting to `public/` rather than copying private application files into `public_html`.
+
+Keep `PRIVATE_STORAGE_PATH`, `DATABASE_PATH`, backups, and secrets outside the repository as an additional isolation layer. If upgrading an existing installation, move existing public media from the old repository-level `uploads/` directory into `public/uploads/` while the application is stopped.
 
 Required PHP extensions:
 
@@ -243,4 +251,4 @@ Required PHP extensions:
 - SQLite3
 - OpenSSL
 
-Set environment variables through the hosting control panel or a protected `.env` file. Do not place credentials directly in tracked PHP or JavaScript files. See `SECURITY.md` before enabling production traffic.
+Set environment variables through the hosting control panel or a `.env` file at the repository root, never under `public/`. Do not place credentials directly in tracked PHP or JavaScript files. See `SECURITY.md` before enabling production traffic.

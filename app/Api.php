@@ -64,7 +64,7 @@ function store_profile_avatar_upload(string $fieldName = 'avatar'): string
     $mime = $info['mime'] ?? '';
     if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_IMAGE', 'message' => 'Use JPG, PNG, WebP, or GIF for profile photos.'], 400);
     $relativeDir = 'uploads/avatars/' . gmdate('Y/m');
-    $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+    $absoluteDir = public_path($relativeDir);
     if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
     $storedName = uuid_value('avatar-') . '.' . $allowed[$mime];
     $target = $absoluteDir . '/' . $storedName;
@@ -1577,7 +1577,7 @@ function store_mcp_image_asset(array $arguments, string $userId): array
     $mime = $info['mime'] ?? '';
     if (!isset($allowed[$mime])) throw new RuntimeException('Use JPG, PNG, WebP, or GIF.');
     $relativeDir = 'uploads/' . gmdate('Y/m');
-    $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+    $absoluteDir = public_path($relativeDir);
     if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
     $storedName = uuid_value('media-') . '.' . $allowed[$mime];
     $target = $absoluteDir . '/' . $storedName;
@@ -3052,7 +3052,7 @@ function enqueue_background_job(string $type, array $payload = [], ?string $avai
 function create_media_variants_for_asset(array $asset): array
 {
     if (!function_exists('imagecreatefromstring') || !function_exists('imagewebp')) return ['created' => 0, 'reason' => 'GD_WEBP_UNAVAILABLE'];
-    $sourcePath = dirname(__DIR__) . (string) $asset['url'];
+    $sourcePath = public_path(ltrim((string) $asset['url'], '/'));
     if (!is_file($sourcePath)) return ['created' => 0, 'reason' => 'SOURCE_MISSING'];
     $source = @imagecreatefromstring(file_get_contents($sourcePath) ?: '');
     if (!$source) return ['created' => 0, 'reason' => 'UNSUPPORTED_IMAGE'];
@@ -4844,7 +4844,7 @@ function handle_api(string $path, string $method): void
         $installer = [
             'phpVersion' => PHP_VERSION,
             'sqlite' => extension_loaded('pdo_sqlite'),
-            'uploadsWritable' => is_writable(dirname(__DIR__) . '/uploads') || is_writable(dirname(__DIR__)),
+            'uploadsWritable' => is_writable(public_path('uploads')) || is_writable(public_root()),
             'storageWritable' => is_writable(private_storage_root()),
             'cronConfigured' => (bool) (env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret')),
             'adminUsers' => (int) $pdo->query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")->fetch()['count'],
@@ -5094,7 +5094,7 @@ function handle_api(string $path, string $method): void
         $installer = [
             'phpVersion' => PHP_VERSION,
             'sqlite' => extension_loaded('pdo_sqlite'),
-            'uploadsWritable' => is_writable(dirname(__DIR__) . '/uploads') || is_writable(dirname(__DIR__)),
+            'uploadsWritable' => is_writable(public_path('uploads')) || is_writable(public_root()),
             'storageWritable' => is_writable(private_storage_root()),
             'cronConfigured' => (bool) (env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret')),
             'adminUsers' => (int) $pdo->query("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")->fetch()['count'],
@@ -5136,7 +5136,7 @@ function handle_api(string $path, string $method): void
         $mime = $info['mime'] ?? '';
         if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_IMAGE', 'message' => 'Use JPG, PNG, WebP, or GIF.'], 400);
         $relativeDir = 'uploads/' . gmdate('Y/m');
-        $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+        $absoluteDir = public_path($relativeDir);
         if (!is_dir($absoluteDir)) mkdir($absoluteDir, 0775, true);
         $storedName = uuid_value('media-') . '.' . $allowed[$mime];
         $target = $absoluteDir . '/' . $storedName;

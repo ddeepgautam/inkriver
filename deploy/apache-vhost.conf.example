@@ -1,0 +1,19 @@
+<VirtualHost *:443>
+    ServerName your-domain.example
+    DocumentRoot "/var/www/inkriver/public"
+
+    <Directory "/var/www/inkriver">
+        Options -Indexes
+        AllowOverride None
+        Require all denied
+    </Directory>
+
+    <Directory "/var/www/inkriver/public">
+        Options -Indexes -MultiViews
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    # Configure your TLS certificate, logs, PHP handler, and trusted proxy
+    # settings here. Redirect the port 80 virtual host to HTTPS.
+</VirtualHost>

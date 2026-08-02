@@ -1,6 +1,7 @@
 data/*.sqlite
 data/*.sqlite-*
-uploads/*
+public/uploads/*
+!public/uploads/.htaccess
 storage/*
 private/*
 *.key
