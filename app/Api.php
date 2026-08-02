@@ -3535,10 +3535,12 @@ function deployment_command(array $command, int $timeoutSeconds = 120): array
     $stderr = '';
     $started = time();
     $timedOut = false;
+    $lastStatus = null;
     while (true) {
         $stdout .= stream_get_contents($pipes[1]) ?: '';
         $stderr .= stream_get_contents($pipes[2]) ?: '';
         $status = proc_get_status($process);
+        $lastStatus = $status;
         if (!$status['running']) break;
         if (time() - $started > $timeoutSeconds) {
             proc_terminate($process);
@@ -3552,6 +3554,9 @@ function deployment_command(array $command, int $timeoutSeconds = 120): array
     fclose($pipes[1]);
     fclose($pipes[2]);
     $code = proc_close($process);
+    if (!$timedOut && $code === -1 && is_array($lastStatus) && !($lastStatus['running'] ?? true) && ($lastStatus['exitcode'] ?? -1) >= 0) {
+        $code = (int) $lastStatus['exitcode'];
+    }
     if ($timedOut) {
         $code = 124;
         $stderr = trim($stderr . "\nCommand timed out after {$timeoutSeconds}s.");
