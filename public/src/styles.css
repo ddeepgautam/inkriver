@@ -7420,10 +7420,10 @@ button:disabled {
   pointer-events: none;
 }
 
-.admin-blog-search input {
+.admin-blog-search input:not([type="checkbox"]):not([type="radio"]) {
   width: 100%;
   min-height: 44px;
-  padding-left: 39px;
+  padding-left: 42px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);

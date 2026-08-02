@@ -1,5 +1,5 @@
-const CACHE = "inkriver-v38-editorial-experience";
-const CORE = ["/", "/index.html", "/src/app.js?v=20260802-editorial-experience-4", "/src/styles.css?v=20260802-editorial-experience-4", "/manifest.webmanifest", "/src/icon.svg"];
+const CACHE = "inkriver-v39-admin-blog-search-spacing";
+const CORE = ["/", "/index.html", "/src/app.js?v=20260802-editorial-experience-4", "/src/styles.css?v=20260802-admin-blog-search-spacing-1", "/manifest.webmanifest", "/src/icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));
