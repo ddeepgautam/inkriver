@@ -106,6 +106,11 @@ $resourceCheckout = authoritative_payment_checkout(['amount' => 1, 'currency' =>
 assert_true(($resourceCheckout['payment']['amount'] ?? 0) === 7500, 'resource checkout uses server-owned discounted pricing instead of client amount');
 $publicResource = public_resource($resourceRow, null);
 assert_true(!array_key_exists('protectedStorageKey', $publicResource) && !array_key_exists('originalFilename', $publicResource) && !str_contains(json_encode($publicResource), 'private-random.bin'), 'public resource payload never exposes protected storage paths or original filenames');
+assert_true(resource_public_url('javascript:alert(1)') === '' && resource_public_url('/samples/demo.pdf') === '/samples/demo.pdf' && resource_public_url('https://cdn.example.test/demo.pdf') !== '', 'resource media and sample URLs reject executable schemes');
+$resourceFrontend = file_get_contents($root . '/public/src/app.js') ?: '';
+assert_true(str_contains($resourceFrontend, 'View demo / sample') && str_contains($resourceFrontend, 'resource.sampleUrl ?'), 'resource detail page conditionally renders a visible demo/sample action');
+$resourceBackend = file_get_contents($root . '/app/Resources.php') ?: '';
+assert_true(str_contains($resourceBackend, "resource_store_thumbnail_upload") && str_contains($resourceBackend, "thumbnailFile"), 'resource admin supports validated thumbnail file uploads');
 $pdo->prepare("INSERT INTO payments (id, user_id, provider, purpose, amount, currency, status, metadata, created_at, updated_at) VALUES ('PAY-RESOURCE-SMOKE', 'USR-SMOKE-WRITER', 'razorpay', 'Resource: Secure Resource', 7500, 'INR', 'paid', ?, ?, ?)")
     ->execute([json_encode(['kind' => 'resource', 'resourceId' => 'RES-SMOKE-PAID']), $now, $now]);
 resource_grant_paid_entitlement(['id' => 'PAY-RESOURCE-SMOKE', 'user_id' => 'USR-SMOKE-WRITER', 'amount' => 7500, 'currency' => 'INR'], ['kind' => 'resource', 'resourceId' => 'RES-SMOKE-PAID']);

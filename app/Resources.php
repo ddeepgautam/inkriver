@@ -39,12 +39,12 @@ function public_resource(array $row, ?array $session = null, bool $admin = false
         'id' => $row['id'], 'slug' => $row['slug'], 'name' => $row['name'],
         'shortDescription' => $row['short_description'], 'description' => $row['description'],
         'category' => $row['category'], 'type' => $row['resource_type'], 'accessKind' => $row['access_kind'],
-        'thumbnailUrl' => $row['thumbnail_url'], 'previewImages' => resource_json_list($row['preview_images_json']),
+        'thumbnailUrl' => resource_public_url((string) $row['thumbnail_url']), 'previewImages' => resource_json_list($row['preview_images_json']),
         'tags' => resource_json_list($row['tags_json']), 'includes' => resource_json_list($row['includes_json']),
         'instructions' => $row['instructions'], 'audience' => $row['audience'], 'version' => $row['version'],
         'priceType' => $row['price_type'], 'regularPrice' => $regular, 'price' => $effective,
         'discountedPrice' => $row['discounted_price'] === null ? null : (int) $row['discounted_price'],
-        'currency' => $row['currency'], 'sampleUrl' => $row['sample_url'], 'status' => $row['status'],
+        'currency' => $row['currency'], 'sampleUrl' => resource_public_url((string) $row['sample_url']), 'status' => $row['status'],
         'accessDisabled' => (bool) $row['access_disabled'], 'fileSize' => (int) $row['file_size'],
         'hasProtectedFile' => !empty($row['protected_storage_key']), 'hasExternalAccess' => !empty($row['external_url']),
         'owned' => (bool) $owned, 'entitlementStatus' => $entitlement['status'] ?? null,
@@ -85,6 +85,35 @@ function resource_store_private_upload(string $field = 'resourceFile'): ?array
     if (!move_uploaded_file($file['tmp_name'], $target)) json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not store the resource file.'], 500);
     @chmod($target, 0600);
     return ['key' => str_replace(DIRECTORY_SEPARATOR, '/', $dirRelative . DIRECTORY_SEPARATOR . $stored), 'name' => substr(basename((string) $file['name']), 0, 240), 'mime' => substr($mime, 0, 160), 'size' => (int) $file['size']];
+}
+
+function resource_store_thumbnail_upload(string $field = 'thumbnailFile'): ?string
+{
+    if (empty($_FILES[$field]) || !is_uploaded_file($_FILES[$field]['tmp_name'])) return null;
+    $file = $_FILES[$field];
+    if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) json_response(['error' => 'THUMBNAIL_UPLOAD_FAILED', 'message' => 'The thumbnail upload failed.'], 400);
+    if ((int) $file['size'] < 1 || (int) $file['size'] > 8 * 1024 * 1024) json_response(['error' => 'THUMBNAIL_TOO_LARGE', 'message' => 'Thumbnail images must be 8 MB or smaller.'], 413);
+    $info = getimagesize($file['tmp_name']);
+    if (!$info || !image_dimensions_are_safe($info)) json_response(['error' => 'INVALID_THUMBNAIL', 'message' => 'Choose a valid image with safe dimensions.'], 400);
+    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    $mime = (string) ($info['mime'] ?? '');
+    if (!isset($allowed[$mime])) json_response(['error' => 'UNSUPPORTED_THUMBNAIL', 'message' => 'Use JPG, PNG, WebP, or GIF for resource thumbnails.'], 400);
+    $relativeDir = 'uploads/resources/' . gmdate('Y/m');
+    $absoluteDir = public_path($relativeDir);
+    if (!is_dir($absoluteDir) && !mkdir($absoluteDir, 0775, true) && !is_dir($absoluteDir)) json_response(['error' => 'THUMBNAIL_STORAGE_UNAVAILABLE', 'message' => 'Thumbnail storage is unavailable.'], 500);
+    $filename = uuid_value('resource-thumb-') . '.' . $allowed[$mime];
+    $target = $absoluteDir . DIRECTORY_SEPARATOR . $filename;
+    if (!move_uploaded_file($file['tmp_name'], $target)) json_response(['error' => 'THUMBNAIL_STORE_FAILED', 'message' => 'Could not store the thumbnail image.'], 500);
+    return '/' . str_replace('\\', '/', $relativeDir) . '/' . $filename;
+}
+
+function resource_public_url(string $value): string
+{
+    $value = trim($value);
+    if ($value === '') return '';
+    if (preg_match('#^https?://#i', $value)) return substr($value, 0, 1000);
+    if (str_starts_with($value, '/') && !str_starts_with($value, '//')) return substr($value, 0, 1000);
+    return '';
 }
 
 function resource_request_body(): array
@@ -132,14 +161,14 @@ function resource_clean_fields(array $body, ?array $existing = null): array
         'description' => substr(trim((string) $get('description')), 0, 30000),
         'category' => substr(trim((string) $get('category', 'General')) ?: 'General', 0, 100),
         'resource_type' => $type, 'access_kind' => $accessKind,
-        'thumbnail_url' => substr(trim((string) $get('thumbnailUrl')), 0, 1000),
+        'thumbnail_url' => resource_public_url((string) $get('thumbnailUrl')),
         'preview_images_json' => $list($get('previewImages', [])), 'tags_json' => $list($get('tags', [])),
         'includes_json' => $list($get('includes', [])), 'instructions' => substr(trim((string) $get('instructions')), 0, 20000),
         'audience' => substr(trim((string) $get('audience')), 0, 4000), 'version' => substr(trim((string) $get('version', '1.0')) ?: '1.0', 0, 40),
         'price_type' => $priceType, 'regular_price' => $regular, 'discounted_price' => $discount,
         'currency' => preg_match('/^[A-Z]{3}$/', strtoupper((string) $get('currency', 'INR'))) ? strtoupper((string) $get('currency', 'INR')) : 'INR',
         'external_url' => (($external = substr(trim((string) $get('externalUrl')), 0, 2000)) && preg_match('#^https?://#i', $external)) ? $external : null,
-        'sample_url' => substr(trim((string) $get('sampleUrl')), 0, 1000), 'status' => $status,
+        'sample_url' => resource_public_url((string) $get('sampleUrl')), 'status' => $status,
         'access_disabled' => filter_var($get('accessDisabled', false), FILTER_VALIDATE_BOOL) ? 1 : 0,
         'single_use_links' => filter_var($get('singleUseLinks', false), FILTER_VALIDATE_BOOL) ? 1 : 0,
         'download_limit_per_hour' => max(1, min(500, (int) $get('downloadLimitPerHour', 20))),
@@ -339,6 +368,8 @@ function handle_resources_api(string $path, string $method): void
         $body = resource_request_body();
         $fields = resource_clean_fields($body);
         $upload = resource_store_private_upload();
+        $thumbnailUrl = resource_store_thumbnail_upload();
+        if ($thumbnailUrl !== null) $fields['thumbnail_url'] = $thumbnailUrl;
         if (!$upload && empty($fields['external_url'])) json_response(['error' => 'RESOURCE_ACCESS_TARGET_REQUIRED', 'message' => 'Upload a protected file or provide an external access URL.'], 400);
         $slugCheck = $pdo->prepare('SELECT id FROM resources WHERE slug = ? LIMIT 1'); $slugCheck->execute([$fields['slug']]);
         if ($slugCheck->fetch()) json_response(['error' => 'RESOURCE_SLUG_EXISTS', 'message' => 'Choose a unique resource slug.'], 409);
@@ -359,6 +390,8 @@ function handle_resources_api(string $path, string $method): void
         $body = resource_request_body();
         $fields = resource_clean_fields($body, $row);
         $upload = resource_store_private_upload();
+        $thumbnailUrl = resource_store_thumbnail_upload();
+        if ($thumbnailUrl !== null) $fields['thumbnail_url'] = $thumbnailUrl;
         if (!$upload && empty($fields['external_url']) && empty($row['protected_storage_key'])) json_response(['error' => 'RESOURCE_ACCESS_TARGET_REQUIRED', 'message' => 'Keep a protected file or provide an external access URL.'], 400);
         $slugCheck = $pdo->prepare('SELECT id FROM resources WHERE slug = ? AND id != ? LIMIT 1'); $slugCheck->execute([$fields['slug'], $row['id']]);
         if ($slugCheck->fetch()) json_response(['error' => 'RESOURCE_SLUG_EXISTS', 'message' => 'Choose a unique resource slug.'], 409);

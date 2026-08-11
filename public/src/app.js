@@ -4037,7 +4037,8 @@ function resourceDetailTemplate(resource) {
   if (!resource) return `<main class="resources-page"><div class="resource-empty"><h1>Resource unavailable</h1><p>This resource may be unpublished or no longer available.</p><button class="secondary-button" data-route="/resources">Browse resources</button></div></main>`;
   const price = resource.priceType === "free" ? "Free" : resourceMoney(resource.price, resource.currency);
   const discounted = resource.priceType === "paid" && resource.discountedPrice !== null && resource.discountedPrice < resource.regularPrice;
-  const cta = resource.owned ? `<button class="primary-button wide-button" data-resource-access="${resource.id}">${icon(resource.accessKind === "download" ? "upload" : "play", 16)}${resourcePrimaryLabel(resource)}</button><span class="resource-owned-note">${icon("check", 14)}Already in your library</span>` : `<button class="primary-button wide-button" data-resource-acquire="${resource.id}">${resource.priceType === "free" ? "Get free resource" : "Buy now"}</button><small>Login required · Added to My Resources</small>`;
+  const ownershipCta = resource.owned ? `<button class="primary-button wide-button" data-resource-access="${resource.id}">${icon(resource.accessKind === "download" ? "upload" : "play", 16)}${resourcePrimaryLabel(resource)}</button><span class="resource-owned-note">${icon("check", 14)}Already in your library</span>` : `<button class="primary-button wide-button" data-resource-acquire="${resource.id}">${resource.priceType === "free" ? "Get free resource" : "Buy now"}</button><small>Login required · Added to My Resources</small>`;
+  const cta = `${resource.sampleUrl ? `<a class="secondary-button wide-button resource-sample-button" href="${escapeHtml(resource.sampleUrl)}" target="_blank" rel="noopener noreferrer">${icon("eye", 16)}View demo / sample</a>` : ""}${ownershipCta}`;
   return `<main class="resource-detail-page"><button class="back-link" data-route="/resources">${icon("chevronLeft", 14)}Back to marketplace</button><section class="resource-detail-hero"><div class="resource-detail-gallery">${resource.thumbnailUrl ? `<img class="resource-featured-image" src="${escapeHtml(resource.thumbnailUrl)}" alt="${escapeHtml(resource.name)}" />` : `<div class="resource-featured-placeholder">${icon("spark", 44)}<span>${escapeHtml(resource.type)}</span></div>`}<div class="resource-preview-strip">${(resource.previewImages || []).map((url, index) => `<img src="${escapeHtml(url)}" alt="Preview ${index + 1} of ${escapeHtml(resource.name)}" loading="lazy" />`).join("")}</div></div><div class="resource-detail-copy"><div class="resource-badges"><span>${escapeHtml(resource.category)}</span><span>${escapeHtml(resource.type)}</span><span>v${escapeHtml(resource.version)}</span></div><h1>${escapeHtml(resource.name)}</h1><p class="resource-lead">${escapeHtml(resource.shortDescription)}</p><div class="resource-price"><strong>${price}</strong>${discounted ? `<del>${resourceMoney(resource.regularPrice, resource.currency)}</del><span>Save ${resourceMoney(resource.regularPrice - resource.price, resource.currency)}</span>` : ""}</div><div class="resource-detail-cta">${cta}</div><div class="resource-security-note">${icon("shield", 18)}<span><strong>Protected delivery</strong>Access is checked against your account every time. Permanent file URLs are never exposed.</span></div></div></section><section class="resource-detail-content"><article><h2>About this resource</h2><div class="resource-description">${escapeHtml(resource.description).replaceAll("\n", "<br>")}</div>${resource.audience ? `<h2>Who it is useful for</h2><p>${escapeHtml(resource.audience)}</p>` : ""}${resource.instructions ? `<h2>How to use it</h2><p>${escapeHtml(resource.instructions).replaceAll("\n", "<br>")}</p>` : ""}</article><aside><div class="work-panel"><h2>What’s included</h2><ul>${(resource.includes || []).map((item) => `<li>${icon("check", 14)}${escapeHtml(item)}</li>`).join("") || `<li>${icon("check", 14)}${escapeHtml(resource.type)} resource</li>`}<li>${icon("check", 14)}Access to eligible updates</li><li>${icon("check", 14)}Repeat access from your library</li></ul></div><div class="work-panel resource-facts"><span><b>Format</b>${escapeHtml(resource.type)}</span><span><b>Version</b>${escapeHtml(resource.version)}</span><span><b>Last updated</b>${new Date(resource.updatedAt).toLocaleDateString("en-IN")}</span>${resource.sampleUrl ? `<a href="${escapeHtml(resource.sampleUrl)}" target="_blank" rel="noopener noreferrer">Open sample ${icon("link", 13)}</a>` : ""}</div></aside></section></main>`;
 }
 
@@ -7287,7 +7288,26 @@ function bindInputs() {
     const open = () => inspectAdminResource(resourceId);
     ownerCell.addEventListener("click", open); ownerCell.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
   });
-  document.getElementById("resourceAdminForm")?.addEventListener("submit", (event) => { event.preventDefault(); saveAdminResource(event.currentTarget); });
+  const resourceAdminForm = document.getElementById("resourceAdminForm");
+  const thumbnailUrlInput = resourceAdminForm?.querySelector('input[name="thumbnailUrl"]');
+  if (thumbnailUrlInput) {
+    const uploadLabel = document.createElement("label");
+    uploadLabel.className = "wide resource-thumbnail-upload";
+    uploadLabel.innerHTML = '<span>Upload thumbnail / featured image</span><input name="thumbnailFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif" /><small>JPG, PNG, WebP, or GIF · Maximum 8 MB</small><img class="resource-thumbnail-preview" alt="Thumbnail preview" hidden />';
+    thumbnailUrlInput.closest("label")?.after(uploadLabel);
+    const fileInput = uploadLabel.querySelector('input[type="file"]');
+    const preview = uploadLabel.querySelector(".resource-thumbnail-preview");
+    let previewObjectUrl = "";
+    if (thumbnailUrlInput.value.trim()) { preview.src = thumbnailUrlInput.value.trim(); preview.hidden = false; }
+    thumbnailUrlInput.addEventListener("input", () => { if (fileInput?.files?.length) return; const url = thumbnailUrlInput.value.trim(); preview.hidden = !url; if (url) preview.src = url; else preview.removeAttribute("src"); });
+    fileInput?.addEventListener("change", () => {
+      const file = fileInput.files?.[0];
+      if (!file) { const url = thumbnailUrlInput.value.trim(); preview.hidden = !url; if (url) preview.src = url; else preview.removeAttribute("src"); return; }
+      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+      previewObjectUrl = URL.createObjectURL(file); preview.src = previewObjectUrl; preview.hidden = false;
+    });
+  }
+  resourceAdminForm?.addEventListener("submit", (event) => { event.preventDefault(); saveAdminResource(event.currentTarget); });
   document.getElementById("resourceSearch")?.addEventListener("input", (event) => { state.resourceFilters.q = event.target.value; render(); document.getElementById("resourceSearch")?.focus(); });
   [["resourceCategoryFilter", "category"], ["resourceTypeFilter", "type"], ["resourcePriceFilter", "price"], ["resourceSort", "sort"]].forEach(([id, key]) => document.getElementById(id)?.addEventListener("change", (event) => { state.resourceFilters[key] = event.target.value; render(); }));
   document.getElementById("adminBlogSearch")?.addEventListener("input", (event) => {
