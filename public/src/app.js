@@ -1309,6 +1309,8 @@ async function hydratePlatformState() {
   state.socialAccounts = payload.socialAccounts || [];
   state.adCampaigns = payload.ads || state.adCampaigns;
   await loadPlatformAddons();
+  await loadResources();
+  if (state.user) await loadResourceLibrary();
 
   if (["moderator", "admin"].includes(state.user?.role)) {
     await loadAdminOperationalData();
@@ -1316,6 +1318,7 @@ async function hydratePlatformState() {
   if (state.user?.role === "admin") {
     await loadAdminCommerceData();
     await loadProductionSuite();
+    await loadAdminResources();
     if (!Array.isArray(documents.stories) || !documents.stories.length) persistAdminDocument("stories", state.stories);
     if (!Array.isArray(documents.categories) || !documents.categories.length) persistAdminDocument("categories", state.categories);
     if (!Array.isArray(documents.plans) || !documents.plans.length) persistAdminDocument("plans", state.plans);
@@ -1762,6 +1765,18 @@ const state = {
   checkoutPlan: null,
   copiedShare: "",
   paymentMessage: "",
+  resources: [],
+  resourceCategories: [],
+  resourceLibrary: [],
+  resourceOrders: [],
+  selectedResource: null,
+  resourceFilters: { q: "", category: "", type: "", price: "", sort: "recent" },
+  resourceMessage: "",
+  resourceBusy: false,
+  resourceCheckout: null,
+  adminResources: [],
+  adminResourceDetail: null,
+  resourceEditor: emptyResourceEditor(),
   gatewaySettingsSaved: false,
   providerStatus: {
     payments: { razorpay: false, paypal: false, payu: false, cashfree: false },
@@ -2899,6 +2914,7 @@ async function submitAuthentication() {
     state.loginMessage = registering ? "Account created securely." : "Signed in successfully.";
     if (payload.user.role === "admin") await loadAdminUsers();
     if (state.pendingBusinessListing) continueBusinessListingIntent();
+    else if (sessionStorage.getItem("inkriver-resource-return")) { const returnTo = sessionStorage.getItem("inkriver-resource-return"); sessionStorage.removeItem("inkriver-resource-return"); state.onboardingOpen = false; setRoute(returnTo); }
     else if (!state.onboardingOpen) setRoute(payload.user.role === "admin" ? "/admin" : "/dashboard");
     else render();
   } catch (error) {
@@ -3822,12 +3838,17 @@ function appTemplate() {
   const selectedList = state.path.startsWith("/lists/") ? publicCuratedLists().find((list) => list.id === state.path.split("/").pop()) : null;
   const selectedPublication = state.path.startsWith("/publications/") ? state.publications.find((publication) => publication.slug === decodeURIComponent(state.path.split("/").pop() || "")) : null;
   const inviteToken = state.path.startsWith("/publication-invites/") ? decodeURIComponent(state.path.split("/").pop() || "") : "";
+  const selectedResource = state.path.startsWith("/resources/") ? state.resources.find((resource) => resource.slug === decodeURIComponent(state.path.split("/").pop() || "")) || state.selectedResource : null;
   return `
     <div class="app-shell">
       ${headerTemplate()}
       ${
         selectedStory
           ? storyPageTemplate(selectedStory)
+          : state.path.startsWith("/resources/")
+            ? resourceDetailTemplate(selectedResource)
+          : state.path === "/resources"
+            ? resourcesMarketplaceTemplate()
           : inviteToken
             ? publicationInviteTemplate(inviteToken)
           : selectedProfile
@@ -3878,6 +3899,8 @@ function appTemplate() {
       }
       ${footerTemplate()}
       ${state.checkoutPlan ? checkoutTemplate(state.checkoutPlan) : ""}
+      ${state.resourceCheckout ? resourceCheckoutTemplate(state.resourceCheckout) : ""}
+      ${state.adminResourceDetail ? adminResourceDetailTemplate(state.adminResourceDetail) : ""}
       ${state.loginOpen ? loginTemplate() : ""}
       ${state.onboardingOpen ? onboardingTemplate() : ""}
       ${state.adminModal.type ? adminModalTemplate() : ""}
@@ -3890,6 +3913,9 @@ function adminRouteTemplate() {
   const businessModerator = state.path.startsWith("/admin/business-network") && state.user?.role === "moderator";
   if (state.user?.role !== "admin" && !businessModerator) return accessDeniedTemplate("Administrator access is required.");
   if (state.path.startsWith("/admin/business-network")) return adminBusinessNetworkTemplate();
+  if (state.path === "/admin/resources/new") { if (state.resourceEditor.id) state.resourceEditor = emptyResourceEditor(); return adminResourceEditorTemplate(); }
+  if (state.path.startsWith("/admin/resources/edit/")) return adminResourceEditorTemplate();
+  if (state.path.startsWith("/admin/resources")) return adminResourcesTemplate();
   if (state.path === "/admin/blogs/new") {
     if (state.editingBlogId) {
       state.editingBlogId = "";
@@ -3936,6 +3962,132 @@ function notificationItemsTemplate(limit = 5) {
   return items.map((item) => `<button class="notification-item ${item.read_at ? "" : "unread"}" data-notification-id="${escapeHtml(item.id)}" data-notification-route="${escapeHtml(item.url || "/dashboard")}"><span class="notification-item-icon">${icon(item.type?.startsWith("business") ? "gauge" : "bell", 16)}</span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.body || item.type)}</small><time datetime="${escapeHtml(item.created_at)}">${new Date(item.created_at).toLocaleString("en-IN")}</time></span>${item.read_at ? "" : `<i aria-label="Unread notification"></i>`}</button>`).join("") || `<div class="notification-empty">You’re all caught up.</div>`;
 }
 
+function emptyResourceEditor() {
+  return { id: "", slug: "", name: "", shortDescription: "", description: "", category: "General", type: "file", accessKind: "download", thumbnailUrl: "", previewImagesText: "", tagsText: "", includesText: "", instructions: "", audience: "", version: "1.0", priceType: "free", regularPrice: 0, discountedPrice: "", currency: "INR", externalUrl: "", sampleUrl: "", status: "draft", accessDisabled: false, singleUseLinks: false, downloadLimitPerHour: 20, releaseNotes: "" };
+}
+
+async function loadResources() {
+  try {
+    const payload = await apiRequest("/api/resources");
+    state.resources = payload.resources || [];
+    state.resourceCategories = payload.categories || [];
+    const slug = state.path.startsWith("/resources/") ? decodeURIComponent(state.path.split("/").filter(Boolean).pop() || "") : "";
+    state.selectedResource = slug ? state.resources.find((item) => item.slug === slug) || null : null;
+  } catch (error) {
+    state.resourceMessage = error.message;
+  }
+}
+
+async function loadResourceLibrary() {
+  if (!state.user) return;
+  try {
+    const [library, orders] = await Promise.all([apiRequest("/api/me/resources"), apiRequest("/api/me/resource-orders")]);
+    state.resourceLibrary = library.resources || [];
+    state.resourceOrders = orders.orders || [];
+    const owned = new Map(state.resourceLibrary.map((item) => [item.id, item]));
+    state.resources = state.resources.map((item) => owned.has(item.id) ? { ...item, ...owned.get(item.id), owned: true } : item);
+    if (state.selectedResource && owned.has(state.selectedResource.id)) state.selectedResource = { ...state.selectedResource, ...owned.get(state.selectedResource.id), owned: true };
+  } catch (error) {
+    state.resourceMessage = error.message;
+  }
+}
+
+async function loadAdminResources() {
+  if (state.user?.role !== "admin") return;
+  try {
+    const payload = await apiRequest("/api/admin/resources");
+    state.adminResources = payload.resources || [];
+  } catch (error) {
+    state.resourceMessage = error.message;
+  }
+}
+
+function resourceMoney(amount, currency = "INR") {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency, maximumFractionDigits: 2 }).format(Number(amount || 0) / 100);
+}
+
+function resourcePrimaryLabel(resource) {
+  return { download: "Download", view: "View resource", watch: "Watch", copy: "View & copy", open: resource.type === "app" ? "Access app" : "Open resource" }[resource.accessKind] || "Access resource";
+}
+
+function filteredResources() {
+  const f = state.resourceFilters;
+  const q = f.q.trim().toLowerCase();
+  const items = state.resources.filter((item) => (!q || `${item.name} ${item.shortDescription} ${item.category} ${item.type} ${(item.tags || []).join(" ")}`.toLowerCase().includes(q)) && (!f.category || item.category === f.category) && (!f.type || item.type === f.type) && (!f.price || item.priceType === f.price));
+  return items.sort((a, b) => f.sort === "az" ? a.name.localeCompare(b.name) : f.sort === "price-low" ? a.price - b.price : new Date(b.updatedAt) - new Date(a.updatedAt));
+}
+
+function resourceCardTemplate(resource) {
+  const price = resource.priceType === "free" ? "Free" : resourceMoney(resource.price, resource.currency);
+  return `<article class="resource-card">
+    <button class="resource-card-media" data-route="/resources/${escapeHtml(resource.slug)}" aria-label="View ${escapeHtml(resource.name)}">${resource.thumbnailUrl ? `<img src="${escapeHtml(resource.thumbnailUrl)}" alt="" loading="lazy" decoding="async" />` : `<span>${icon(resource.accessKind === "watch" ? "play" : resource.accessKind === "download" ? "upload" : "spark", 30)}</span>`}<i>${escapeHtml(resource.type)}</i></button>
+    <div class="resource-card-body"><div class="resource-card-meta"><span>${escapeHtml(resource.category)}</span><b class="${resource.priceType}">${price}</b></div><h2><button data-route="/resources/${escapeHtml(resource.slug)}">${escapeHtml(resource.name)}</button></h2><p>${escapeHtml(resource.shortDescription)}</p><div class="resource-card-foot"><small>Version ${escapeHtml(resource.version)} · Updated ${new Date(resource.updatedAt).toLocaleDateString("en-IN")}</small>${resource.owned ? `<button class="secondary-button" data-resource-access="${resource.id}">${resourcePrimaryLabel(resource)}</button>` : `<button class="primary-button" data-route="/resources/${escapeHtml(resource.slug)}">View details</button>`}</div></div>
+  </article>`;
+}
+
+function resourcesMarketplaceTemplate() {
+  const items = filteredResources();
+  const types = [...new Set(state.resources.map((item) => item.type))].sort();
+  return `<main class="resources-page"><section class="resources-hero"><span class="eyebrow">Resources Marketplace</span><h1>Practical resources for better work.</h1><p>Discover templates, prompts, guides, tools, and downloadable files. Sign in once to keep every free claim and purchase in your personal library.</p><div class="resources-trust"><span>${icon("lock", 16)}Protected account access</span><span>${icon("check", 16)}Free and paid resources</span><span>${icon("upload", 16)}Latest versions included</span></div></section>
+    <section class="resource-filter-bar" aria-label="Resource filters"><label class="resource-search">${icon("search", 17)}<input id="resourceSearch" value="${escapeHtml(state.resourceFilters.q)}" placeholder="Search resources" /></label><label><span class="sr-only">Category</span><select id="resourceCategoryFilter"><option value="">All categories</option>${state.resourceCategories.map((category) => `<option ${state.resourceFilters.category === category ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}</select></label><label><span class="sr-only">Type</span><select id="resourceTypeFilter"><option value="">All formats</option>${types.map((type) => `<option ${state.resourceFilters.type === type ? "selected" : ""}>${escapeHtml(type)}</option>`).join("")}</select></label><label><span class="sr-only">Price</span><select id="resourcePriceFilter"><option value="">Free & paid</option><option value="free" ${state.resourceFilters.price === "free" ? "selected" : ""}>Free</option><option value="paid" ${state.resourceFilters.price === "paid" ? "selected" : ""}>Paid</option></select></label><label><span class="sr-only">Sort</span><select id="resourceSort"><option value="recent">Recently updated</option><option value="az" ${state.resourceFilters.sort === "az" ? "selected" : ""}>A–Z</option><option value="price-low" ${state.resourceFilters.sort === "price-low" ? "selected" : ""}>Price: low to high</option></select></label></section>
+    ${state.resourceMessage ? `<div class="payment-message" role="status">${escapeHtml(state.resourceMessage)}</div>` : ""}<section class="resource-results-head"><div><h2>${items.length} resources</h2><p>Files remain private until your account is authorized.</p></div>${state.user ? `<button class="secondary-button" data-route="/dashboard" data-dashboard-section="resources">${icon("bookmark", 15)}My Resources</button>` : ""}</section><section class="resource-grid">${items.map(resourceCardTemplate).join("") || `<div class="resource-empty"><span>${icon("search", 25)}</span><h2>No resources found</h2><p>Try clearing a filter or using a broader search.</p></div>`}</section></main>`;
+}
+
+function resourceDetailTemplate(resource) {
+  if (!resource) return `<main class="resources-page"><div class="resource-empty"><h1>Resource unavailable</h1><p>This resource may be unpublished or no longer available.</p><button class="secondary-button" data-route="/resources">Browse resources</button></div></main>`;
+  const price = resource.priceType === "free" ? "Free" : resourceMoney(resource.price, resource.currency);
+  const discounted = resource.priceType === "paid" && resource.discountedPrice !== null && resource.discountedPrice < resource.regularPrice;
+  const cta = resource.owned ? `<button class="primary-button wide-button" data-resource-access="${resource.id}">${icon(resource.accessKind === "download" ? "upload" : "play", 16)}${resourcePrimaryLabel(resource)}</button><span class="resource-owned-note">${icon("check", 14)}Already in your library</span>` : `<button class="primary-button wide-button" data-resource-acquire="${resource.id}">${resource.priceType === "free" ? "Get free resource" : "Buy now"}</button><small>Login required · Added to My Resources</small>`;
+  return `<main class="resource-detail-page"><button class="back-link" data-route="/resources">${icon("chevronLeft", 14)}Back to marketplace</button><section class="resource-detail-hero"><div class="resource-detail-gallery">${resource.thumbnailUrl ? `<img class="resource-featured-image" src="${escapeHtml(resource.thumbnailUrl)}" alt="${escapeHtml(resource.name)}" />` : `<div class="resource-featured-placeholder">${icon("spark", 44)}<span>${escapeHtml(resource.type)}</span></div>`}<div class="resource-preview-strip">${(resource.previewImages || []).map((url, index) => `<img src="${escapeHtml(url)}" alt="Preview ${index + 1} of ${escapeHtml(resource.name)}" loading="lazy" />`).join("")}</div></div><div class="resource-detail-copy"><div class="resource-badges"><span>${escapeHtml(resource.category)}</span><span>${escapeHtml(resource.type)}</span><span>v${escapeHtml(resource.version)}</span></div><h1>${escapeHtml(resource.name)}</h1><p class="resource-lead">${escapeHtml(resource.shortDescription)}</p><div class="resource-price"><strong>${price}</strong>${discounted ? `<del>${resourceMoney(resource.regularPrice, resource.currency)}</del><span>Save ${resourceMoney(resource.regularPrice - resource.price, resource.currency)}</span>` : ""}</div><div class="resource-detail-cta">${cta}</div><div class="resource-security-note">${icon("shield", 18)}<span><strong>Protected delivery</strong>Access is checked against your account every time. Permanent file URLs are never exposed.</span></div></div></section><section class="resource-detail-content"><article><h2>About this resource</h2><div class="resource-description">${escapeHtml(resource.description).replaceAll("\n", "<br>")}</div>${resource.audience ? `<h2>Who it is useful for</h2><p>${escapeHtml(resource.audience)}</p>` : ""}${resource.instructions ? `<h2>How to use it</h2><p>${escapeHtml(resource.instructions).replaceAll("\n", "<br>")}</p>` : ""}</article><aside><div class="work-panel"><h2>What’s included</h2><ul>${(resource.includes || []).map((item) => `<li>${icon("check", 14)}${escapeHtml(item)}</li>`).join("") || `<li>${icon("check", 14)}${escapeHtml(resource.type)} resource</li>`}<li>${icon("check", 14)}Access to eligible updates</li><li>${icon("check", 14)}Repeat access from your library</li></ul></div><div class="work-panel resource-facts"><span><b>Format</b>${escapeHtml(resource.type)}</span><span><b>Version</b>${escapeHtml(resource.version)}</span><span><b>Last updated</b>${new Date(resource.updatedAt).toLocaleDateString("en-IN")}</span>${resource.sampleUrl ? `<a href="${escapeHtml(resource.sampleUrl)}" target="_blank" rel="noopener noreferrer">Open sample ${icon("link", 13)}</a>` : ""}</div></aside></section></main>`;
+}
+
+function resourceCheckoutTemplate(resource) {
+  const gateways = visiblePaymentGateways();
+  return `<div class="modal-backdrop"><section class="resource-checkout-modal" role="dialog" aria-modal="true" aria-labelledby="resource-checkout-title"><button class="modal-close" data-action="close-resource-checkout" aria-label="Close">${icon("close", 18)}</button><span class="eyebrow">Secure checkout</span><h2 id="resource-checkout-title">${escapeHtml(resource.name)}</h2><div class="resource-checkout-price"><span>Total</span><strong>${resourceMoney(resource.price, resource.currency)}</strong></div><fieldset><legend>Payment method</legend>${gateways.map((gateway) => `<button class="gateway-choice ${state.gateway === gateway.id ? "active" : ""}" data-resource-gateway="${gateway.id}" ${state.providerStatus.payments[gateway.id] ? "" : "disabled"}><strong>${escapeHtml(gateway.name)}</strong><small>${state.providerStatus.payments[gateway.id] ? "Available" : "Not configured"}</small></button>`).join("")}</fieldset>${state.resourceMessage ? `<div class="payment-message">${escapeHtml(state.resourceMessage)}</div>` : ""}<button class="primary-button wide-button" data-resource-pay="${resource.id}" ${state.resourceBusy ? "disabled" : ""}>${state.resourceBusy ? "Creating secure order…" : `Pay ${resourceMoney(resource.price, resource.currency)}`}</button><small class="resource-checkout-security">${icon("lock", 13)}Access is added only after server-side payment verification.</small></section></div>`;
+}
+
+async function acquireResource(resourceId) {
+  const resource = state.resources.find((item) => item.id === resourceId) || state.selectedResource;
+  if (!resource) return;
+  if (!state.user) {
+    sessionStorage.setItem("inkriver-resource-return", `/resources/${resource.slug}`);
+    state.authMode = "login"; state.loginOpen = true; state.loginMessage = "Sign in or create an account to add this resource to your library."; render(); return;
+  }
+  if (resource.owned) return accessResource(resource.id);
+  if (resource.priceType === "free") {
+    state.resourceBusy = true; state.resourceMessage = "Adding this resource to your library…"; render();
+    try { const payload = await apiRequest(`/api/resources/${encodeURIComponent(resource.id)}/claim`, { method: "POST", body: "{}" }); state.selectedResource = payload.resource; await loadResources(); await loadResourceLibrary(); state.resourceMessage = "Added to My Resources. You can access it again at any time."; }
+    catch (error) { state.resourceMessage = error.message; }
+    state.resourceBusy = false; render(); return;
+  }
+  state.resourceCheckout = resource; state.resourceMessage = ""; render();
+}
+
+async function accessResource(resourceId) {
+  if (!state.user) return acquireResource(resourceId);
+  state.resourceBusy = true; state.resourceMessage = "Authorizing secure access…"; render();
+  try { const payload = await apiRequest(`/api/resources/${encodeURIComponent(resourceId)}/access`, { method: "POST", body: "{}" }); window.location.assign(payload.accessUrl); }
+  catch (error) { state.resourceMessage = error.message; state.resourceBusy = false; render(); }
+}
+
+async function payForResource(resourceId) {
+  const resource = state.resources.find((item) => item.id === resourceId) || state.resourceCheckout;
+  const gateway = visiblePaymentGateways().find((item) => item.id === state.gateway) || visiblePaymentGateways()[0];
+  if (!resource || !gateway) return;
+  if (!state.providerStatus.payments[gateway.id]) { state.resourceMessage = `${gateway.name} is not configured.`; render(); return; }
+  state.resourceBusy = true; state.resourceMessage = `Creating a secure ${gateway.name} order…`; render();
+  try {
+    const order = await apiRequest("/api/payments/orders", { method: "POST", body: JSON.stringify({ provider: gateway.id, currency: resource.currency, clientHints: clientLocationHints(), metadata: { kind: "resource", resourceId: resource.id } }) });
+    if (gateway.id === "razorpay") {
+      await loadScript("https://checkout.razorpay.com/v1/checkout.js");
+      new window.Razorpay({ key: order.checkout.key, order_id: order.checkout.orderId, name: siteName(), description: resource.name, prefill: { name: state.user.name, email: state.user.email }, theme: { color: "#176b48" }, handler: async (result) => { try { await apiRequest("/api/payments/razorpay/verify", { method: "POST", body: JSON.stringify({ paymentId: order.paymentId, ...result }) }); state.resourceCheckout = null; await loadResources(); await loadResourceLibrary(); state.dashboardSection = "resources"; state.resourceMessage = "Payment verified. Your resource is ready."; setRoute("/dashboard"); } catch (error) { state.resourceMessage = error.message; render(); } } }).open();
+    } else if (gateway.id === "paypal" && order.checkout.approveUrl) window.location.assign(order.checkout.approveUrl);
+    else if (gateway.id === "cashfree" && order.checkout.paymentSessionId) { await loadScript("https://sdk.cashfree.com/js/v3/cashfree.js"); await window.Cashfree({ mode: state.gatewaySettings.cashfreeEnvironment === "production" ? "production" : "sandbox" }).checkout({ paymentSessionId: order.checkout.paymentSessionId, redirectTarget: "_self" }); }
+    else if (gateway.id === "payu" && order.checkout.action) { const form = document.createElement("form"); form.method = "POST"; form.action = order.checkout.action; Object.entries(order.checkout.fields).forEach(([name, value]) => { const input = document.createElement("input"); input.type = "hidden"; input.name = name; input.value = value; form.appendChild(input); }); document.body.appendChild(form); form.submit(); }
+    else throw new Error("The payment provider did not return a usable checkout session.");
+  } catch (error) { state.resourceMessage = error.message; state.resourceBusy = false; render(); }
+}
+
 function notificationDropdownTemplate() {
   if (!state.notificationOpen || !state.user) return "";
   return `<section class="notification-popover" aria-label="Recent notifications"><div class="notification-popover-head"><div><strong>Notifications</strong><span>${state.unreadNotifications ? `${state.unreadNotifications} unread` : "All caught up"}</span></div>${state.unreadNotifications ? `<button class="text-button" data-action="mark-notifications-read">Mark all read</button>` : ""}</div><div class="notification-popover-list">${notificationItemsTemplate(5)}</div><div class="notification-popover-foot"><button data-route="/notifications">View all notifications</button><button data-action="toggle-push">Enable browser alerts</button></div></section>`;
@@ -3948,6 +4100,7 @@ function notificationsPageTemplate() {
 function headerTemplate() {
   const links = [
     ["Topics", "/"],
+    ["Resources", "/resources"],
     ["Business Network", "/business-network"],
     ["Membership", "/pricing"],
     ["Dashboard", state.user?.role === "admin" ? "/admin" : "/dashboard"],
@@ -4792,7 +4945,7 @@ function dashboardTemplate() {
 }
 
 function dashboardNavItems(role) {
-  const items = [["chart", "Overview", "overview"], ["play", "Reading", "reading"], ["spark", "Interests", "interests"], ["users", "Following", "following"], ["eye", "History", "history"], ["card", "Membership", "membership"]];
+  const items = [["chart", "Overview", "overview"], ["bookmark", "My Resources", "resources"], ["play", "Reading", "reading"], ["spark", "Interests", "interests"], ["users", "Following", "following"], ["eye", "History", "history"], ["card", "Membership", "membership"]];
   if (role === "writer") items.splice(1, 0, ["pen", "My stories", "stories"], ["chart", "Analytics", "analytics"], ["money", "Earnings", "earnings"]);
   if (role === "moderator") items.splice(1, 0, ["shield", "Moderation queue", "moderation"], ["filter", "Reports", "reports"]);
   items.push(["gauge", "Business profiles", "business"], ["lock", "Security", "security"], ["users", "Profile", "profile"]);
@@ -4800,12 +4953,13 @@ function dashboardNavItems(role) {
 }
 
 function dashboardSectionTitle(section) {
-  return { overview: "Dashboard overview", reading: "Reading workspace", interests: "Reading interests", following: "Following", history: "Reading history", membership: "Membership and billing", stories: "My stories", analytics: "Creator analytics", earnings: "Writer earnings", moderation: "Moderation queue", reports: "Reports and activity", business: "Business profiles", security: "Security", profile: "Profile and account" }[section] || "Dashboard overview";
+  return { overview: "Dashboard overview", resources: "My Resources", reading: "Reading workspace", interests: "Reading interests", following: "Following", history: "Reading history", membership: "Membership and billing", stories: "My stories", analytics: "Creator analytics", earnings: "Writer earnings", moderation: "Moderation queue", reports: "Reports and activity", business: "Business profiles", security: "Security", profile: "Profile and account" }[section] || "Dashboard overview";
 }
 
 function dashboardSectionDescription(section, role) {
   return {
     overview: `A focused summary of your ${role} account, reading, and recent activity.`,
+    resources: "Your purchased and claimed digital resources, available whenever you need them.",
     reading: "Continue articles, manage saved stories, and return to recent reading.",
     interests: "Control the topics that shape your personalized feed.",
     following: "Manage followed writers, publications, topics, tags, and lists.",
@@ -4823,6 +4977,7 @@ function dashboardSectionDescription(section, role) {
 }
 
 function dashboardSectionTemplate(section) {
+  if (section === "resources") return dashboardResourcesTemplate();
   if (section === "reading") return dashboardReadingTemplate();
   if (section === "interests") return interestManagerTemplate();
   if (section === "following") return followingManagerTemplate();
@@ -4864,6 +5019,15 @@ function readingProfileCompactTemplate() {
 function dashboardReadingTemplate() {
   const saved = publishedStories().filter((story) => state.saved.has(story.slug));
   return `${continueReadingTemplate("dashboard")}<section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("play")}<h2>Recent reading</h2></div>${dashboardRecentReadingRows(10)}</div><div class="work-panel"><div class="panel-title">${icon("bookmark")}<h2>Read later</h2></div>${saved.length ? saved.map((story) => `<button class="dashboard-story" data-route="/stories/${story.slug}"><span class="dot ${story.color}"></span><span><strong>${escapeHtml(story.title)}</strong><small>${escapeHtml(story.topic)} · ${escapeHtml(story.readTime)}</small></span></button>`).join("") : `<div class="empty-state">Saved stories will appear here.</div>`}</div></section>`;
+}
+
+function dashboardResourcesTemplate() {
+  const f = state.resourceFilters;
+  const q = f.q.trim().toLowerCase();
+  const items = state.resourceLibrary.filter((item) => (!q || `${item.name} ${item.category} ${item.type}`.toLowerCase().includes(q)) && (!f.category || item.category === f.category) && (!f.type || item.type === f.type) && (!f.price || item.priceType === f.price)).sort((a, b) => f.sort === "az" ? a.name.localeCompare(b.name) : new Date(b.acquiredAt) - new Date(a.acquiredAt));
+  const categories = [...new Set(state.resourceLibrary.map((item) => item.category))].sort();
+  const types = [...new Set(state.resourceLibrary.map((item) => item.type))].sort();
+  return `${state.resourceMessage ? `<div class="payment-message" role="status">${escapeHtml(state.resourceMessage)}</div>` : ""}<section class="resource-library-summary"><div><strong>${state.resourceLibrary.length}</strong><span>Resources in your library</span></div><div><strong>${state.resourceLibrary.filter((item) => item.priceType === "paid").length}</strong><span>Purchased</span></div><div><strong>${state.resourceLibrary.filter((item) => item.newVersionAvailable).length}</strong><span>Updates available</span></div><button class="primary-button" data-route="/resources">Browse marketplace</button></section><section class="resource-filter-bar library-filters"><label class="resource-search">${icon("search", 16)}<input id="resourceSearch" value="${escapeHtml(f.q)}" placeholder="Search my resources" /></label><select id="resourceCategoryFilter" aria-label="Filter by category"><option value="">All categories</option>${categories.map((item) => `<option ${f.category === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select><select id="resourceTypeFilter" aria-label="Filter by type"><option value="">All formats</option>${types.map((item) => `<option ${f.type === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select><select id="resourcePriceFilter" aria-label="Filter by price"><option value="">Free & paid</option><option value="free" ${f.price === "free" ? "selected" : ""}>Free</option><option value="paid" ${f.price === "paid" ? "selected" : ""}>Paid</option></select><select id="resourceSort" aria-label="Sort resources"><option value="recent">Recently acquired</option><option value="az" ${f.sort === "az" ? "selected" : ""}>A–Z</option></select></section><section class="resource-library-grid">${items.map((item) => `<article class="resource-library-card">${item.thumbnailUrl ? `<img src="${escapeHtml(item.thumbnailUrl)}" alt="" loading="lazy" />` : `<span class="resource-library-icon">${icon(item.accessKind === "watch" ? "play" : "bookmark", 24)}</span>`}<div><div class="resource-card-meta"><span>${escapeHtml(item.category)} · ${escapeHtml(item.type)}</span><b class="${item.priceType}">${item.priceType === "free" ? "Free" : "Paid"}</b></div><h2>${escapeHtml(item.name)}</h2><p>Acquired ${new Date(item.acquiredAt).toLocaleDateString("en-IN")} · Version ${escapeHtml(item.version)}</p>${item.newVersionAvailable ? `<span class="resource-update-badge">New version available</span>` : ""}<small>${item.accessCount || 0} accesses${item.lastAccessedAt ? ` · Last ${new Date(item.lastAccessedAt).toLocaleDateString("en-IN")}` : ""}</small></div><div class="resource-library-actions"><button class="primary-button" data-resource-access="${item.id}">${resourcePrimaryLabel(item)}</button><button class="secondary-button" data-route="/resources/${escapeHtml(item.slug)}">Details</button></div></article>`).join("") || `<div class="resource-empty"><h2>Your library is ready</h2><p>Claim a free resource or purchase one from the marketplace and it will stay here.</p><button class="primary-button" data-route="/resources">Explore resources</button></div>`}</section><details class="resource-orders-panel"><summary>Resource order history (${state.resourceOrders.length})</summary><div class="resource-orders-table">${state.resourceOrders.map((order) => `<article><span><strong>${escapeHtml(order.name)}</strong><small>${escapeHtml(order.order_number)} · ${new Date(order.created_at).toLocaleDateString("en-IN")}</small></span><b>${resourceMoney(order.amount, order.currency)}</b><span class="status-pill">${escapeHtml(order.status)}</span><button class="secondary-button" data-route="/resources/${escapeHtml(order.slug)}">Access resource</button></article>`).join("") || `<div class="empty-state">Paid resource orders will appear here.</div>`}</div></details>`;
 }
 
 function dashboardMembershipTemplate() {
@@ -5717,6 +5881,7 @@ function adminShellTemplate(title, description, content, actions = "") {
   let navItems = [
     ["chart", "Dashboard", "/admin"],
     ["pen", "Blogs", "/admin/blogs"],
+    ["bookmark", "Resources", "/admin/resources"],
     ["spark", "Creator studio", "/admin/creator"],
     ["users", "Users", "/admin/users"],
     ["gauge", "Business network", "/admin/business-network"],
@@ -5784,6 +5949,43 @@ function adminShortcutTemplate(iconName, title, description, route, meta) {
       <small>${meta}</small>
     </button>
   `;
+}
+
+function adminResourcesTemplate() {
+  const totals = state.adminResources.reduce((sum, item) => ({ owners: sum.owners + item.owners, downloads: sum.downloads + item.downloads, views: sum.views + item.views, revenue: sum.revenue + item.revenue }), { owners: 0, downloads: 0, views: 0, revenue: 0 });
+  return adminShellTemplate("Resources", "Publish free and paid digital products, manage protected delivery, versions, ownership, and performance.", `<section class="dashboard-grid">${metricTemplate("bookmark", "Resources", String(state.adminResources.length), `${state.adminResources.filter((item) => item.status === "published").length} published`)}${metricTemplate("users", "Acquisitions", totals.owners.toLocaleString("en-IN"), "Active entitlements")}${metricTemplate("upload", "Protected access", totals.downloads.toLocaleString("en-IN"), `${totals.views.toLocaleString("en-IN")} page views`)}${metricTemplate("money", "Resource revenue", resourceMoney(totals.revenue), "Captured purchases")}</section>${state.resourceMessage ? `<div class="payment-message">${escapeHtml(state.resourceMessage)}</div>` : ""}<section class="work-panel admin-resources-panel"><div class="admin-resource-table"><div class="admin-resource-row head"><span>Resource</span><span>Price</span><span>Status</span><span>Owners</span><span>Accesses</span><span>Revenue</span><span>Actions</span></div>${state.adminResources.map((item) => `<div class="admin-resource-row"><span class="admin-resource-name">${item.thumbnailUrl ? `<img src="${escapeHtml(item.thumbnailUrl)}" alt="" />` : `<i>${icon("bookmark", 18)}</i>`}<span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.category)} · ${escapeHtml(item.type)} · v${escapeHtml(item.version)}</small></span></span><span>${item.priceType === "free" ? "Free" : resourceMoney(item.price, item.currency)}</span><span><i class="status-pill">${escapeHtml(item.status)}</i>${item.accessDisabled ? `<small>Access disabled</small>` : ""}</span><span>${item.owners}</span><span>${item.downloads}</span><span>${resourceMoney(item.revenue, item.currency)}</span><span class="admin-resource-actions"><button class="secondary-button" data-route="/admin/resources/edit/${item.id}">Edit</button><button class="text-button danger" data-resource-archive="${item.id}">Archive</button></span></div>`).join("") || `<div class="empty-state">No resources yet. Add your first protected digital resource.</div>`}</div></section>`, `<button class="secondary-button" data-route="/resources">${icon("eye", 15)}View marketplace</button><button class="primary-button" data-route="/admin/resources/new">${icon("upload", 15)}Add new resource</button>`);
+}
+
+async function inspectAdminResource(resourceId) {
+  try { state.adminResourceDetail = await apiRequest(`/api/admin/resources/${encodeURIComponent(resourceId)}`); render(); }
+  catch (error) { state.resourceMessage = error.message; render(); }
+}
+
+function adminResourceDetailTemplate(detail) {
+  const resource = detail.resource;
+  return `<div class="modal-backdrop"><section class="resource-owner-modal" role="dialog" aria-modal="true" aria-labelledby="resource-owner-title"><button class="modal-close" data-action="close-resource-owners" aria-label="Close">${icon("close", 18)}</button><span class="eyebrow">Ownership & security</span><h2 id="resource-owner-title">${escapeHtml(resource.name)}</h2><div class="resource-owner-summary"><span><strong>${detail.owners.length}</strong> entitlement records</span><span><strong>${detail.versions.length}</strong> versions</span><span><strong>${detail.accessLogs.length}</strong> recent access events</span></div><h3>Users with access</h3><div class="resource-owner-list">${detail.owners.map((owner) => `<article><span><strong>${escapeHtml(owner.name)}</strong><small>${escapeHtml(owner.email)} · ${escapeHtml(owner.acquisition_type)} · ${new Date(owner.acquired_at).toLocaleDateString("en-IN")}</small></span><i class="status-pill">${escapeHtml(owner.status)}</i><button class="secondary-button ${owner.status === "active" ? "danger" : ""}" data-resource-entitlement="${resource.id}" data-resource-owner="${owner.user_id}" data-entitlement-status="${owner.status === "active" ? "revoked" : "active"}">${owner.status === "active" ? "Revoke" : "Restore"}</button></article>`).join("") || `<div class="empty-state">No one owns this resource yet.</div>`}</div><details><summary>Versions and release files</summary><div class="resource-security-list">${detail.versions.map((version) => `<span><strong>Version ${escapeHtml(version.version)}</strong><small>${escapeHtml(version.original_filename || "External resource")} · ${new Date(version.created_at).toLocaleString("en-IN")}</small></span>`).join("") || "No uploaded versions."}</div></details><details><summary>Recent access log</summary><div class="resource-security-list">${detail.accessLogs.slice(0, 50).map((log) => `<span><strong>${escapeHtml(log.action)} · ${escapeHtml(log.outcome)}</strong><small>${escapeHtml(log.user_id || "Unauthenticated")} · ${escapeHtml(log.ip_address || "Unknown IP")} · ${new Date(log.created_at).toLocaleString("en-IN")}</small></span>`).join("") || "No access attempts recorded."}</div></details></section></div>`;
+}
+
+function adminResourceEditorTemplate() {
+  const editingId = state.path.startsWith("/admin/resources/edit/") ? decodeURIComponent(state.path.split("/").pop() || "") : "";
+  if (editingId && state.resourceEditor.id !== editingId) {
+    const item = state.adminResources.find((resource) => resource.id === editingId);
+    if (item) state.resourceEditor = { ...emptyResourceEditor(), ...item, previewImagesText: (item.previewImages || []).join("\n"), tagsText: (item.tags || []).join(", "), includesText: (item.includes || []).join("\n"), regularPrice: Number(item.regularPrice || 0) / 100, discountedPrice: item.discountedPrice === null ? "" : Number(item.discountedPrice) / 100 };
+  }
+  const f = state.resourceEditor;
+  const title = f.id ? "Edit resource" : "Add new resource";
+  return adminShellTemplate(title, "Protected files are stored privately and delivered only after server-side entitlement checks.", `<form id="resourceAdminForm" class="resource-admin-editor"><section class="resource-editor-main"><div class="editor-panel"><div class="panel-title">${icon("pen")}<h2>Resource information</h2></div><div class="settings-form-grid"><label><span>Resource name</span><input name="name" value="${escapeHtml(f.name)}" maxlength="180" required /></label><label><span>Slug</span><input name="slug" value="${escapeHtml(f.slug)}" placeholder="generated-from-name" /></label><label class="wide"><span>Short description</span><textarea name="shortDescription" maxlength="320" rows="2" required>${escapeHtml(f.shortDescription)}</textarea></label><label class="wide"><span>Detailed description</span><textarea name="description" rows="8">${escapeHtml(f.description)}</textarea></label><label><span>Category</span><input name="category" value="${escapeHtml(f.category)}" list="resourceCategories" required /><datalist id="resourceCategories">${state.resourceCategories.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("")}</datalist></label><label><span>Resource type / format</span><input name="type" value="${escapeHtml(f.type)}" list="resourceTypes" required /><datalist id="resourceTypes">${["document", "pdf", "image", "video", "prompt", "prompt-pack", "template", "spreadsheet", "checklist", "guide", "tool", "app", "file", "external"].map((item) => `<option value="${item}"></option>`).join("")}</datalist></label><label><span>Primary action</span><select name="accessKind">${[["download", "Download"], ["view", "View"], ["watch", "Watch"], ["copy", "View & copy"], ["open", "Open / access"]].map(([value, label]) => `<option value="${value}" ${f.accessKind === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label><span>Version</span><input name="version" value="${escapeHtml(f.version)}" maxlength="40" required /></label><label class="wide"><span>Who it is useful for</span><textarea name="audience" rows="3">${escapeHtml(f.audience)}</textarea></label><label class="wide"><span>Usage instructions</span><textarea name="instructions" rows="5">${escapeHtml(f.instructions)}</textarea></label><label><span>Tags</span><input name="tags" value="${escapeHtml(f.tagsText)}" placeholder="AI, marketing, productivity" /></label><label><span>What’s included (one per line)</span><textarea name="includes" rows="4">${escapeHtml(f.includesText)}</textarea></label></div></div><div class="editor-panel"><div class="panel-title">${icon("eye")}<h2>Media and previews</h2></div><div class="settings-form-grid"><label class="wide"><span>Thumbnail / featured image URL</span><input name="thumbnailUrl" value="${escapeHtml(f.thumbnailUrl)}" placeholder="/uploads/... or https://..." /></label><label class="wide"><span>Preview image URLs (one per line)</span><textarea name="previewImages" rows="4">${escapeHtml(f.previewImagesText)}</textarea></label><label class="wide"><span>Public sample URL (optional)</span><input name="sampleUrl" value="${escapeHtml(f.sampleUrl)}" placeholder="https://..." /></label></div></div><div class="editor-panel resource-file-panel"><div class="panel-title">${icon("lock")}<h2>Protected delivery</h2></div><div class="resource-private-callout">${icon("shield", 20)}<span><strong>Private storage only</strong>The original path is never included in public HTML or JSON. Uploads receive randomized internal identifiers.</span></div><label class="file-field"><span>${f.hasProtectedFile ? "Replace protected resource file" : "Protected resource file"}</span><input name="resourceFile" type="file" ${f.id || f.externalUrl ? "" : "required"} /></label>${f.originalFilename ? `<small>Current file: ${escapeHtml(f.originalFilename)} · ${Math.ceil(f.fileSize / 1024).toLocaleString("en-IN")} KB</small>` : ""}<label><span>Or external resource URL</span><input name="externalUrl" value="${escapeHtml(f.externalUrl)}" placeholder="https://..." /></label><label><span>Release notes for this version</span><textarea name="releaseNotes" rows="3">${escapeHtml(f.releaseNotes)}</textarea></label></div></section><aside class="resource-editor-sidebar"><section class="editor-panel"><div class="panel-title">${icon("money")}<h2>Pricing</h2></div><label><span>Access price</span><select name="priceType" id="resourcePriceType"><option value="free" ${f.priceType === "free" ? "selected" : ""}>Free</option><option value="paid" ${f.priceType === "paid" ? "selected" : ""}>Paid</option></select></label><label><span>Regular price</span><input name="regularPriceDisplay" type="number" min="0" step="0.01" value="${escapeHtml(f.regularPrice)}" /></label><label><span>Discounted price</span><input name="discountedPriceDisplay" type="number" min="0" step="0.01" value="${escapeHtml(f.discountedPrice)}" /></label><label><span>Currency</span><select name="currency"><option value="INR" ${f.currency === "INR" ? "selected" : ""}>INR</option><option value="USD" ${f.currency === "USD" ? "selected" : ""}>USD</option></select></label></section><section class="editor-panel"><div class="panel-title">${icon("shield")}<h2>Access controls</h2></div><label><span>Status</span><select name="status">${["draft", "published", "unpublished", "archived"].map((item) => `<option value="${item}" ${f.status === item ? "selected" : ""}>${item}</option>`).join("")}</select></label><label class="checkbox-field"><input name="singleUseLinks" type="checkbox" ${f.singleUseLinks ? "checked" : ""} /><span>Single-use access links</span></label><label class="checkbox-field"><input name="accessDisabled" type="checkbox" ${f.accessDisabled ? "checked" : ""} /><span>Temporarily disable access</span></label><label><span>Accesses per hour / user</span><input name="downloadLimitPerHour" type="number" min="1" max="500" value="${f.downloadLimitPerHour}" /></label><p class="settings-note">Every access link is user-bound, short-lived, and re-authorized. Revocation expires outstanding links immediately.</p></section>${state.resourceMessage ? `<div class="payment-message" role="status">${escapeHtml(state.resourceMessage)}</div>` : ""}<button class="primary-button wide-button" type="submit" ${state.resourceBusy ? "disabled" : ""}>${state.resourceBusy ? "Saving…" : f.id ? "Update resource" : "Create resource"}</button><button class="secondary-button wide-button" type="button" data-route="/admin/resources">Cancel</button></aside></form>`, `<button class="secondary-button" data-route="/admin/resources">${icon("chevronLeft", 15)}All resources</button>`);
+}
+
+async function saveAdminResource(form) {
+  state.resourceBusy = true; state.resourceMessage = "Saving resource securely…"; render();
+  const data = new FormData(form);
+  data.set("regularPrice", String(Math.round(Number(data.get("regularPriceDisplay") || 0) * 100)));
+  data.set("discountedPrice", data.get("discountedPriceDisplay") === "" ? "" : String(Math.round(Number(data.get("discountedPriceDisplay")) * 100)));
+  data.set("accessDisabled", data.get("accessDisabled") ? "1" : "0"); data.set("singleUseLinks", data.get("singleUseLinks") ? "1" : "0");
+  const id = state.resourceEditor.id;
+  try { await apiRequest(id ? `/api/admin/resources/${encodeURIComponent(id)}` : "/api/admin/resources", { method: "POST", body: data }); await loadAdminResources(); await loadResources(); state.resourceEditor = emptyResourceEditor(); state.resourceMessage = id ? "Resource updated. Existing owners can access the latest eligible version." : "Resource created."; setRoute("/admin/resources"); }
+  catch (error) { state.resourceMessage = error.message; state.resourceBusy = false; render(); }
 }
 
 function adminUsersTemplate() {
@@ -6934,6 +7136,7 @@ function footerTemplate() {
     ["Terms", "/terms"],
     ["Privacy", "/privacy"],
     ["Security", "/security"],
+    ["Resources", "/resources"],
     ["Support", "/support"],
   ];
   const profiles = state.gatewaySettings.socialProfiles || {};
@@ -6967,10 +7170,12 @@ function setMetaTag(selector, attributes) {
 function applyDocumentSeo() {
   const story = state.stories.find((item) => item.status === "published" && state.path.includes(`/stories/${item.slug}`));
   const category = state.categories.find((item) => state.path === `/category/${item.slug}`);
-  const notFound = Boolean(document.querySelector(".not-found-page"));
+  const resource = state.path.startsWith("/resources/") ? state.resources.find((item) => state.path === `/resources/${item.slug}`) : null;
+  const marketplace = state.path === "/resources";
+  const notFound = Boolean(document.querySelector(".not-found-page")) || (state.path.startsWith("/resources/") && !resource);
   const seo = story?.seo || {};
-  const title = notFound ? `Page not found · ${siteName()}` : story ? (seo.seoTitle || story.title) : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
-  const description = notFound ? `The requested page could not be found on ${siteName()}.` : story ? (seo.metaDescription || story.dek) : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
+  const title = notFound ? `Page not found · ${siteName()}` : story ? (seo.seoTitle || story.title) : resource ? `${resource.name} · ${siteName()} Resources` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
+  const description = notFound ? `The requested page could not be found on ${siteName()}.` : story ? (seo.metaDescription || story.dek) : resource ? resource.shortDescription : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
   document.title = title;
   setMetaTag('meta[name="description"]', { name: "description", content: description });
   setMetaTag('meta[name="robots"]', {
@@ -6979,8 +7184,8 @@ function applyDocumentSeo() {
   });
   setMetaTag('meta[property="og:title"]', { property: "og:title", content: story ? (seo.socialTitle || title) : title });
   setMetaTag('meta[property="og:description"]', { property: "og:description", content: story ? (seo.socialDescription || description) : description });
-  setMetaTag('meta[property="og:type"]', { property: "og:type", content: story ? "article" : "website" });
-  const socialImage = story ? (seo.socialImage || story.imageUrl) : state.siteSeo.defaultSocialImage;
+  setMetaTag('meta[property="og:type"]', { property: "og:type", content: story ? "article" : resource ? "product" : "website" });
+  const socialImage = story ? (seo.socialImage || story.imageUrl) : resource?.thumbnailUrl || state.siteSeo.defaultSocialImage;
   if (socialImage) setMetaTag('meta[property="og:image"]', { property: "og:image", content: socialImage });
   let canonical = document.head.querySelector('link[rel="canonical"]');
   if (!canonical) {
@@ -7002,6 +7207,10 @@ function applyDocumentSeo() {
       image: story.imageUrl || undefined,
       author: { "@type": "Person", name: story.author },
       mainEntityOfPage: seo.canonicalUrl || storyUrl(story),
+    } : resource ? {
+      "@context": "https://schema.org", "@type": "Product", name: resource.name, description,
+      image: resource.thumbnailUrl || undefined, category: resource.category, sku: resource.id,
+      offers: { "@type": "Offer", priceCurrency: resource.currency, price: Number(resource.price || 0) / 100, availability: "https://schema.org/InStock", url: `${window.location.origin}/resources/${resource.slug}` },
     } : category ? {
       "@context": "https://schema.org",
       "@type": "CollectionPage",
@@ -7070,6 +7279,17 @@ function render() {
 }
 
 function bindInputs() {
+  document.querySelectorAll(".admin-resource-row:not(.head)").forEach((row) => {
+    const ownerCell = row.children[3];
+    const resourceId = row.querySelector("[data-resource-archive]")?.dataset.resourceArchive;
+    if (!ownerCell || !resourceId) return;
+    ownerCell.classList.add("admin-resource-owner-cell"); ownerCell.tabIndex = 0; ownerCell.title = "View owners and access logs"; ownerCell.setAttribute("role", "button"); ownerCell.setAttribute("aria-label", `View ${ownerCell.textContent.trim()} resource owners`);
+    const open = () => inspectAdminResource(resourceId);
+    ownerCell.addEventListener("click", open); ownerCell.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
+  });
+  document.getElementById("resourceAdminForm")?.addEventListener("submit", (event) => { event.preventDefault(); saveAdminResource(event.currentTarget); });
+  document.getElementById("resourceSearch")?.addEventListener("input", (event) => { state.resourceFilters.q = event.target.value; render(); document.getElementById("resourceSearch")?.focus(); });
+  [["resourceCategoryFilter", "category"], ["resourceTypeFilter", "type"], ["resourcePriceFilter", "price"], ["resourceSort", "sort"]].forEach(([id, key]) => document.getElementById(id)?.addEventListener("change", (event) => { state.resourceFilters[key] = event.target.value; render(); }));
   document.getElementById("adminBlogSearch")?.addEventListener("input", (event) => {
     state.adminBlogQuery = event.target.value;
   });
@@ -7775,6 +7995,34 @@ document.addEventListener("click", async (event) => {
   const businessReview = target.dataset.businessReview;
   const businessSubmissionReview = target.dataset.businessSubmissionReview;
   const notificationId = target.dataset.notificationId;
+  const resourceAcquire = target.dataset.resourceAcquire;
+  const resourceAccess = target.dataset.resourceAccess;
+  const resourcePay = target.dataset.resourcePay;
+  const resourceGateway = target.dataset.resourceGateway;
+  const resourceArchive = target.dataset.resourceArchive;
+  const resourceEntitlement = target.dataset.resourceEntitlement;
+  const resourceOwner = target.dataset.resourceOwner;
+
+  if (resourceAcquire) { await acquireResource(resourceAcquire); return; }
+  if (resourceAccess) { await accessResource(resourceAccess); return; }
+  if (resourcePay) { await payForResource(resourcePay); return; }
+  if (resourceGateway) { state.gateway = resourceGateway; render(); return; }
+  if (resourceArchive) {
+    if (!window.confirm("Archive this resource and immediately disable outstanding access links?")) return;
+    try { await apiRequest(`/api/admin/resources/${encodeURIComponent(resourceArchive)}`, { method: "DELETE" }); await loadAdminResources(); state.resourceMessage = "Resource archived and access disabled."; }
+    catch (error) { state.resourceMessage = error.message; }
+    render(); return;
+  }
+  if (resourceEntitlement && resourceOwner) {
+    const status = target.dataset.entitlementStatus;
+    const reason = status === "revoked" ? (window.prompt("Reason for revoking this user's access:", "Administrative review") ?? "") : "";
+    if (status === "revoked" && reason === "") return;
+    try { await apiRequest(`/api/admin/resources/${encodeURIComponent(resourceEntitlement)}/entitlements/${encodeURIComponent(resourceOwner)}`, { method: "PATCH", body: JSON.stringify({ status, reason }) }); await inspectAdminResource(resourceEntitlement); await loadAdminResources(); state.resourceMessage = status === "revoked" ? "Resource access revoked and outstanding links expired." : "Resource access restored."; }
+    catch (error) { state.resourceMessage = error.message; }
+    render(); return;
+  }
+  if (action === "close-resource-checkout") { state.resourceCheckout = null; state.resourceMessage = ""; state.resourceBusy = false; render(); return; }
+  if (action === "close-resource-owners") { state.adminResourceDetail = null; render(); return; }
 
   if (notificationId) {
     try {
@@ -9891,6 +10139,13 @@ async function bootstrapApp() {
     state.businessEditorType = "";
     state.path = "/dashboard";
     window.history.replaceState({}, "", "/dashboard");
+  }
+  if (state.user && sessionStorage.getItem("inkriver-resource-return")) {
+    const returnTo = sessionStorage.getItem("inkriver-resource-return");
+    sessionStorage.removeItem("inkriver-resource-return");
+    state.onboardingOpen = false;
+    state.path = returnTo;
+    window.history.replaceState({}, "", returnTo);
   }
   if (new URLSearchParams(window.location.search).get("login") === "required" && !state.user) {
     state.loginOpen = true;

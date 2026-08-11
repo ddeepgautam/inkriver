@@ -97,6 +97,20 @@ $adminSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin',
 $pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-SMOKE-WRITER', 'Smoke Writer', 'smoke-writer@example.com', ?, 'writer', 'Pro', 'active', 1, ?, ?)")
     ->execute([hash_password_value('SmokePassword!24'), $now, $now]);
 $writerSession = ['user' => ['id' => 'USR-SMOKE-WRITER', 'name' => 'Smoke Writer', 'email' => 'smoke-writer@example.com', 'role' => 'writer', 'subscription' => 'Pro']];
+$resourceTables = array_column($pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'resource_%'")->fetchAll(), 'name');
+assert_true(in_array('resource_entitlements', $resourceTables, true) && in_array('resource_access_tokens', $resourceTables, true) && in_array('resource_access_logs', $resourceTables, true), 'resource marketplace creates entitlement, temporary-token, and access-log tables');
+$pdo->prepare("INSERT INTO resources (id, slug, name, short_description, description, category, resource_type, access_kind, version, price_type, regular_price, discounted_price, currency, protected_storage_key, original_filename, mime_type, file_size, status, created_by_user_id, created_at, updated_at, published_at) VALUES ('RES-SMOKE-PAID', 'secure-resource', 'Secure Resource', 'Protected resource', 'A protected smoke resource.', 'Business', 'pdf', 'download', '1.0', 'paid', 10000, 7500, 'INR', 'resources/private-random.bin', 'friendly-name.pdf', 'application/pdf', 1234, 'published', 'USR-BIZ-ADMIN', ?, ?, ?)")
+    ->execute([$now, $now, $now]);
+$resourceRow = resource_find_by_slug_or_id('secure-resource');
+$resourceCheckout = authoritative_payment_checkout(['amount' => 1, 'currency' => 'INR', 'metadata' => ['kind' => 'resource', 'resourceId' => 'RES-SMOKE-PAID']]);
+assert_true(($resourceCheckout['payment']['amount'] ?? 0) === 7500, 'resource checkout uses server-owned discounted pricing instead of client amount');
+$publicResource = public_resource($resourceRow, null);
+assert_true(!array_key_exists('protectedStorageKey', $publicResource) && !array_key_exists('originalFilename', $publicResource) && !str_contains(json_encode($publicResource), 'private-random.bin'), 'public resource payload never exposes protected storage paths or original filenames');
+$pdo->prepare("INSERT INTO payments (id, user_id, provider, purpose, amount, currency, status, metadata, created_at, updated_at) VALUES ('PAY-RESOURCE-SMOKE', 'USR-SMOKE-WRITER', 'razorpay', 'Resource: Secure Resource', 7500, 'INR', 'paid', ?, ?, ?)")
+    ->execute([json_encode(['kind' => 'resource', 'resourceId' => 'RES-SMOKE-PAID']), $now, $now]);
+resource_grant_paid_entitlement(['id' => 'PAY-RESOURCE-SMOKE', 'user_id' => 'USR-SMOKE-WRITER', 'amount' => 7500, 'currency' => 'INR'], ['kind' => 'resource', 'resourceId' => 'RES-SMOKE-PAID']);
+$paidEntitlement = resource_entitlement('RES-SMOKE-PAID', 'USR-SMOKE-WRITER');
+assert_true(($paidEntitlement['status'] ?? '') === 'active' && ($paidEntitlement['payment_id'] ?? '') === 'PAY-RESOURCE-SMOKE', 'verified resource payments create a user-bound entitlement');
 $pendingProfile = business_save_profile('company', ['name' => 'Unreviewed Writer Company'], $writerSession);
 assert_true(($pendingProfile['status'] ?? '') === 'draft', 'non-staff business profiles require moderation before publication');
 assert_true(business_get_profile('company', (string) $pendingProfile['id'], null) === null, 'draft business profiles are hidden from public requests');

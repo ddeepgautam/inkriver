@@ -28,6 +28,7 @@ Completed:
 - Server-side recommendation training with persisted user profiles, story scores, transparent factors, feedback controls, and admin rebuild/status APIs.
 - SQLite FTS5 full-text search with filters, autocomplete, fallback search, and admin index rebuild.
 - Business Network discovery for companies and founders with 12-profile server pagination, linked roles, subscriber-only contact details, profile claiming, suggested corrections, and staff review workflows. The admin profile manager also uses 12-item pages with name search, profile type, industry, and status filters.
+- Resources Marketplace with free claims, paid checkout, account-bound entitlements, My Resources, version tracking, order history, admin publishing and analytics, and private file delivery through short-lived user-bound access tokens.
 - Editorial discovery uses 20-story homepage pagination, while the admin blog manager uses 20-entry pagination with title, slug, author, topic, and status search.
 - Story likes are unique per signed-in user and work as a reversible like/unlike toggle backed by the database.
 - The writer studio includes the rich editor, featured images, post SEO, interactive polls/surveys/quizzes, and safe post settings without staff-only approval, scheduling, or publishing controls.
@@ -95,6 +96,8 @@ MCP publishing automation:
 - `MCP_USER_EMAIL` - optional active admin/writer email used as the publishing identity when the request uses the MCP bearer token.
 - `MCP_ACCESS_TOKEN_TTL=604800` - optional OAuth access-token lifetime in seconds for MCP clients.
 - `JSON_REQUEST_MAX_BYTES=12582912` - optional JSON request size limit; useful for base64 image uploads.
+- `RESOURCE_FILE_MAX_BYTES=524288000` - maximum protected resource upload size in bytes (default 500 MB).
+- `RESOURCE_ACCESS_TOKEN_TTL=120` - lifetime in seconds for temporary resource access links (clamped to 30–600 seconds).
 
 You can also store these in the encrypted admin API-key vault as:
 
@@ -125,6 +128,7 @@ Uploads:
 
 - Public editorial images are stored under `public/uploads/YYYY/MM/` and served as `/uploads/YYYY/MM/...`, with server-generated names and image extensions.
 - Support attachments are stored in `PRIVATE_STORAGE_PATH` and are only downloaded through an authenticated authorization check.
+- Marketplace resource originals are stored under `PRIVATE_STORAGE_PATH/resources` with randomized internal names. Public APIs never return their paths or original filenames. Every access uses `/api/resources/{id}/access` to issue a short-lived, user-bound token and re-checks the entitlement when the token is redeemed.
 - Ensure PHP can write to `public/uploads` and the private storage directory. Private storage should use owner-only filesystem permissions.
 
 ## MCP Blog Publishing

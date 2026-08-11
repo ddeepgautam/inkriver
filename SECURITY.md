@@ -18,6 +18,15 @@ Move the existing `data/inkriver.sqlite` and any `storage/backups` files into pr
 
 Membership and gift prices, names, periods, discounts, and conversion rates are resolved by the server. Gateway callbacks must match the stored provider order, provider, amount, currency, local user where applicable, and pending payment state before access is activated. Treat any mismatch as a security event.
 
+## Protected marketplace resources
+
+- Store every protected resource original under `PRIVATE_STORAGE_PATH/resources`; never copy or link that directory into the public document root.
+- Keep `/api/resources/{id}/access` and `/api/resources/access/{token}` behind the same HTTPS origin. Access tokens are short-lived, bound to one user and resource, stored only as hashes, and can be configured as single-use.
+- Authorization is repeated when a token is redeemed. Active login, active account, active entitlement, valid paid payment (where applicable), non-revoked access, resource availability, rate limits, token expiry, and resolved-path containment must all pass.
+- Public resource payloads may include descriptive metadata, thumbnails, preview images, and public samples, but must not include storage keys, protected external URLs, original filenames, or filesystem paths.
+- Revoking an entitlement or archiving a resource expires outstanding unused tokens immediately. Review `resource_access_logs` and `audit_logs` for failed access, unusual volume, and administrative changes.
+- Configure `RESOURCE_FILE_MAX_BYTES`, `RESOURCE_ACCESS_TOKEN_TTL`, and per-resource hourly access limits for the deployment. Add WAF-level bot and bandwidth controls for defense in depth.
+
 ## Operational controls
 
 - Put the application behind a managed WAF/CDN with request-size limits, bot controls, and rate limits in addition to the application throttles.

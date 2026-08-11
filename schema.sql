@@ -194,6 +194,106 @@
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS resources (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL,
+    short_description TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'General',
+    resource_type TEXT NOT NULL DEFAULT 'file',
+    access_kind TEXT NOT NULL DEFAULT 'download' CHECK (access_kind IN ('download', 'view', 'watch', 'copy', 'open')),
+    thumbnail_url TEXT NOT NULL DEFAULT '',
+    preview_images_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    includes_json TEXT NOT NULL DEFAULT '[]',
+    instructions TEXT NOT NULL DEFAULT '',
+    audience TEXT NOT NULL DEFAULT '',
+    version TEXT NOT NULL DEFAULT '1.0',
+    price_type TEXT NOT NULL DEFAULT 'free' CHECK (price_type IN ('free', 'paid')),
+    regular_price INTEGER NOT NULL DEFAULT 0,
+    discounted_price INTEGER,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    protected_storage_key TEXT,
+    original_filename TEXT,
+    mime_type TEXT,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    external_url TEXT,
+    sample_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'unpublished', 'archived')),
+    access_disabled INTEGER NOT NULL DEFAULT 0,
+    single_use_links INTEGER NOT NULL DEFAULT 0,
+    download_limit_per_hour INTEGER NOT NULL DEFAULT 20,
+    created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_versions (
+    id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    version TEXT NOT NULL,
+    protected_storage_key TEXT,
+    original_filename TEXT,
+    mime_type TEXT,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    release_notes TEXT NOT NULL DEFAULT '',
+    created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(resource_id, version)
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_entitlements (
+    id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    payment_id TEXT REFERENCES payments(id) ON DELETE SET NULL,
+    acquisition_type TEXT NOT NULL CHECK (acquisition_type IN ('free_claim', 'purchase', 'offer', 'admin_grant')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+    price_paid INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    acquired_version TEXT NOT NULL DEFAULT '1.0',
+    acquired_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoked_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    revoke_reason TEXT NOT NULL DEFAULT '',
+    UNIQUE(resource_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_access_tokens (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    version_id TEXT REFERENCES resource_versions(id) ON DELETE SET NULL,
+    action TEXT NOT NULL CHECK (action IN ('download', 'view', 'watch', 'copy', 'open')),
+    expires_at TEXT NOT NULL,
+    single_use INTEGER NOT NULL DEFAULT 0,
+    used_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_access_logs (
+    id TEXT PRIMARY KEY,
+    resource_id TEXT REFERENCES resources(id) ON DELETE SET NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    ip_address TEXT,
+    user_agent TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_views (
+    id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    anonymous_id TEXT,
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS writer_tips (
     id TEXT PRIMARY KEY,
     payment_id TEXT REFERENCES payments(id) ON DELETE SET NULL,
@@ -998,6 +1098,14 @@
   CREATE INDEX IF NOT EXISTS idx_story_translations_locale ON story_translations(locale, status);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);
   CREATE INDEX IF NOT EXISTS idx_payments_user_created ON payments(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_resources_status_category ON resources(status, category, updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_resource_versions_resource ON resource_versions(resource_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_resource_entitlements_user ON resource_entitlements(user_id, status, acquired_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_resource_entitlements_resource ON resource_entitlements(resource_id, status);
+  CREATE INDEX IF NOT EXISTS idx_resource_tokens_expiry ON resource_access_tokens(expires_at, used_at);
+  CREATE INDEX IF NOT EXISTS idx_resource_access_logs_resource ON resource_access_logs(resource_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_resource_access_logs_user ON resource_access_logs(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_resource_views_resource ON resource_views(resource_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_writer_tips_writer_status ON writer_tips(writer_name, status);
   CREATE INDEX IF NOT EXISTS idx_payouts_writer_status ON writer_payouts(writer_user_id, status);
   CREATE INDEX IF NOT EXISTS idx_gifts_recipient_status ON gift_memberships(recipient_email, status);

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/BusinessNetwork.php';
+require_once __DIR__ . '/Resources.php';
 
 const PUBLIC_DOCUMENTS = ['stories', 'categories', 'plans', 'site-seo-public'];
 const ADMIN_DOCUMENTS = ['stories', 'categories', 'plans', 'site-seo', 'creator-tools', 'operations', 'platform-settings'];
@@ -1690,7 +1691,7 @@ function handle_mcp(string $method): void
 function sitemap_xml(): string
 {
     $origin = rtrim(app_origin(), '/');
-    $urls = [['loc' => $origin . '/', 'lastmod' => now_iso()], ['loc' => $origin . '/pricing', 'lastmod' => now_iso()], ['loc' => $origin . '/business-network', 'lastmod' => now_iso()]];
+    $urls = [['loc' => $origin . '/', 'lastmod' => now_iso()], ['loc' => $origin . '/pricing', 'lastmod' => now_iso()], ['loc' => $origin . '/resources', 'lastmod' => now_iso()], ['loc' => $origin . '/business-network', 'lastmod' => now_iso()]];
     foreach (document_value('stories', []) as $story) {
         if (($story['status'] ?? '') !== 'published') continue;
         $urls[] = ['loc' => $origin . '/stories/' . rawurlencode((string) $story['slug']), 'lastmod' => (string) ($story['updatedAt'] ?? $story['publishedAt'] ?? now_iso())];
@@ -2357,13 +2358,29 @@ function trusted_payment_currency_rates(): array
 function authoritative_payment_checkout(array $body): array
 {
     $requestedMetadata = is_array($body['metadata'] ?? null) ? $body['metadata'] : [];
-    $kind = in_array(($requestedMetadata['kind'] ?? 'membership'), ['membership', 'tip', 'gift'], true) ? (string) ($requestedMetadata['kind'] ?? 'membership') : 'membership';
+    $kind = in_array(($requestedMetadata['kind'] ?? 'membership'), ['membership', 'tip', 'gift', 'resource'], true) ? (string) ($requestedMetadata['kind'] ?? 'membership') : 'membership';
     $currency = strtoupper(trim((string) ($body['currency'] ?? 'INR')));
     $rates = trusted_payment_currency_rates();
     if (!isset($rates[$currency])) json_response(['error' => 'UNSUPPORTED_CURRENCY', 'message' => 'This checkout currency is not supported by the server.'], 400);
     $metadata = ['kind' => $kind];
 
-    if ($kind === 'tip') {
+    if ($kind === 'resource') {
+        $resourceId = trim((string) ($requestedMetadata['resourceId'] ?? ''));
+        $resource = resource_find_by_slug_or_id($resourceId);
+        if (!$resource || $resource['price_type'] !== 'paid' || !empty($resource['access_disabled'])) {
+            json_response(['error' => 'RESOURCE_NOT_PURCHASABLE', 'message' => 'This resource is not currently available for purchase.'], 400);
+        }
+        $session = current_session();
+        if ($session && ($owned = resource_entitlement((string) $resource['id'], (string) $session['user']['id'])) && $owned['status'] === 'active') {
+            json_response(['error' => 'RESOURCE_ALREADY_OWNED', 'message' => 'This resource is already in your library.'], 409);
+        }
+        $sourceCurrency = strtoupper((string) ($resource['currency'] ?? 'INR'));
+        if (!isset($rates[$sourceCurrency])) json_response(['error' => 'RESOURCE_CURRENCY_UNSUPPORTED', 'message' => 'This resource currency is not configured for checkout.'], 400);
+        $baseInr = resource_effective_price($resource) / $rates[$sourceCurrency];
+        $amount = max(1, (int) round($baseInr * $rates[$currency]));
+        $metadata += ['resourceId' => $resource['id'], 'resourceSlug' => $resource['slug'], 'resourceName' => $resource['name'], 'resourceVersion' => $resource['version']];
+        $purpose = 'Resource: ' . substr((string) $resource['name'], 0, 160);
+    } elseif ($kind === 'tip') {
         $amount = (int) ($body['amount'] ?? 0);
         if ($amount < 100 || $amount > 100000000) json_response(['error' => 'INVALID_TIP_AMOUNT', 'message' => 'Choose a tip amount within the allowed range.'], 400);
         $storySlug = trim((string) ($requestedMetadata['storySlug'] ?? ''));
@@ -2993,7 +3010,14 @@ function activate_paid_payment(string $paymentId, string $providerPaymentId = ''
     $stmt->execute([$paymentId]);
     $payment = $stmt->fetch();
     if (!$payment) return null;
-    if ($payment['status'] === 'paid') return public_user($payment);
+    if ($payment['status'] === 'paid') {
+        $paidMetadata = parse_json_field($payment['metadata'] ?? '{}', []);
+        if (($paidMetadata['kind'] ?? '') === 'resource') resource_grant_paid_entitlement($payment, $paidMetadata);
+        return public_user($payment);
+    }
+    foreach (Database::pdo()->query("SELECT slug, updated_at FROM resources WHERE status = 'published' ORDER BY updated_at DESC")->fetchAll() as $resource) {
+        $urls[] = ['loc' => $origin . '/resources/' . rawurlencode((string) $resource['slug']), 'lastmod' => (string) ($resource['updated_at'] ?? now_iso())];
+    }
     if ($payment['status'] !== 'pending') return null;
     $metadata = parse_json_field($payment['metadata'] ?? '{}', []);
     $now = now_iso();
@@ -3021,6 +3045,11 @@ function activate_paid_payment(string $paymentId, string $providerPaymentId = ''
     if (($metadata['kind'] ?? '') === 'gift') {
         $pdo->prepare("INSERT INTO gift_memberships (id, payment_id, purchaser_user_id, recipient_email, plan_id, months, message, deliver_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'paid', ?, ?) ON CONFLICT(id) DO UPDATE SET status = 'paid', updated_at = excluded.updated_at")
             ->execute([uuid_value('GFT-'), $paymentId, $payment['user_id'], strtolower((string) ($metadata['recipientEmail'] ?? '')), (string) ($metadata['planId'] ?? 'premium'), max(1, (int) ($metadata['months'] ?? 1)), substr((string) ($metadata['message'] ?? ''), 0, 500), (string) ($metadata['deliverAt'] ?? $now), $now, $now]);
+        return public_user($payment);
+    }
+
+    if (($metadata['kind'] ?? '') === 'resource') {
+        resource_grant_paid_entitlement($payment, $metadata);
         return public_user($payment);
     }
 
@@ -4051,6 +4080,7 @@ function handle_api(string $path, string $method): void
     $pdo = Database::pdo();
     enforce_same_origin_for_cookie_request();
     handle_business_api($path, $method);
+    handle_resources_api($path, $method);
 
     if ($method === 'POST' && $path === '/api/cron/run') {
         $secret = env_value('CRON_SECRET') ?: provider_config_value('CRON_SECRET', 'cron', 'secret');
@@ -6192,7 +6222,7 @@ function handle_api(string $path, string $method): void
         if (($metadata['kind'] ?? '') === 'tip' && !feature_flag_enabled('tips')) {
             json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Writer tipping is disabled.'], 403);
         }
-        $isRecurringMembership = !in_array(($metadata['kind'] ?? 'membership'), ['tip', 'gift'], true);
+        $isRecurringMembership = !in_array(($metadata['kind'] ?? 'membership'), ['tip', 'gift', 'resource'], true);
         $pdo->prepare("INSERT INTO payments (id, user_id, provider, purpose, amount, currency, status, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'created', ?, ?, ?)")
             ->execute([$id, $session['user']['id'], $provider, $payment['purpose'], $payment['amount'], $payment['currency'], json_encode($metadata, JSON_UNESCAPED_SLASHES), $now, $now]);
         try {
