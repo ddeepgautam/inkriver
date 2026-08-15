@@ -1327,6 +1327,7 @@ async function hydratePlatformState() {
   if (Array.isArray(documents.categories) && documents.categories.length) state.categories = documents.categories;
   if (Array.isArray(documents.plans) && documents.plans.length) state.plans = documents.plans;
   state.translations = payload.translations || {};
+  state.articleInsights = payload.articleInsights || {};
   state.entitlements = payload.entitlements || {};
   state.activeSubscription = payload.activeSubscription || null;
   if (state.user) state.isMember = Boolean(state.activeSubscription);
@@ -1802,6 +1803,10 @@ const state = {
   translations: {},
   translationBusy: "",
   translationMessage: "",
+  articleInsights: {},
+  articleInsightBusy: new Set(),
+  articleInsightAttempted: new Set(),
+  articleInsightMessages: {},
   translationLanguages: [
     { locale: "hi-IN", language: "Hindi" },
     { locale: "es-ES", language: "Spanish" },
@@ -4733,12 +4738,33 @@ function readerToolbarTemplate(story, history) {
 }
 
 function articleInsightTemplate(story) {
-  const points = [
-    story.dek,
-    `The central idea connects ${story.topic.toLowerCase()} with practical decisions readers can apply.`,
-    `Estimated difficulty: ${Number.parseInt(story.readTime, 10) > 7 ? "Intermediate" : "Accessible"}.`,
-  ];
-  return `<details class="article-insights" open><summary>${icon("spark", 16)}Article overview and key concepts</summary><p>${escapeHtml(story.dek)}</p><ul>${points.slice(1).map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul><div><span>Reading level: General audience</span><span>Key concepts: ${(story.tags || [story.topic]).slice(0,3).map(escapeHtml).join(", ")}</span></div></details>`;
+  const insight = state.articleInsights[story.slug];
+  const message = state.articleInsightMessages[story.slug];
+  if (!insight) return `<details class="article-insights" open><summary>${icon("spark", 16)}Article overview and key concepts</summary><p>${escapeHtml(message || "Preparing a concise overview…")}</p>${message ? `<button class="secondary-button" data-insight-retry="${escapeHtml(story.slug)}">Retry overview</button>` : ""}</details>`;
+  return `<details class="article-insights" open><summary>${icon("spark", 16)}Article overview and key concepts</summary><p>${escapeHtml(insight.overview)}</p>${insight.keyConcepts?.length ? `<div><span>Key concepts: ${insight.keyConcepts.map(escapeHtml).join(", ")}</span></div>` : ""}</details>`;
+}
+
+async function loadArticleInsight(story) {
+  if (!story || state.articleInsights[story.slug] || state.articleInsightBusy.has(story.slug) || state.articleInsightAttempted.has(story.slug)) return;
+  state.articleInsightBusy.add(story.slug);
+  state.articleInsightAttempted.add(story.slug);
+  state.articleInsightMessages[story.slug] = "";
+  render();
+  try {
+    let payload = await apiRequest(`/api/stories/${encodeURIComponent(story.slug)}/insight`, { method: "POST", body: "{}" });
+    for (let attempt = 0; !payload.insight && attempt < 12; attempt++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      payload = await apiRequest(`/api/stories/${encodeURIComponent(story.slug)}/insight`);
+    }
+    if (!payload.insight) throw new Error("The overview is still being prepared. Please retry shortly.");
+    state.articleInsights[story.slug] = payload.insight;
+    state.articleInsightMessages[story.slug] = "";
+  } catch (error) {
+    state.articleInsightMessages[story.slug] = error.message;
+  } finally {
+    state.articleInsightBusy.delete(story.slug);
+    render();
+  }
 }
 
 function recommendationTransparencyTemplate(story) {
@@ -7457,6 +7483,7 @@ function render() {
   const selectedStory = state.stories.find((story) => story.status === "published" && state.path.includes(`/stories/${story.slug}`));
   if (selectedStory) {
     beginArticleSession(selectedStory);
+    loadArticleInsight(selectedStory);
     if (state.pendingResumeSlug === selectedStory.slug) {
       const position = state.readingHistory.find((entry) => entry.slug === selectedStory.slug)?.position || 0;
       state.pendingResumeSlug = "";
@@ -8161,6 +8188,7 @@ document.addEventListener("click", async (event) => {
   const paymentSubmit = target.dataset.paymentSubmit;
   const gateway = target.dataset.gateway;
   const translateStory = target.dataset.translateStory;
+  const insightRetry = target.dataset.insightRetry;
   const paymentGatewayToggle = target.dataset.paymentGatewayToggle;
   const saveProvider = target.dataset.saveProvider;
   const menuMove = target.dataset.menuMove;
@@ -9537,6 +9565,13 @@ document.addEventListener("click", async (event) => {
   if (translateStory) {
     const story = state.stories.find((item) => item.slug === translateStory);
     if (story) selectArticleLanguage(story, target.dataset.translateLocale || state.preferences.locale);
+    return;
+  }
+  if (insightRetry) {
+    const story = state.stories.find((item) => item.slug === insightRetry);
+    state.articleInsightAttempted.delete(insightRetry);
+    state.articleInsightMessages[insightRetry] = "";
+    if (story) loadArticleInsight(story);
     return;
   }
   if (saveProvider) {

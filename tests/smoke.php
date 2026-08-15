@@ -35,6 +35,18 @@ assert_true($cachedTranslationResult['created'] === 0 && isset(stored_translatio
 assert_true(stored_story_translation($cachedTranslationStory['slug'], 'hi-IN', $cachedTranslationHash)['title'] === 'अनुवादित शीर्षक', 'language-specific copies are served from the shared database cache');
 assert_true(stored_story_translation($cachedTranslationStory['slug'], 'hi-IN', hash('sha256', 'edited-source')) === null, 'cached translations are invalidated when the source article changes');
 
+$normalizedInsight = normalize_article_insight([
+    'overview' => implode(' ', array_fill(0, 45, 'overview')),
+    'keyConcepts' => ['reader economics model', 'editorial trust signal', 'membership growth strategy', 'extra concept'],
+], $cachedTranslationStory);
+$insightWordCount = count(preg_split('/\s+/u', trim($normalizedInsight['overview'] . ' ' . implode(' ', $normalizedInsight['keyConcepts']))) ?: []);
+assert_true($insightWordCount <= 50, 'article overview and key concepts are capped at 50 words combined');
+$pdo->prepare("INSERT INTO story_insights (story_slug, source_hash, overview, key_concepts_json, status, error, created_at, updated_at) VALUES (?, ?, ?, ?, 'ready', '', ?, ?)")
+    ->execute([$cachedTranslationStory['slug'], $cachedTranslationHash, $normalizedInsight['overview'], json_encode($normalizedInsight['keyConcepts'], JSON_UNESCAPED_UNICODE), $now, $now]);
+assert_true(ensure_article_insight($cachedTranslationStory)['overview'] === $normalizedInsight['overview'], 'stored article overviews are reused without another OpenAI request');
+$editedInsightStory = array_merge($cachedTranslationStory, ['contentHtml' => '<p>Updated article body</p>']);
+assert_true(stored_article_insight($editedInsightStory['slug'], story_source_hash($editedInsightStory)) === null, 'an article edit invalidates its previous overview');
+
 $publicPreferences = [
     'paymentGatewayEnabled' => ['razorpay' => false],
     'navigationMenus' => ['header' => [['Stories', '/']], 'footer' => [['Help', '/support']]],

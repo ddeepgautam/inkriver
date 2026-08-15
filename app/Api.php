@@ -1052,11 +1052,15 @@ function create_or_update_story_from_payload(array $session, array $body, string
     record_story_revision($story, $session['user']['id'], ($existingIndex !== null ? 'Story updated' : 'Story created') . ' as ' . $story['status'] . ' via ' . $source);
     rebuild_story_search_index($stories);
     $translationJobId = null;
-    if ($story['status'] === 'published' && provider_status()['ai']) $translationJobId = enqueue_background_job('translations.backfill');
+    $insightJobId = null;
+    if ($story['status'] === 'published' && provider_status()['ai']) {
+        $translationJobId = enqueue_background_job('translations.backfill');
+        $insightJobId = enqueue_background_job('insights.generate', ['storySlug' => $story['slug']]);
+    }
     if ($story['status'] === 'scheduled' && $story['scheduledAt'] !== '') enqueue_background_job('publishing.scheduled', [], $story['scheduledAt']);
     if ($story['status'] === 'published') create_notification($session['user']['id'], 'story_published', 'Story published', $story['title'] . ' is now live.', '/stories/' . $story['slug']);
     audit_log($session['user']['id'], $existingIndex !== null ? 'story.update' : 'story.create', 'story', $story['slug'], ['source' => $source, 'status' => $story['status']]);
-    return ['story' => $story, 'created' => $existingIndex === null, 'translationJobId' => $translationJobId];
+    return ['story' => $story, 'created' => $existingIndex === null, 'translationJobId' => $translationJobId, 'insightJobId' => $insightJobId];
 }
 
 function first_admin_session_for_mcp(): ?array
@@ -1528,6 +1532,7 @@ function mcp_output_schemas(): array
             'story' => mcp_story_schema(),
             'created' => ['type' => 'boolean'],
             'translationJobId' => ['type' => ['string', 'null']],
+            'insightJobId' => ['type' => ['string', 'null']],
         ], ['story', 'created']),
     ];
 }
@@ -2023,6 +2028,111 @@ function ensure_story_translations(array $story, array $languages = []): array
         }
     }
     return ['slug' => $slug, 'created' => $created, 'failed' => $failed];
+}
+
+function article_insight_payload(array $row): array
+{
+    return [
+        'storySlug' => $row['story_slug'],
+        'overview' => $row['overview'],
+        'keyConcepts' => parse_json_field($row['key_concepts_json'], []),
+        'status' => $row['status'],
+        'updatedAt' => $row['updated_at'],
+    ];
+}
+
+function stored_article_insight(string $slug, ?string $sourceHash = null): ?array
+{
+    $sql = "SELECT * FROM story_insights WHERE story_slug = ? AND status = 'ready'";
+    $arguments = [$slug];
+    if ($sourceHash !== null) {
+        $sql .= ' AND source_hash = ?';
+        $arguments[] = $sourceHash;
+    }
+    $stmt = Database::pdo()->prepare($sql . ' LIMIT 1');
+    $stmt->execute($arguments);
+    $row = $stmt->fetch();
+    return $row ? article_insight_payload($row) : null;
+}
+
+function stored_article_insights(): array
+{
+    $map = [];
+    $sourceHashes = [];
+    foreach (document_value('stories', []) as $story) {
+        if (is_array($story) && !empty($story['slug']) && ($story['status'] ?? '') === 'published') $sourceHashes[(string) $story['slug']] = story_source_hash($story);
+    }
+    foreach (Database::pdo()->query("SELECT * FROM story_insights WHERE status = 'ready'")->fetchAll() as $row) {
+        if (($sourceHashes[$row['story_slug']] ?? '') !== $row['source_hash']) continue;
+        $map[$row['story_slug']] = article_insight_payload($row);
+    }
+    return $map;
+}
+
+function limited_words(string $text, int $limit): string
+{
+    $words = preg_split('/\s+/u', trim(preg_replace('/\s+/u', ' ', strip_tags($text)) ?? '')) ?: [];
+    return implode(' ', array_slice(array_values(array_filter($words, fn($word) => $word !== '')), 0, max(0, $limit)));
+}
+
+function normalize_article_insight(array $result, array $story): array
+{
+    $overview = limited_words((string) ($result['overview'] ?? $result['summary'] ?? ''), 40);
+    if ($overview === '') throw new RuntimeException('The article overview response was empty.');
+    $overviewCount = count(preg_split('/\s+/u', $overview) ?: []);
+    $remaining = max(0, 50 - $overviewCount);
+    $rawConcepts = $result['keyConcepts'] ?? $result['key_concepts'] ?? $story['tags'] ?? [];
+    if (is_string($rawConcepts)) $rawConcepts = preg_split('/[,;\n]+/', $rawConcepts) ?: [];
+    $concepts = [];
+    foreach (is_array($rawConcepts) ? $rawConcepts : [] as $concept) {
+        if ($remaining <= 0 || count($concepts) >= 5) break;
+        $clean = limited_words((string) $concept, min(3, $remaining));
+        if ($clean === '' || in_array(strtolower($clean), array_map('strtolower', $concepts), true)) continue;
+        $concepts[] = $clean;
+        $remaining -= count(preg_split('/\s+/u', $clean) ?: []);
+    }
+    return ['overview' => $overview, 'keyConcepts' => $concepts];
+}
+
+function generate_article_insight(array $story): array
+{
+    $source = substr(trim(strip_tags((string) ($story['contentHtml'] ?? ''))), 0, 50000);
+    if ($source === '') $source = substr(implode("\n", is_array($story['body'] ?? null) ? $story['body'] : []), 0, 50000);
+    $prompt = "Create a concise article overview and key concepts. The overview plus all key-concept words must total no more than 50 words. Return strict JSON only with keys overview and keyConcepts. keyConcepts must be an array of short phrases.\n\n" . json_encode([
+        'title' => $story['title'] ?? '',
+        'dek' => $story['dek'] ?? '',
+        'content' => $source,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $text = openai_text_response($prompt, 'You summarize published articles accurately and concisely. Return only valid JSON. Never exceed the requested word limit.');
+    $clean = trim(preg_replace('/^```(?:json)?|```$/m', '', $text));
+    $decoded = json_decode($clean, true);
+    if (!is_array($decoded)) throw new RuntimeException('Article overview response was not valid JSON.');
+    return normalize_article_insight($decoded, $story);
+}
+
+function ensure_article_insight(array $story): ?array
+{
+    $slug = (string) ($story['slug'] ?? '');
+    if ($slug === '') return null;
+    $sourceHash = story_source_hash($story);
+    if ($ready = stored_article_insight($slug, $sourceHash)) return $ready;
+
+    $now = now_iso();
+    $staleAt = (new DateTimeImmutable('-5 minutes'))->format('Y-m-d\TH:i:s.v\Z');
+    $reservation = Database::pdo()->prepare("INSERT INTO story_insights (story_slug, source_hash, overview, key_concepts_json, status, error, created_at, updated_at) VALUES (?, ?, '', '[]', 'generating', '', ?, ?) ON CONFLICT(story_slug) DO UPDATE SET source_hash = excluded.source_hash, overview = '', key_concepts_json = '[]', status = 'generating', error = '', updated_at = excluded.updated_at WHERE story_insights.source_hash != excluded.source_hash OR story_insights.status = 'failed' OR (story_insights.status = 'generating' AND story_insights.updated_at < ?)");
+    $reservation->execute([$slug, $sourceHash, $now, $now, $staleAt]);
+    if ($reservation->rowCount() === 0) return stored_article_insight($slug, $sourceHash);
+
+    try {
+        $insight = generate_article_insight($story);
+        Database::pdo()->prepare("UPDATE story_insights SET overview = ?, key_concepts_json = ?, status = 'ready', error = '', updated_at = ? WHERE story_slug = ? AND source_hash = ?")
+            ->execute([$insight['overview'], json_encode($insight['keyConcepts'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), now_iso(), $slug, $sourceHash]);
+        return stored_article_insight($slug, $sourceHash);
+    } catch (Throwable $error) {
+        Database::pdo()->prepare("UPDATE story_insights SET status = 'failed', error = ?, updated_at = ? WHERE story_slug = ? AND source_hash = ?")
+            ->execute([substr($error->getMessage(), 0, 1000), now_iso(), $slug, $sourceHash]);
+        throw $error;
+    }
 }
 
 function rec_add_weight(array &$map, string $key, float $amount): void
@@ -3339,6 +3449,7 @@ function publish_scheduled_stories(): array
             $story['scheduledAt'] = '';
             record_story_revision($story, null, 'Scheduled publishing job');
             ensure_story_translations($story);
+            ensure_article_insight($story);
             $published++;
             $changed = true;
         }
@@ -3922,6 +4033,16 @@ function run_background_job(array $job): array
             $results = [];
             foreach ($stories as $story) $results[] = ensure_story_translations($story);
             return ['processed' => count($stories), 'created' => array_sum(array_column($results, 'created')), 'failed' => array_sum(array_column($results, 'failed'))];
+        })(),
+        'insights.generate' => (function () use ($payload) {
+            if (!provider_status()['ai']) throw new RuntimeException('AI provider is not configured.');
+            $slug = (string) ($payload['storySlug'] ?? '');
+            foreach (document_value('stories', []) as $story) {
+                if (is_array($story) && ($story['slug'] ?? '') === $slug && ($story['status'] ?? '') === 'published') {
+                    return ['storySlug' => $slug, 'insight' => ensure_article_insight($story)];
+                }
+            }
+            throw new RuntimeException('Published story not found for insight generation.');
         })(),
         'publishing.scheduled' => publish_scheduled_stories(),
         'newsletters.send' => send_due_newsletters(),
@@ -4622,6 +4743,7 @@ function handle_api(string $path, string $method): void
             'likedStorySlugs' => $likedStorySlugs,
             'translations' => $translations,
             'translationLanguages' => configured_translation_languages(),
+            'articleInsights' => stored_article_insights(),
             'ads' => active_ads(),
             'featureFlags' => public_feature_flags($session),
             'providers' => provider_status(),
@@ -4689,6 +4811,32 @@ function handle_api(string $path, string $method): void
         }
         if (!$ready) json_response(['error' => 'TRANSLATION_FAILED', 'message' => 'The translation could not be prepared. Please try again shortly.'], 502);
         json_response(['translation' => $ready]);
+    }
+
+    if (in_array($method, ['GET', 'POST'], true) && preg_match('#^/api/stories/([^/]+)/insight$#', $path, $m)) {
+        $slug = rawurldecode($m[1]);
+        $story = null;
+        foreach (document_value('stories', []) as $candidate) {
+            if (is_array($candidate) && ($candidate['slug'] ?? '') === $slug && ($candidate['status'] ?? '') === 'published') {
+                $story = $candidate;
+                break;
+            }
+        }
+        if (!$story) json_response(['error' => 'NOT_FOUND', 'message' => 'Published story not found.'], 404);
+        $sourceHash = story_source_hash($story);
+        if ($ready = stored_article_insight($slug, $sourceHash)) json_response(['insight' => $ready]);
+        if ($method === 'GET') json_response(['status' => 'generating'], 202);
+        if (!provider_status()['ai']) json_response(['error' => 'AI_NOT_CONFIGURED', 'message' => 'Article overview is temporarily unavailable.'], 503);
+        [$ipIdentity] = request_rate_limit_identity();
+        enforce_auth_rate_limit('article-insight', $ipIdentity, 20, 3600);
+        record_auth_rate_limit_failure('article-insight', $ipIdentity, 20, 3600, 3600);
+        try {
+            $insight = ensure_article_insight($story);
+            if (!$insight) json_response(['status' => 'generating'], 202);
+            json_response(['insight' => $insight]);
+        } catch (Throwable) {
+            json_response(['error' => 'INSIGHT_FAILED', 'message' => 'The article overview could not be prepared. Please try again shortly.'], 502);
+        }
     }
 
     if ($method === 'GET' && ($path === '/api/me/entitlements' || $path === '/api/me/usage')) {
@@ -4932,6 +5080,7 @@ function handle_api(string $path, string $method): void
             $body = read_json();
             $updatedAt = now_iso();
             $value = $body['value'] ?? null;
+            $previousStories = $key === 'stories' ? document_value('stories', []) : [];
             $pdo->prepare('INSERT INTO platform_documents (key, value_json, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at')
                 ->execute([$key, json_encode($value, JSON_UNESCAPED_SLASHES), $session['user']['id'], $updatedAt]);
             if ($key === 'site-seo') {
@@ -4941,7 +5090,17 @@ function handle_api(string $path, string $method): void
             if ($key === 'stories') rebuild_story_search_index(is_array($value) ? $value : null);
             if ($key === 'plans' && is_array($value)) entitlement_sync_plans($value, $session['user']['id']);
             if ($key === 'stories' && is_array($value)) {
-                foreach ($value as $story) if (is_array($story)) record_story_revision($story, $session['user']['id'], 'Admin stories document update');
+                $previousHashes = [];
+                foreach (is_array($previousStories) ? $previousStories : [] as $previousStory) {
+                    if (is_array($previousStory) && !empty($previousStory['slug'])) $previousHashes[(string) $previousStory['slug']] = story_source_hash($previousStory);
+                }
+                foreach ($value as $story) {
+                    if (!is_array($story)) continue;
+                    record_story_revision($story, $session['user']['id'], 'Admin stories document update');
+                    $slug = (string) ($story['slug'] ?? '');
+                    $changed = $slug !== '' && ($previousHashes[$slug] ?? '') !== story_source_hash($story);
+                    if ($changed && ($story['status'] ?? '') === 'published' && provider_status()['ai']) enqueue_background_job('insights.generate', ['storySlug' => $slug]);
+                }
             }
             audit_log($session['user']['id'], 'admin.document_update', 'platform_document', $key);
             json_response(['value' => $value, 'updatedAt' => $updatedAt]);
@@ -4979,7 +5138,7 @@ function handle_api(string $path, string $method): void
         if ($method === 'POST') {
             $body = read_json();
             $type = (string) ($body['type'] ?? '');
-            if (!in_array($type, ['recommendations.rebuild', 'recommendations.train_user', 'translations.backfill', 'publishing.scheduled', 'newsletters.send', 'checkouts.recover', 'subscriptions.sync', 'payouts.execute', 'moderation.scan', 'media.variants', 'pwa.sync'], true)) {
+            if (!in_array($type, ['recommendations.rebuild', 'recommendations.train_user', 'translations.backfill', 'insights.generate', 'publishing.scheduled', 'newsletters.send', 'checkouts.recover', 'subscriptions.sync', 'payouts.execute', 'moderation.scan', 'media.variants', 'pwa.sync'], true)) {
                 json_response(['error' => 'INVALID_JOB_TYPE', 'message' => 'Unsupported background job type.'], 400);
             }
             json_response(['jobId' => enqueue_background_job($type, is_array($body['payload'] ?? null) ? $body['payload'] : [])], 201);

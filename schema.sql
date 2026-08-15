@@ -194,6 +194,18 @@
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS story_insights (
+    story_slug TEXT PRIMARY KEY,
+    source_hash TEXT NOT NULL,
+    overview TEXT NOT NULL DEFAULT '',
+    key_concepts_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'generating'
+      CHECK (status IN ('generating', 'ready', 'failed')),
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS subscription_plans (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -1194,6 +1206,7 @@
   CREATE INDEX IF NOT EXISTS idx_recommendation_scores_user_score ON recommendation_story_scores(user_id, score DESC);
   CREATE INDEX IF NOT EXISTS idx_comments_story_created ON comments(story_slug, created_at);
   CREATE INDEX IF NOT EXISTS idx_story_translations_locale ON story_translations(locale, status);
+  CREATE INDEX IF NOT EXISTS idx_story_insights_status ON story_insights(status, updated_at);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);
   CREATE INDEX IF NOT EXISTS idx_plan_versions_plan_status ON subscription_plan_versions(plan_id, status, version DESC);
   CREATE INDEX IF NOT EXISTS idx_usage_user_cap_period ON entitlement_usage_events(user_id, capability_key, period_start, period_end);
