@@ -3798,6 +3798,8 @@ button:disabled {
 }
 
 .profile-identity-card {
+  display: grid;
+  align-content: start;
   justify-items: center;
   text-align: center;
 }
@@ -3874,8 +3876,38 @@ button:disabled {
 }
 
 .profile-photo-field {
+  display: grid;
+  gap: 7px;
   width: 100%;
   margin-top: 10px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.profile-photo-field input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--muted);
+  font: inherit;
+}
+
+.profile-photo-field input::file-selector-button {
+  min-height: 34px;
+  margin-right: 9px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--soft-2);
+  color: var(--accent-dark);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .profile-identity-card > .text-button {
@@ -4173,6 +4205,13 @@ button:disabled {
 
 .profile-save-row > button {
   flex: 0 0 auto;
+}
+
+.profile-settings-page .primary-button,
+.profile-settings-page .secondary-button,
+.profile-settings-page .text-button,
+.profile-settings-page .dashboard-setting-link {
+  min-height: 44px;
 }
 
 .password-fields {
@@ -6682,6 +6721,22 @@ button:disabled {
   .remaining-time { margin-left: 0; }
 }
 
+@media (max-width: 820px) {
+  .profile-settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-settings-sidebar {
+    position: static;
+  }
+
+  .profile-settings-nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+  }
+}
+
 @media (max-width: 680px) {
   .profile-settings-heading,
   .profile-danger-zone,
@@ -6849,7 +6904,10 @@ button:disabled {
     scroll-behavior: auto;
   }
 
-  .toggle span {
+  .toggle span,
+  .profile-completeness > i span,
+  .profile-preference-list input[type="checkbox"],
+  .profile-preference-list input[type="checkbox"]::after {
     transition: none;
   }
 }
