@@ -296,31 +296,61 @@ const paymentGateways = [
     id: "razorpay",
     name: "Razorpay",
     type: "Cards, UPI, wallets",
-    fields: [["razorpayKeyId", "Key ID"], ["razorpayKeySecret", "Key Secret"]],
+    fields: [["key_id", "Key ID"], ["key_secret", "Key secret"], ["webhook_secret", "Webhook secret"]],
     serverNote: "Create and verify orders on your backend before opening Checkout.",
   },
   {
     id: "paypal",
     name: "PayPal",
     type: "PayPal wallet, cards",
-    fields: [["paypalClientId", "Client ID"], ["paypalSecret", "Secret"]],
+    fields: [["client_id", "Client ID"], ["client_secret", "Client secret"], ["webhook_id", "Webhook ID"], ["environment", "Environment (sandbox or production)"]],
     serverNote: "Use the client ID in the JS SDK and create/capture orders on your backend.",
   },
   {
     id: "payu",
     name: "PayU",
     type: "Cards, UPI, netbanking",
-    fields: [["payuMerchantKey", "Merchant Key"], ["payuSalt", "Salt"]],
+    fields: [["merchant_key", "Merchant key"], ["salt", "Salt"], ["environment", "Environment (test or production)"]],
     serverNote: "Generate hashes with Salt on your backend. Do not expose Salt in production frontend code.",
   },
   {
     id: "cashfree",
     name: "Cashfree Payments",
     type: "Hosted checkout, UPI",
-    fields: [["cashfreeClientId", "Client ID"], ["cashfreeClientSecret", "Client Secret"]],
+    fields: [["client_id", "Client ID"], ["client_secret", "Client secret"], ["webhook_secret", "Webhook secret"], ["environment", "Environment (sandbox or production)"]],
     serverNote: "Create an order/session server-side, then load the Cashfree web checkout.",
   },
 ];
+
+const serviceProviders = [
+  { id: "openai", name: "OpenAI", note: "Used for article translation and editorial AI features.", fields: [["api_key", "API key"], ["model", "Model (optional)"], ["api_url", "Responses API URL (optional)"]] },
+  { id: "email", name: "Email delivery", note: "Transactional email service endpoint and bearer key.", fields: [["api_url", "API URL"], ["api_key", "API key"]] },
+  { id: "push", name: "Web push", note: "Use VAPID keys or a hosted push API.", fields: [["vapid_public_key", "VAPID public key"], ["vapid_private_key", "VAPID private key"], ["api_url", "Push API URL (optional)"], ["api_key", "Push API key (optional)"]] },
+  { id: "geoip", name: "IP intelligence", note: "Location checks used for payment availability rules.", fields: [["api_url", "API URL"], ["api_key", "API key"]] },
+  { id: "mcp", name: "MCP publishing", note: "Secure token and optional publishing identity.", fields: [["api_token", "API token"], ["user_email", "Admin or writer email (optional)"]] },
+  { id: "google", name: "Google login", note: "OAuth credentials for Google sign-in.", fields: [["client_id", "Client ID"], ["client_secret", "Client secret"]] },
+  { id: "facebook", name: "Facebook login", note: "OAuth credentials for Facebook sign-in.", fields: [["app_id", "App ID"], ["app_secret", "App secret"]] },
+];
+
+const navigationDestinations = [
+  ["Home", "/"], ["Resources", "/resources"], ["Business Network", "/business-network"],
+  ["Membership", "/pricing"], ["Dashboard", "/dashboard"], ["About us", "/about"], ["Contact us", "/contact"],
+  ["Support", "/support"], ["Security", "/security"], ["Terms", "/terms"], ["Privacy", "/privacy"],
+  ["Search", "/search"], ["Become an author", "/become-author"], ["Write", "/write"], ["Notifications", "/notifications"], ["Account", "/me"],
+];
+
+const defaultNavigationMenus = {
+  header: [["Topics", "/"], ["Resources", "/resources"], ["Business Network", "/business-network"], ["Membership", "/pricing"], ["Dashboard", "/dashboard"]],
+  footer: [["About us", "/about"], ["Contact us", "/contact"], ["Terms", "/terms"], ["Privacy", "/privacy"], ["Security", "/security"], ["Resources", "/resources"], ["Support", "/support"]],
+};
+
+function availableNavigationDestinations() {
+  return [
+    ...navigationDestinations,
+    ...state.categories.map((category) => [`Category: ${category.name}`, `/category/${category.slug}`]),
+    ...state.publications.filter((publication) => publication.status === "active").map((publication) => [`Publication: ${publication.name}`, `/publications/${publication.slug}`]),
+  ];
+}
 
 const supportedCurrencies = [
   { code: "INR", symbol: "INR", label: "Indian Rupee" },
@@ -442,13 +472,15 @@ function persistComments() {
 }
 
 function loadGatewaySettings() {
-  return { fxApiKey: "", cashfreeEnvironment: "sandbox", googleLoginEnabled: true, facebookLoginEnabled: true, googleClientId: "", facebookAppId: "", contactEmail: "", socialProfiles: {} };
+  return { fxApiKey: "", cashfreeEnvironment: "sandbox", googleLoginEnabled: true, facebookLoginEnabled: true, paymentGatewayEnabled: {}, navigationMenus: structuredClone(defaultNavigationMenus), contactEmail: "", socialProfiles: {} };
 }
 
 function persistGatewaySettings() {
   persistAdminDocument("platform-settings", {
     googleLoginEnabled: state.gatewaySettings.googleLoginEnabled !== false,
     facebookLoginEnabled: state.gatewaySettings.facebookLoginEnabled !== false,
+    paymentGatewayEnabled: state.gatewaySettings.paymentGatewayEnabled || {},
+    navigationMenus: state.gatewaySettings.navigationMenus || defaultNavigationMenus,
     cashfreeEnvironment: state.gatewaySettings.cashfreeEnvironment || "sandbox",
     translationLanguages: state.translationLanguages,
     socialProfiles: state.gatewaySettings.socialProfiles || {},
@@ -476,7 +508,7 @@ function paypalRestrictedForCurrentUser() {
 }
 
 function visiblePaymentGateways() {
-  return paymentGateways.filter((gateway) => gateway.id !== "paypal" || !paypalRestrictedForCurrentUser());
+  return paymentGateways.filter((gateway) => state.gatewaySettings.paymentGatewayEnabled?.[gateway.id] !== false && (gateway.id !== "paypal" || !paypalRestrictedForCurrentUser()));
 }
 
 function featureEnabled(key, fallback = true) {
@@ -1283,6 +1315,7 @@ async function hydratePlatformState() {
   const payload = await apiRequest(`/api/platform/bootstrap?fresh=${Date.now()}`);
   const documents = payload.documents || {};
   const userDocuments = payload.userDocuments || {};
+  if (payload.providerPreferences) state.gatewaySettings = { ...state.gatewaySettings, ...payload.providerPreferences };
   if (Array.isArray(documents.stories) && documents.stories.length) {
     state.stories = documents.stories.map((story, index) => ({
       ...normalizeStory(story, index),
@@ -4202,13 +4235,7 @@ function notificationsPageTemplate() {
 }
 
 function headerTemplate() {
-  const links = [
-    ["Topics", "/"],
-    ["Resources", "/resources"],
-    ["Business Network", "/business-network"],
-    ["Membership", "/pricing"],
-    ["Dashboard", state.user?.role === "admin" ? "/admin" : "/dashboard"],
-  ];
+  const links = (state.gatewaySettings.navigationMenus?.header || defaultNavigationMenus.header).map(([label, route]) => [label, route === "/dashboard" && state.user?.role === "admin" ? "/admin" : route]);
   return `
     <header class="site-header">
       <div class="header-inner">
@@ -4218,7 +4245,7 @@ function headerTemplate() {
           ${state.searchOpen ? searchAutocompleteTemplate() : ""}
         </div>
         <nav class="desktop-nav" aria-label="Primary navigation">
-          ${links.map(([label, to]) => `<button class="nav-link ${state.path === to ? "active" : ""}" data-route="${to}">${label}</button>`).join("")}
+          ${links.map(([label, to]) => `<button class="nav-link ${state.path === to ? "active" : ""}" data-route="${escapeHtml(to)}">${escapeHtml(label)}</button>`).join("")}
         </nav>
         <div class="header-actions">
           <button class="icon-button theme-button" data-action="toggle-theme" aria-label="Switch to ${state.theme === "day" ? "night" : "day"} mode" title="Switch to ${state.theme === "day" ? "night" : "day"} mode">
@@ -4237,7 +4264,7 @@ function headerTemplate() {
             <button class="close-button" data-action="close-menu" aria-label="Close menu">${icon("close", 18)}</button>
           </div>
           <nav>
-            ${links.map(([label, to]) => `<button class="${state.path === to ? "active" : ""}" data-route="${to}">${label}</button>`).join("")}
+            ${links.map(([label, to]) => `<button class="${state.path === to ? "active" : ""}" data-route="${escapeHtml(to)}">${escapeHtml(label)}</button>`).join("")}
           </nav>
           <div class="mobile-panel-actions">
             <button class="primary-button" data-action="${state.user ? "open-account" : "open-login"}">${state.user ? `Account: ${state.user.name}` : "Sign in / Join"}</button>
@@ -5769,7 +5796,7 @@ function productionSuiteTemplate() {
         <div class="installer-guide">
           <strong>${escapeHtml(activeStep[1])} setup</strong>
           <p>${installerGuideText(activeStep[0])}</p>
-          <div class="settings-actions"><button class="secondary-button" data-action="add-provider-credential">Add encrypted credential</button><button class="secondary-button" data-action="scroll-github-updates">GitHub updates</button><button class="secondary-button" data-action="run-production-jobs">Test jobs</button><button class="secondary-button" data-action="export-installer-report">Export launch report</button><button class="secondary-button" data-route="/admin/security">Security center</button></div>
+          <div class="settings-actions"><button class="secondary-button" data-route="/admin/settings">Configure providers</button><button class="secondary-button" data-action="scroll-github-updates">GitHub updates</button><button class="secondary-button" data-action="run-production-jobs">Test jobs</button><button class="secondary-button" data-action="export-installer-report">Export launch report</button><button class="secondary-button" data-route="/admin/security">Security center</button></div>
         </div>
         <div class="compact-list readiness-list">${(installer.readiness || []).map((item) => `<article><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.detail || "")}</small></span><b class="status-pill">${item.ready ? "ready" : "needed"}</b></article>`).join("")}</div>
       </article>
@@ -5899,7 +5926,7 @@ function productionSuiteTemplate() {
 function installerGuideText(step) {
   const text = {
     server: "Confirm SQLite, uploads, and storage are writable on Hostinger before opening traffic.",
-    security: "Set APP_SECRET and CRON_SECRET, then store provider API keys in the encrypted credential vault.",
+    security: "Set APP_SECRET and CRON_SECRET, then save API keys inside each provider's settings box.",
     payments: "Configure Razorpay, PayU, Cashfree, and PayPal only for supported countries, then run live gateway tests.",
     email: "Add EMAIL_API_URL and EMAIL_API_KEY so verification, recovery, newsletters, and alerts can be delivered.",
     launch: "Create at least one admin, publish core pages, run background jobs, rebuild search, and verify backups.",
@@ -6234,8 +6261,19 @@ function adminSettingsTemplate() {
   return adminShellTemplate(
     "Platform settings",
     "Manage subscription packages, payment credentials, currency conversion, and social login.",
-    `<section class="admin-settings-stack">${subscriptionManagerTemplate()}${publicationManagerTemplate()}${socialProfileManagerTemplate()}${gatewaySettingsTemplate()}</section>`,
+    `<section class="admin-settings-stack">${subscriptionManagerTemplate()}${publicationManagerTemplate()}${socialProfileManagerTemplate()}${menuManagementTemplate()}${gatewaySettingsTemplate()}</section>`,
   );
+}
+
+function menuManagementTemplate() {
+  const menus = state.gatewaySettings.navigationMenus || defaultNavigationMenus;
+  const renderMenu = (location, title) => {
+    const items = Array.isArray(menus[location]) ? menus[location] : defaultNavigationMenus[location];
+    return `<section class="menu-editor"><h3>${title}</h3><p class="settings-note">Choose a page or feature, edit its public label, and arrange the display order.</p>
+      <div class="menu-editor-list">${items.map(([label, route], index) => `<article><span class="menu-order">${index + 1}</span><label><span>Label</span><input data-menu-label="${location}:${index}" value="${escapeHtml(label)}" maxlength="60" /></label><label><span>Destination</span><select data-menu-route="${location}:${index}">${availableNavigationDestinations().map(([optionLabel, optionRoute]) => `<option value="${optionRoute}" ${route === optionRoute ? "selected" : ""}>${escapeHtml(optionLabel)} · ${escapeHtml(optionRoute)}</option>`).join("")}</select></label><div class="menu-editor-actions"><button class="secondary-button" data-menu-move="${location}:${index}:-1" ${index === 0 ? "disabled" : ""}>Up</button><button class="secondary-button" data-menu-move="${location}:${index}:1" ${index === items.length - 1 ? "disabled" : ""}>Down</button><button class="secondary-button danger-button" data-menu-remove="${location}:${index}">Remove</button></div></article>`).join("") || `<div class="empty-state">No links in this menu.</div>`}</div>
+      <div class="settings-actions"><select data-menu-add-select="${location}">${availableNavigationDestinations().map(([label, route]) => `<option value="${route}">${escapeHtml(label)} · ${escapeHtml(route)}</option>`).join("")}</select><button class="secondary-button" data-menu-add="${location}">Add link</button></div></section>`;
+  };
+  return `<div class="work-panel menu-management-panel"><div class="panel-title">${icon("menu", 18)}<h2>Header & footer menus</h2></div><div class="menu-management-grid">${renderMenu("header", "Header menu")}${renderMenu("footer", "Footer menu")}</div><div class="settings-actions"><button class="primary-button" data-action="save-gateway-settings">Save menu arrangement</button><span>${state.gatewaySettingsSaved ? "Menu arrangement saved" : "Changes appear publicly after saving."}</span></div></div>`;
 }
 
 function publicationManagerTemplate() {
@@ -6883,94 +6921,32 @@ function subscriptionManagerTemplate() {
   `;
 }
 
+function providerCredentialFieldsTemplate(provider, fields) {
+  const stored = new Set((state.providerCredentials || []).filter((item) => item.provider === provider && item.enabled).map((item) => item.key));
+  return `<div class="provider-credential-fields">${fields.map(([key, label]) => {
+    const secret = /(secret|salt|api_key|token|private)/.test(key);
+    return `<label><span>${escapeHtml(label)}</span><input type="${secret ? "password" : "text"}" data-provider-input="${provider}" data-provider-key="${key}" autocomplete="new-password" placeholder="${stored.has(key) ? "Stored securely — leave blank to keep" : "Enter value"}" /></label>`;
+  }).join("")}</div><div class="provider-card-actions"><button class="primary-button" data-save-provider="${provider}">Save configuration</button><button class="secondary-button" data-test-provider="${provider}">Test</button></div>`;
+}
+
 function gatewaySettingsTemplate() {
-  const credentialRows = state.providerCredentials || [];
-  const providerTests = ["razorpay", "paypal", "payu", "cashfree", "openai", "email", "push", "geoip", "mcp", "google", "facebook"];
-  const credentialPresets = [
-    ["razorpay", "key_id"], ["razorpay", "key_secret"],
-    ["paypal", "client_id"], ["paypal", "client_secret"], ["paypal", "webhook_id"],
-    ["payu", "merchant_key"], ["payu", "salt"],
-    ["cashfree", "client_id"], ["cashfree", "client_secret"],
-    ["openai", "api_key"], ["email", "api_url"], ["email", "api_key"],
-    ["push", "api_url"], ["push", "api_key"],
-    ["mcp", "api_token"], ["mcp", "user_email"],
-    ["google", "client_id"], ["google", "client_secret"],
-    ["facebook", "app_id"], ["facebook", "app_secret"],
-    ["geoip", "api_url"], ["geoip", "api_key"],
-    ["deployment", "git_binary"], ["deployment", "php_binary"],
-  ];
-  return `
-    <div class="work-panel gateway-settings-panel">
-      <div class="panel-title">${icon("card")}<h2>Provider configuration</h2></div>
-      <p class="settings-note">Production credentials can be read from server environment variables or stored in the encrypted provider vault. Secret values are never exposed back to the browser.</p>
-      <div class="gateway-settings-grid">
-        <fieldset class="gateway-fieldset social-auth-fieldset">
-          <legend>Social login</legend>
-          <small>Enable or disable providers after their server OAuth credentials and callbacks are configured.</small>
-          <button class="toggle-row" data-boolean-setting="googleLoginEnabled" aria-pressed="${state.gatewaySettings.googleLoginEnabled !== false}">
-            <span>Enable Google login</span>
-            <span class="toggle ${state.gatewaySettings.googleLoginEnabled !== false ? "on" : ""}"><span></span></span>
-          </button>
-          <div class="gateway-status ${state.providerStatus.social.google ? "ready" : "needs-key"}"><strong>Google ${state.providerStatus.social.google ? "configured" : "unavailable"}</strong><span>GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET</span></div>
-          <button class="toggle-row" data-boolean-setting="facebookLoginEnabled" aria-pressed="${state.gatewaySettings.facebookLoginEnabled !== false}">
-            <span>Enable Facebook login</span>
-            <span class="toggle ${state.gatewaySettings.facebookLoginEnabled !== false ? "on" : ""}"><span></span></span>
-          </button>
-          <div class="gateway-status ${state.providerStatus.social.facebook ? "ready" : "needs-key"}"><strong>Facebook ${state.providerStatus.social.facebook ? "configured" : "unavailable"}</strong><span>FACEBOOK_APP_ID and FACEBOOK_APP_SECRET</span></div>
-        </fieldset>
-        ${paymentGateways.map((gateway) => `
-          <fieldset class="gateway-fieldset">
-            <legend>${gateway.name}</legend>
-            <small>${gateway.serverNote}</small>
-            <div class="gateway-status ${state.providerStatus.payments[gateway.id] ? "ready" : "needs-key"}"><strong>${state.providerStatus.payments[gateway.id] ? "Server configured" : "Credentials missing"}</strong><span>${gateway.fields.map(([key]) => key.replace(/([A-Z])/g, "_$1").toUpperCase()).join(" and ")}</span></div>
-            <small>Recurring memberships also require ${gateway.id.toUpperCase()}_PLAN_ID or per-package keys like ${gateway.id.toUpperCase()}_PLAN_ID_PLUS in the provider vault.</small>
-          </fieldset>
-        `).join("")}
-        <fieldset class="gateway-fieldset">
-          <legend>Currency API</legend>
-          <small>The public exchange-rate endpoint is called directly and falls back to cached estimates when unavailable.</small>
-          <label>
-            <span>Cashfree environment</span>
-            <select data-setting="cashfreeEnvironment">
-              <option value="sandbox" ${state.gatewaySettings.cashfreeEnvironment === "sandbox" ? "selected" : ""}>Sandbox</option>
-              <option value="production" ${state.gatewaySettings.cashfreeEnvironment === "production" ? "selected" : ""}>Production</option>
-            </select>
-          </label>
-        </fieldset>
-        <fieldset class="gateway-fieldset">
-          <legend>IP intelligence</legend>
-          <small>Used to enforce the strict rule that PayPal is hidden from Indian readers, including likely VPN or proxy traffic. Admins are exempt.</small>
-          <div class="gateway-status ${state.providerStatus.geoip ? "ready" : "needs-key"}"><strong>${state.providerStatus.geoip ? "GeoIP configured" : "GeoIP credentials missing"}</strong><span>IP_INTELLIGENCE_API_URL and IP_INTELLIGENCE_API_KEY, or geoip.api_url and geoip.api_key</span></div>
-          <button class="secondary-button" data-action="configure-ip-intelligence">Add IP intelligence API</button>
-        </fieldset>
-        <fieldset class="gateway-fieldset">
-          <legend>MCP publishing</legend>
-          <small>Connect ChatGPT, Claude, or another MCP client to automate draft creation, SEO, media, paywall, scheduling, and publishing.</small>
-          <div class="gateway-status ${state.providerStatus.mcp ? "ready" : "needs-key"}"><strong>${state.providerStatus.mcp ? "MCP token configured" : "MCP token missing"}</strong><span>MCP_API_TOKEN, or mcp.api_token in the encrypted vault. Optional mcp.user_email chooses the admin/writer identity.</span></div>
-        </fieldset>
-      </div>
-      <section class="credential-vault">
-        <div class="panel-title">${icon("lock", 16)}<h3>Encrypted API key vault</h3></div>
-        <p class="settings-note">Choose a preset below to add API keys for payments, AI, email, push, social login, IP intelligence, or server deployment. Values are encrypted and never shown after saving.</p>
-        <div class="credential-preset-grid">${credentialPresets.map(([provider, key]) => `<button class="secondary-button" data-credential-provider="${provider}" data-credential-key="${key}">${escapeHtml(provider)}.${escapeHtml(key)}</button>`).join("")}</div>
-        <div class="settings-actions">
-          <button class="primary-button" data-action="add-provider-credential">Add credential</button>
-          ${providerTests.map((provider) => `<button class="secondary-button" data-test-provider="${provider}">Test ${provider}</button>`).join("")}
-        </div>
-        ${state.providerTestMessage ? `<div class="payment-message">${escapeHtml(state.providerTestMessage)}</div>` : ""}
-        <div class="promotion-list">${credentialRows.length ? credentialRows.map((item) => `<article><span><strong>${escapeHtml(item.provider)} · ${escapeHtml(item.key)}</strong><small>${escapeHtml(item.environment || "production")} · ${item.enabled ? "enabled" : "disabled"} · ${escapeHtml(item.updatedAt || "")}</small></span><b>${item.configured ? "Stored" : "Missing"}</b></article>`).join("") : `<div class="empty-state">No encrypted provider credentials have been saved yet.</div>`}</div>
-      </section>
-      <div class="settings-actions">
-        <button class="primary-button" data-action="save-gateway-settings">Save public provider preferences</button>
-        <button class="secondary-button" data-action="refresh-rates">Test currency API</button>
-        <span>${state.gatewaySettingsSaved ? "Public preferences saved" : "Restart the server after changing provider environment variables."}</span>
-      </div>
+  return `<div class="work-panel gateway-settings-panel">
+    <div class="panel-title">${icon("card")}<h2>Provider configuration</h2></div>
+    <p class="settings-note">Enter credentials inside the provider they belong to. Values use encrypted server-side storage and are never returned to the browser after saving.</p>
+    <div class="gateway-settings-grid">
+      ${paymentGateways.map((gateway) => `<fieldset class="gateway-fieldset"><legend>${gateway.name}</legend><small>${gateway.serverNote}</small>
+        <button class="toggle-row" data-payment-gateway-toggle="${gateway.id}" aria-pressed="${state.gatewaySettings.paymentGatewayEnabled?.[gateway.id] !== false}"><span>${state.gatewaySettings.paymentGatewayEnabled?.[gateway.id] !== false ? "Gateway enabled" : "Gateway disabled"}</span><span class="toggle ${state.gatewaySettings.paymentGatewayEnabled?.[gateway.id] !== false ? "on" : ""}"><span></span></span></button>
+        <div class="gateway-status ${state.providerStatus.payments[gateway.id] ? "ready" : "needs-key"}"><strong>${state.providerStatus.payments[gateway.id] ? "Credentials configured" : "Credentials missing"}</strong><span>${state.gatewaySettings.paymentGatewayEnabled?.[gateway.id] === false ? "Disabled for all new checkouts" : "Available when required credentials are saved"}</span></div>
+        ${providerCredentialFieldsTemplate(gateway.id, [...gateway.fields, ...state.plans.map((plan) => [`plan_${plan.id.toLowerCase()}`, `${plan.name} recurring plan ID`])])}</fieldset>`).join("")}
+      ${serviceProviders.map((provider) => {
+        const ready = provider.id === "openai" ? state.providerStatus.ai : provider.id === "google" || provider.id === "facebook" ? state.providerStatus.social[provider.id] : state.providerStatus[provider.id];
+        const toggle = provider.id === "google" || provider.id === "facebook" ? `<button class="toggle-row" data-boolean-setting="${provider.id}LoginEnabled" aria-pressed="${state.gatewaySettings[`${provider.id}LoginEnabled`] !== false}"><span>${provider.id === "google" ? "Google" : "Facebook"} login ${state.gatewaySettings[`${provider.id}LoginEnabled`] !== false ? "enabled" : "disabled"}</span><span class="toggle ${state.gatewaySettings[`${provider.id}LoginEnabled`] !== false ? "on" : ""}"><span></span></span></button>` : "";
+        return `<fieldset class="gateway-fieldset"><legend>${provider.name}</legend><small>${provider.note}</small>${toggle}<div class="gateway-status ${ready ? "ready" : "needs-key"}"><strong>${ready ? "Configured" : "Credentials missing"}</strong></div>${providerCredentialFieldsTemplate(provider.id, provider.fields)}</fieldset>`;
+      }).join("")}
     </div>
-    ${adCampaignManagerTemplate()}
-    ${discountManagerTemplate()}
-    ${payoutManagerTemplate()}
-    ${translationManagerTemplate()}
-  `;
+    ${state.providerTestMessage ? `<div class="payment-message">${escapeHtml(state.providerTestMessage)}</div>` : ""}
+    <div class="settings-actions"><button class="primary-button" data-action="save-gateway-settings">Save provider preferences</button><button class="secondary-button" data-action="refresh-rates">Test currency API</button><span>${state.gatewaySettingsSaved ? "Provider preferences saved" : "Credential changes are saved per provider."}</span></div>
+  </div>${adCampaignManagerTemplate()}${discountManagerTemplate()}${payoutManagerTemplate()}${translationManagerTemplate()}`;
 }
 
 function socialProfilePlatforms() {
@@ -7016,7 +6992,7 @@ function payoutManagerTemplate() {
 
 function translationManagerTemplate() {
   const translatedCount = Object.values(state.translations || {}).reduce((sum, locales) => sum + Object.keys(locales || {}).length, 0);
-  return `<div class="work-panel"><div class="panel-title">${icon("spark")}<h2>Article translations</h2></div><p class="settings-note">Published articles are translated once with OpenAI, stored, and served from the database when readers choose a configured language.</p><div class="gateway-status ${state.providerStatus.ai ? "ready" : "needs-key"}"><strong>${state.providerStatus.ai ? "OpenAI configured" : "OpenAI key missing"}</strong><span>${state.providerStatus.ai ? `${translatedCount} saved translations available` : "Add OPENAI_API_KEY on the server, then restart."}</span></div><div class="promotion-list">${state.translationLanguages.map((item) => `<article><span><strong>${escapeHtml(item.language)}</strong><small>${escapeHtml(item.locale)}</small></span><button class="secondary-button danger-button" data-remove-translation-language="${escapeHtml(item.locale)}">Remove</button></article>`).join("")}</div><div class="settings-actions"><button class="secondary-button" data-action="add-translation-language">Add language</button><button class="primary-button" data-action="run-translation-backfill" ${state.providerStatus.ai ? "" : "disabled"}>Translate published articles</button><span>${state.translationLanguages.length} translation languages configured</span></div></div>`;
+  return `<div class="work-panel"><div class="panel-title">${icon("spark")}<h2>Article translations</h2></div><p class="settings-note">Published articles are translated once with OpenAI, stored, and served from the database when readers choose a configured language.</p><div class="gateway-status ${state.providerStatus.ai ? "ready" : "needs-key"}"><strong>${state.providerStatus.ai ? "OpenAI configured" : "OpenAI key missing"}</strong><span>${state.providerStatus.ai ? `${translatedCount} saved translations available` : "Save an API key in the OpenAI provider box above."}</span></div><div class="promotion-list">${state.translationLanguages.map((item) => `<article><span><strong>${escapeHtml(item.language)}</strong><small>${escapeHtml(item.locale)}</small></span><button class="secondary-button danger-button" data-remove-translation-language="${escapeHtml(item.locale)}">Remove</button></article>`).join("")}</div><div class="settings-actions"><button class="secondary-button" data-action="add-translation-language">Add language</button><button class="primary-button" data-action="run-translation-backfill" ${state.providerStatus.ai ? "" : "disabled"}>Translate published articles</button><span>${state.translationLanguages.length} translation languages configured</span></div></div>`;
 }
 
 function dashboardHeaderTemplate(title, locked = false) {
@@ -7204,7 +7180,6 @@ function adminModalTemplate() {
   const configs = {
     ad: { title: "Create ad campaign", action: "submit-admin-modal-ad", fields: [["name", "Campaign name"], ["sponsor", "Sponsor"], ["headline", "Headline"], ["targetUrl", "Target URL"], ["placement", "Placement"]] },
     discount: { title: fields.id ? `Edit ${fields.code}` : "Create discount offer", action: "submit-admin-modal-discount", fields: [] },
-    credential: { title: "Add provider credential", action: "submit-admin-modal-credential", fields: [["provider", "Provider"], ["key", "Credential key"], ["value", "Secret value"], ["environment", "Environment"]] },
     user: { title: "Create user", action: "submit-admin-modal-user", fields: [["name", "Full name"], ["email", "Email"], ["password", "Temporary password"], ["role", "Role"], ["subscription", "Subscription"], ["status", "Status"]] },
     geoip: { title: "Configure IP intelligence", action: "submit-admin-modal-geoip", fields: [["apiUrl", "API URL with {ip}"], ["apiKey", "API key"]] },
     translationLanguage: { title: "Add translation language", action: "submit-admin-modal-language", fields: [["language", "Language name"], ["locale", "Locale code"]] },
@@ -7318,15 +7293,7 @@ function onboardingPlansTemplate() {
 }
 
 function footerTemplate() {
-  const links = [
-    ["About us", "/about"],
-    ["Contact us", "/contact"],
-    ["Terms", "/terms"],
-    ["Privacy", "/privacy"],
-    ["Security", "/security"],
-    ["Resources", "/resources"],
-    ["Support", "/support"],
-  ];
+  const links = state.gatewaySettings.navigationMenus?.footer || defaultNavigationMenus.footer;
   const profiles = state.gatewaySettings.socialProfiles || {};
   const socialLinks = socialProfilePlatforms().map((platform) => {
     const username = String(profiles[platform.id] || "").trim().replace(/^@+/, "");
@@ -7339,7 +7306,7 @@ function footerTemplate() {
     <footer class="site-footer">
       <button class="brand compact" data-route="/"><span class="brand-mark">${escapeHtml(siteInitials())}</span><span>${escapeHtml(siteName())}</span></button>
       <div class="footer-links">
-        ${links.map(([label, route]) => `<button data-route="${route}">${label}</button>`).join("")}
+        ${links.map(([label, route]) => `<button data-route="${escapeHtml(route)}">${escapeHtml(label)}</button>`).join("")}
       </div>
       ${socialLinks.length ? `<div class="footer-social" aria-label="Social media links">${socialLinks.map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(item.name)}" title="${escapeHtml(item.name)}"><span>${escapeHtml(item.icon)}</span></a>`).join("")}</div>` : ""}
     </footer>
@@ -7982,6 +7949,21 @@ function bindInputs() {
     field.addEventListener("input", update);
     field.addEventListener("change", update);
   });
+  document.querySelectorAll("[data-menu-label], [data-menu-route]").forEach((field) => {
+    const update = (event) => {
+      const binding = event.target.dataset.menuLabel || event.target.dataset.menuRoute;
+      const [location, rawIndex] = binding.split(":");
+      const index = Number(rawIndex);
+      state.gatewaySettings.navigationMenus ||= structuredClone(defaultNavigationMenus);
+      const item = state.gatewaySettings.navigationMenus[location]?.[index];
+      if (!item) return;
+      if (event.target.dataset.menuLabel) item[0] = event.target.value;
+      else item[1] = event.target.value;
+      state.gatewaySettingsSaved = false;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
   document.querySelectorAll("[data-account-social]").forEach((field) => {
     const update = (event) => {
       state.accountForm.socialLinks ||= {};
@@ -8144,6 +8126,11 @@ document.addEventListener("click", async (event) => {
   const checkout = target.dataset.checkout;
   const paymentSubmit = target.dataset.paymentSubmit;
   const gateway = target.dataset.gateway;
+  const paymentGatewayToggle = target.dataset.paymentGatewayToggle;
+  const saveProvider = target.dataset.saveProvider;
+  const menuMove = target.dataset.menuMove;
+  const menuRemove = target.dataset.menuRemove;
+  const menuAdd = target.dataset.menuAdd;
   const socialProvider = target.dataset.socialLogin;
   const socialDisconnect = target.dataset.socialDisconnect;
   const booleanSetting = target.dataset.booleanSetting;
@@ -8197,8 +8184,6 @@ document.addEventListener("click", async (event) => {
   const adClick = target.dataset.adClick;
   const adUrl = target.dataset.adUrl;
   const testProvider = target.dataset.testProvider;
-  const credentialProvider = target.dataset.credentialProvider;
-  const credentialKey = target.dataset.credentialKey;
   const sendNewsletter = target.dataset.sendNewsletter;
   const ticketOpen = target.dataset.ticketOpen;
   const exportType = target.dataset.exportType;
@@ -8579,8 +8564,6 @@ document.addEventListener("click", async (event) => {
       endsAt: discountDateTimeInput(discount.endsAt),
     });
   }
-  if (action === "add-provider-credential") return openAdminModal("credential", { environment: "production" });
-  if (credentialProvider && credentialKey) return openAdminModal("credential", { provider: credentialProvider, key: credentialKey, environment: "production" });
   if (action === "create-admin-user") return setRoute("/admin/users/new");
   if (action === "configure-ip-intelligence") return openAdminModal("geoip", {});
   if (action === "add-translation-language") return openAdminModal("translationLanguage", {});
@@ -8644,15 +8627,6 @@ document.addEventListener("click", async (event) => {
         });
         await loadAdminCommerceData();
         state.userMessage = fields.id ? `Coupon ${code} updated.` : `Coupon ${code} created.`;
-      }
-      if (action === "submit-admin-modal-credential") {
-        const payload = await apiRequest("/api/admin/provider-credentials", {
-          method: "PUT",
-          body: JSON.stringify({ ...fields, enabled: true }),
-        });
-        state.providerCredentials = payload.credentials || state.providerCredentials;
-        state.providerStatus = payload.providers || state.providerStatus;
-        state.providerTestMessage = `${fields.provider || "Provider"} credential saved in the encrypted vault.`;
       }
       if (action === "submit-admin-modal-user") {
         const payload = await apiRequest("/api/admin/users", {
@@ -9516,6 +9490,60 @@ document.addEventListener("click", async (event) => {
       state.userMessage = error.message;
     }
     render();
+  }
+  if (paymentGatewayToggle) {
+    state.gatewaySettings.paymentGatewayEnabled ||= {};
+    state.gatewaySettings.paymentGatewayEnabled[paymentGatewayToggle] = state.gatewaySettings.paymentGatewayEnabled[paymentGatewayToggle] === false;
+    state.gatewaySettingsSaved = false;
+    persistGatewaySettings();
+    render();
+    return;
+  }
+  if (saveProvider) {
+    const fields = [...document.querySelectorAll(`[data-provider-input="${saveProvider}"]`)];
+    const entries = fields.map((field) => ({ key: field.dataset.providerKey, value: field.value.trim() })).filter((entry) => entry.value);
+    if (!entries.length) {
+      state.providerTestMessage = `No new ${saveProvider} values entered. Stored values were left unchanged.`;
+      render();
+      return;
+    }
+    try {
+      let payload;
+      for (const entry of entries) {
+        payload = await apiRequest("/api/admin/provider-credentials", { method: "PUT", body: JSON.stringify({ provider: saveProvider, key: entry.key, value: entry.value, environment: "production", enabled: true }) });
+      }
+      state.providerCredentials = payload?.credentials || state.providerCredentials;
+      state.providerStatus = payload?.providers || state.providerStatus;
+      state.providerTestMessage = `${saveProvider} configuration saved securely.`;
+    } catch (error) {
+      state.providerTestMessage = error.message;
+    }
+    render();
+    return;
+  }
+  if (menuMove || menuRemove || menuAdd) {
+    state.gatewaySettings.navigationMenus ||= structuredClone(defaultNavigationMenus);
+    if (menuMove) {
+      const [location, rawIndex, rawDirection] = menuMove.split(":");
+      const items = state.gatewaySettings.navigationMenus[location];
+      const index = Number(rawIndex);
+      const destination = index + Number(rawDirection);
+      if (items?.[index] && items?.[destination]) [items[index], items[destination]] = [items[destination], items[index]];
+    }
+    if (menuRemove) {
+      const [location, rawIndex] = menuRemove.split(":");
+      state.gatewaySettings.navigationMenus[location]?.splice(Number(rawIndex), 1);
+    }
+    if (menuAdd) {
+      const select = document.querySelector(`[data-menu-add-select="${menuAdd}"]`);
+      const route = select?.value || "/";
+      const label = availableNavigationDestinations().find((item) => item[1] === route)?.[0] || "Link";
+      state.gatewaySettings.navigationMenus[menuAdd] ||= [];
+      state.gatewaySettings.navigationMenus[menuAdd].push([label, route]);
+    }
+    state.gatewaySettingsSaved = false;
+    render();
+    return;
   }
   if (booleanSetting) {
     state.gatewaySettings[booleanSetting] = state.gatewaySettings[booleanSetting] === false;

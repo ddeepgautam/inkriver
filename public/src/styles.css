@@ -3014,6 +3014,18 @@ button {
   line-height: 1.45;
 }
 
+.provider-credential-fields { display: grid; gap: 10px; }
+.provider-credential-fields label, .menu-editor label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.provider-credential-fields input, .menu-editor input, .menu-editor select, .menu-editor .settings-actions select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); }
+.provider-card-actions, .menu-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.menu-management-panel { grid-column: 1 / -1; }
+.menu-management-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.menu-editor { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
+.menu-editor h3 { margin: 0 0 6px; }
+.menu-editor-list { display: grid; gap: 10px; }
+.menu-editor-list article { display: grid; grid-template-columns: 28px minmax(120px, .7fr) minmax(170px, 1fr) auto; align-items: end; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+.menu-order { align-self: center; color: var(--muted); font-weight: 850; text-align: center; }
+
 .settings-actions {
   display: flex;
   align-items: center;
@@ -6915,6 +6927,12 @@ button:disabled {
   .profile-preference-list input[type="checkbox"]::after {
     transition: none;
   }
+}
+
+@media (max-width: 900px) {
+  .menu-management-grid { grid-template-columns: 1fr; }
+  .menu-editor-list article { grid-template-columns: 28px 1fr; align-items: center; }
+  .menu-editor-list article label, .menu-editor-actions { grid-column: 2; }
 }
 
 /* Resources marketplace */

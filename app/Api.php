@@ -23,12 +23,33 @@ function provider_status(): array
             'google' => (bool) (provider_config_value('GOOGLE_CLIENT_ID', 'google', 'client_id') && provider_config_value('GOOGLE_CLIENT_SECRET', 'google', 'client_secret')),
             'facebook' => (bool) (provider_config_value('FACEBOOK_APP_ID', 'facebook', 'app_id') && provider_config_value('FACEBOOK_APP_SECRET', 'facebook', 'app_secret')),
         ],
-        'ai' => (bool) (provider_config_value('OPENAI_API_KEY', 'openai', 'api_key') || (provider_config_value('AI_API_URL', 'ai', 'api_url') && provider_config_value('AI_API_KEY', 'ai', 'api_key'))),
+        'ai' => (bool) (configured_openai_api_key() || (provider_config_value('AI_API_URL', 'ai', 'api_url') && provider_config_value('AI_API_KEY', 'ai', 'api_key'))),
         'email' => (bool) (provider_config_value('EMAIL_API_URL', 'email', 'api_url') && provider_config_value('EMAIL_API_KEY', 'email', 'api_key')),
         'push' => (bool) ((provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key') && provider_config_value('VAPID_PRIVATE_KEY', 'push', 'vapid_private_key')) || (provider_config_value('WEB_PUSH_API_URL', 'push', 'api_url') && provider_config_value('WEB_PUSH_API_KEY', 'push', 'api_key'))),
         'geoip' => (bool) (provider_config_value('IP_INTELLIGENCE_API_URL', 'geoip', 'api_url') && provider_config_value('IP_INTELLIGENCE_API_KEY', 'geoip', 'api_key')),
         'mcp' => (bool) provider_config_value('MCP_API_TOKEN', 'mcp', 'api_token'),
     ];
+}
+
+function configured_openai_api_key(): string
+{
+    // Preserve keys saved by the older generic "ai" provider form.
+    return (string) (provider_config_value('OPENAI_API_KEY', 'openai', 'api_key')
+        ?: provider_config_value('OPENAI_API_KEY', 'ai', 'api_key', ''));
+}
+
+function payment_gateway_enabled(string $provider): bool
+{
+    $settings = document_value('platform-settings', []);
+    $enabled = is_array($settings['paymentGatewayEnabled'] ?? null) ? $settings['paymentGatewayEnabled'] : [];
+    return !array_key_exists($provider, $enabled) || $enabled[$provider] !== false;
+}
+
+function public_provider_preferences(): array
+{
+    $settings = document_value('platform-settings', []);
+    $allowed = ['googleLoginEnabled', 'facebookLoginEnabled', 'paymentGatewayEnabled', 'navigationMenus', 'cashfreeEnvironment', 'socialProfiles', 'contactEmail'];
+    return array_intersect_key($settings, array_flip($allowed));
 }
 
 function clean_username_value(string $value): string
@@ -1888,7 +1909,7 @@ function send_push_message(array $subscription, array $payload): bool
 
 function openai_text_response(string $prompt, string $system = 'You are a careful editorial assistant.'): string
 {
-    $openaiKey = provider_config_value('OPENAI_API_KEY', 'openai', 'api_key');
+    $openaiKey = configured_openai_api_key();
     if ($openaiKey) {
         $payload = [
             'model' => provider_config_value('OPENAI_MODEL', 'openai', 'model', 'gpt-4.1-mini'),
@@ -4584,6 +4605,7 @@ function handle_api(string $path, string $method): void
             'ads' => active_ads(),
             'featureFlags' => public_feature_flags($session),
             'providers' => provider_status(),
+            'providerPreferences' => public_provider_preferences(),
             'paymentPolicy' => ['paypalIndiaRestriction' => paypal_restricted_for_india($session)],
             'pushPublicKey' => provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key', '') ?: '',
             'socialAccounts' => $socialAccounts,
@@ -6354,6 +6376,7 @@ function handle_api(string $path, string $method): void
         $session = require_auth();
         $body = read_json();
         $provider = (string) ($body['provider'] ?? '');
+        if (!payment_gateway_enabled($provider)) json_response(['error' => 'PROVIDER_DISABLED', 'message' => 'This payment gateway is currently disabled. Please choose another payment method.'], 403);
         if ($provider === 'paypal') {
             $restriction = paypal_restricted_for_india($session, is_array($body['clientHints'] ?? null) ? $body['clientHints'] : []);
             if ($restriction['restricted']) {

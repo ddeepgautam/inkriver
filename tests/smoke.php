@@ -21,6 +21,23 @@ function assert_true(bool $condition, string $message): void
 
 $pdo = Database::pdo();
 
+$now = now_iso();
+$pdo->prepare("INSERT INTO provider_credentials (provider, key, value_encrypted, environment, enabled, updated_at) VALUES ('ai', 'api_key', ?, 'production', 1, ?)")
+    ->execute([encrypt_secret_value('smoke-openai-key'), $now]);
+assert_true(configured_openai_api_key() === 'smoke-openai-key' && provider_status()['ai'], 'legacy generic AI vault keys remain valid for OpenAI translations');
+
+$publicPreferences = [
+    'paymentGatewayEnabled' => ['razorpay' => false],
+    'navigationMenus' => ['header' => [['Stories', '/']], 'footer' => [['Help', '/support']]],
+    'contactEmail' => 'support@inkriver.test',
+    'internalSecret' => 'must-not-be-public',
+];
+$pdo->prepare("INSERT INTO platform_documents (key, value_json, updated_at) VALUES ('platform-settings', ?, ?)")
+    ->execute([json_encode($publicPreferences, JSON_UNESCAPED_SLASHES), $now]);
+assert_true(!payment_gateway_enabled('razorpay') && payment_gateway_enabled('paypal'), 'individual payment gateways can be disabled with default-on compatibility');
+$safePreferences = public_provider_preferences();
+assert_true(isset($safePreferences['navigationMenus']) && !isset($safePreferences['internalSecret']), 'public navigation preferences are exposed through an explicit allowlist');
+
 assert_true(public_root() === $root . DIRECTORY_SEPARATOR . 'public', 'public document root is isolated from application source');
 $publicTraversalRejected = false;
 try {
@@ -84,7 +101,6 @@ $pdo->prepare("INSERT INTO feature_flags (key, enabled, rollout_percent, roles_j
     ->execute([now_iso()]);
 assert_true(!feature_flag_enabled('staging_only', false), 'environment-scoped feature flag stays off');
 
-$now = now_iso();
 $pdo->prepare("INSERT INTO discount_codes (id, code, description, discount_type, discount_value, audience, active, created_at, updated_at) VALUES ('DISC-SMOKE', 'SMOKE20', 'Smoke discount', 'percent', 20, 'All readers', 1, ?, ?)")
     ->execute([$now, $now]);
 assert_true(payment_amount_for_checkout(['amount' => 10000], ['discountCode' => 'SMOKE20']) === 8000, 'active percentage coupon changes checkout amount');
