@@ -666,9 +666,31 @@ function public_media_asset(array $row): array
     ];
 }
 
+function communication_preference_enabled(?string $userId, string $key, bool $default = true): bool
+{
+    if (!$userId) return $default;
+    try {
+        $stmt = Database::pdo()->prepare("SELECT value_json FROM user_documents WHERE user_id = ? AND key = 'preferences'");
+        $stmt->execute([$userId]);
+        $row = $stmt->fetch();
+        $preferences = $row ? parse_json_field($row['value_json'], []) : [];
+        return (bool) ($preferences['communication'][$key] ?? $default);
+    } catch (Throwable) {
+        return $default;
+    }
+}
+
 function create_notification(?string $userId, string $type, string $title, string $body = '', string $url = '/'): void
 {
     if (!$userId) return;
+    $preferenceKey = match (true) {
+        str_contains($type, 'comment') => 'commentReplies',
+        str_contains($type, 'follow') => 'newFollowers',
+        str_contains($type, 'profile'), str_contains($type, 'business') => 'profileActivity',
+        $type === 'admin_push' => 'productUpdates',
+        default => null,
+    };
+    if ($preferenceKey && !communication_preference_enabled($userId, $preferenceKey)) return;
     try {
         Database::pdo()->prepare('INSERT INTO notifications (id, user_id, type, title, body, url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
             ->execute([uuid_value('NTF-'), $userId, substr($type, 0, 80), substr($title, 0, 180), substr($body, 0, 500), substr($url, 0, 500), now_iso()]);
@@ -3312,7 +3334,9 @@ function newsletter_user_suppressed(array $user): bool
 {
     $email = strtolower(trim((string) ($user['email'] ?? '')));
     if ($email === '') return true;
-    $stmt = Database::pdo()->prepare('SELECT email FROM newsletter_suppressions WHERE email = ? LIMIT 1');
+    $pdo = Database::pdo();
+    if (!communication_preference_enabled((string) ($user['id'] ?? ''), 'emailNewsletters')) return true;
+    $stmt = $pdo->prepare('SELECT email FROM newsletter_suppressions WHERE email = ? LIMIT 1');
     $stmt->execute([$email]);
     return (bool) $stmt->fetch();
 }
@@ -4043,13 +4067,27 @@ function test_provider_connection(string $provider): array
     }
 }
 
-function finish_oauth_login(string $provider, array $profile): never
+function finish_oauth_login(string $provider, array $profile, ?string $linkUserId = null): never
 {
     $pdo = Database::pdo();
     $providerUserId = (string) ($profile['id'] ?? $profile['sub'] ?? '');
     $email = strtolower(trim((string) ($profile['email'] ?? '')));
     $name = trim((string) ($profile['name'] ?? $profile['given_name'] ?? 'Reader'));
     if ($providerUserId === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) redirect_response('/?oauth=profile_error');
+    if ($linkUserId) {
+        $session = current_session();
+        if (!$session || ($session['user']['id'] ?? '') !== $linkUserId) redirect_response('/?oauth=invalid_state');
+        $existingStmt = $pdo->prepare('SELECT user_id FROM social_accounts WHERE provider = ? AND provider_user_id = ?');
+        $existingStmt->execute([$provider, $providerUserId]);
+        $existingAccount = $existingStmt->fetch();
+        if ($existingAccount && ($existingAccount['user_id'] ?? '') !== $linkUserId) redirect_response('/dashboard?oauth=already_linked');
+        $pdo->prepare('DELETE FROM social_accounts WHERE user_id = ? AND provider = ?')->execute([$linkUserId, $provider]);
+        $now = now_iso();
+        $pdo->prepare('INSERT INTO social_accounts (provider, provider_user_id, user_id, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$provider, $providerUserId, $linkUserId, $email, $now, $now]);
+        audit_log($linkUserId, 'auth.oauth_connected', 'user', $linkUserId, ['provider' => $provider]);
+        redirect_response('/dashboard?oauth=connected');
+    }
     $stmt = $pdo->prepare('SELECT users.* FROM social_accounts JOIN users ON users.id = social_accounts.user_id WHERE social_accounts.provider = ? AND social_accounts.provider_user_id = ? AND users.status != ?');
     $stmt->execute([$provider, $providerUserId, 'deleted']);
     $user = $stmt->fetch();
@@ -4112,10 +4150,41 @@ function handle_api(string $path, string $method): void
         $name = trim((string) ($body['name'] ?? $session['user']['name']));
         $email = strtolower(trim((string) ($body['email'] ?? $session['user']['email'])));
         $username = clean_username_value((string) ($body['username'] ?? ($session['user']['username'] ?? '')));
+        $headline = trim((string) ($body['headline'] ?? ($session['user']['headline'] ?? '')));
+        $bio = trim((string) ($body['bio'] ?? ($session['user']['bio'] ?? '')));
+        $website = trim((string) ($body['website'] ?? ($session['user']['website'] ?? '')));
+        $location = trim((string) ($body['location'] ?? ($session['user']['location'] ?? '')));
+        $socialInput = is_array($body['socialLinks'] ?? null) ? $body['socialLinks'] : ($session['user']['socialLinks'] ?? []);
+        $expertiseInput = is_array($body['expertise'] ?? null) ? $body['expertise'] : ($session['user']['expertise'] ?? []);
         $currentPassword = (string) ($body['currentPassword'] ?? '');
         if (strlen($name) < 2) json_response(['error' => 'INVALID_NAME', 'message' => 'Enter your full display name.'], 400);
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) json_response(['error' => 'INVALID_EMAIL', 'message' => 'Enter a valid email address.'], 400);
         if ($error = username_error($username)) json_response(['error' => 'INVALID_USERNAME', 'message' => $error], 400);
+        if (strlen($headline) > 120) json_response(['error' => 'INVALID_HEADLINE', 'message' => 'Keep your headline to 120 characters or fewer.'], 400);
+        if (strlen($bio) > 1000) json_response(['error' => 'INVALID_BIO', 'message' => 'Keep your bio to 1,000 characters or fewer.'], 400);
+        if (strlen($location) > 120) json_response(['error' => 'INVALID_LOCATION', 'message' => 'Keep your location to 120 characters or fewer.'], 400);
+        if ($website !== '' && (!filter_var($website, FILTER_VALIDATE_URL) || !in_array(strtolower((string) parse_url($website, PHP_URL_SCHEME)), ['http', 'https'], true))) {
+            json_response(['error' => 'INVALID_WEBSITE', 'message' => 'Enter a complete website address starting with http:// or https://.'], 400);
+        }
+        $socialLinks = [];
+        foreach (['x', 'linkedin', 'instagram', 'youtube', 'github'] as $key) {
+            $value = trim((string) ($socialInput[$key] ?? ''));
+            if ($value === '') continue;
+            if (strlen($value) > 240 || preg_match('/[\x00-\x1F\x7F]/u', $value)) {
+                json_response(['error' => 'INVALID_SOCIAL_LINK', 'message' => 'Check the ' . ucfirst($key) . ' profile link.'], 400);
+            }
+            if (str_contains($value, '://') && (!filter_var($value, FILTER_VALIDATE_URL) || !in_array(strtolower((string) parse_url($value, PHP_URL_SCHEME)), ['http', 'https'], true))) {
+                json_response(['error' => 'INVALID_SOCIAL_LINK', 'message' => 'Social profile URLs must start with http:// or https://.'], 400);
+            }
+            $socialLinks[$key] = $value;
+        }
+        $expertise = [];
+        foreach ($expertiseInput as $item) {
+            $item = trim((string) $item);
+            if ($item === '' || in_array(strtolower($item), array_map('strtolower', $expertise), true)) continue;
+            $expertise[] = substr($item, 0, 60);
+            if (count($expertise) === 12) break;
+        }
         if ($username !== '') {
             $usernameExists = $pdo->prepare("SELECT id FROM users WHERE username = ? AND id != ? AND status != 'deleted'");
             $usernameExists->execute([$username, $session['user']['id']]);
@@ -4131,8 +4200,8 @@ function handle_api(string $path, string $method): void
             if ($exists->fetch()) json_response(['error' => 'EMAIL_EXISTS', 'message' => 'Another account already uses that email address.'], 409);
         }
         $now = now_iso();
-        $pdo->prepare('UPDATE users SET name = ?, email = ?, username = ?, email_verified = CASE WHEN ? THEN 0 ELSE email_verified END, updated_at = ? WHERE id = ?')
-            ->execute([$name, $email, $username !== '' ? $username : null, $emailChanged ? 1 : 0, $now, $session['user']['id']]);
+        $pdo->prepare('UPDATE users SET name = ?, email = ?, username = ?, headline = ?, bio = ?, website = ?, location = ?, social_links_json = ?, expertise_json = ?, email_verified = CASE WHEN ? THEN 0 ELSE email_verified END, updated_at = ? WHERE id = ?')
+            ->execute([$name, $email, $username !== '' ? $username : null, $headline, $bio, $website, $location, json_encode($socialLinks, JSON_UNESCAPED_SLASHES), json_encode($expertise, JSON_UNESCAPED_SLASHES), $emailChanged ? 1 : 0, $now, $session['user']['id']]);
         if ($emailChanged) {
             $pdo->prepare("DELETE FROM security_tokens WHERE user_id = ? AND type = 'email_verification' AND consumed_at IS NULL")->execute([$session['user']['id']]);
             audit_log($session['user']['id'], 'account.email_changed', 'user', $session['user']['id'], ['oldEmail' => $session['user']['email'], 'newEmail' => $email]);
@@ -4465,10 +4534,18 @@ function handle_api(string $path, string $method): void
             $storyStats[$slug]['claps'] = max(0, (int) ($story['claps'] ?? 0)) + ($storedLikeCounts[$slug] ?? 0);
         }
         $likedStorySlugs = [];
+        $socialAccounts = [];
+        $deletionRequest = null;
         if ($session) {
             $likedStmt = $pdo->prepare('SELECT story_slug FROM story_likes WHERE user_id = ? ORDER BY created_at DESC');
             $likedStmt->execute([$session['user']['id']]);
             $likedStorySlugs = array_column($likedStmt->fetchAll(), 'story_slug');
+            $socialStmt = $pdo->prepare('SELECT provider, email, created_at, updated_at FROM social_accounts WHERE user_id = ? ORDER BY provider');
+            $socialStmt->execute([$session['user']['id']]);
+            $socialAccounts = $socialStmt->fetchAll();
+            $deletionStmt = $pdo->prepare("SELECT id, status, requested_at, scheduled_for FROM account_deletion_requests WHERE user_id = ? AND cancelled_at IS NULL AND status != 'cancelled' ORDER BY requested_at DESC LIMIT 1");
+            $deletionStmt->execute([$session['user']['id']]);
+            $deletionRequest = $deletionStmt->fetch() ?: null;
         }
         json_response([
             'documents' => $documents,
@@ -4482,7 +4559,8 @@ function handle_api(string $path, string $method): void
             'providers' => provider_status(),
             'paymentPolicy' => ['paypalIndiaRestriction' => paypal_restricted_for_india($session)],
             'pushPublicKey' => provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key', '') ?: '',
-            'socialAccounts' => [],
+            'socialAccounts' => $socialAccounts,
+            'deletionRequest' => $deletionRequest,
         ]);
     }
 
@@ -6471,7 +6549,23 @@ function handle_api(string $path, string $method): void
             if (str_starts_with((string) $row['key'], 'passkey-')) continue;
             $docs[$row['key']] = parse_json_field($row['value_json'], null);
         }
-        json_response(['user' => $session['user'], 'documents' => $docs, 'exportedAt' => now_iso()]);
+        $socialStmt = $pdo->prepare('SELECT provider, email, created_at, updated_at FROM social_accounts WHERE user_id = ? ORDER BY provider');
+        $socialStmt->execute([$session['user']['id']]);
+        $notificationStmt = $pdo->prepare('SELECT type, title, body, url, read_at, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC');
+        $notificationStmt->execute([$session['user']['id']]);
+        $deletionStmt = $pdo->prepare('SELECT status, requested_at, scheduled_for, cancelled_at FROM account_deletion_requests WHERE user_id = ? ORDER BY requested_at DESC');
+        $deletionStmt->execute([$session['user']['id']]);
+        $invoiceStmt = $pdo->prepare('SELECT invoice_number, amount, currency, tax_amount, status, issued_at FROM billing_invoices WHERE user_id = ? ORDER BY issued_at DESC');
+        $invoiceStmt->execute([$session['user']['id']]);
+        json_response([
+            'user' => $session['user'],
+            'documents' => $docs,
+            'connectedAccounts' => $socialStmt->fetchAll(),
+            'notifications' => $notificationStmt->fetchAll(),
+            'deletionRequests' => $deletionStmt->fetchAll(),
+            'invoices' => $invoiceStmt->fetchAll(),
+            'exportedAt' => now_iso(),
+        ]);
     }
 
     if ($method === 'POST' && $path === '/api/me/deletion-request') {
@@ -6482,6 +6576,23 @@ function handle_api(string $path, string $method): void
         $pdo->prepare("INSERT INTO account_deletion_requests (id, user_id, status, requested_at, scheduled_for) VALUES (?, ?, 'pending_verification', ?, ?)")
             ->execute([uuid_value(), $session['user']['id'], $requestedAt, $scheduledFor]);
         json_response(['status' => 'pending_verification', 'requestedAt' => $requestedAt, 'scheduledFor' => $scheduledFor], 201);
+    }
+
+    if ($method === 'GET' && $path === '/api/me/deletion-request') {
+        $session = require_auth();
+        $stmt = $pdo->prepare("SELECT id, status, requested_at, scheduled_for FROM account_deletion_requests WHERE user_id = ? AND cancelled_at IS NULL AND status != 'cancelled' ORDER BY requested_at DESC LIMIT 1");
+        $stmt->execute([$session['user']['id']]);
+        json_response(['request' => $stmt->fetch() ?: null]);
+    }
+
+    if ($method === 'DELETE' && $path === '/api/me/deletion-request') {
+        $session = require_auth();
+        $cancelledAt = now_iso();
+        $stmt = $pdo->prepare("UPDATE account_deletion_requests SET status = 'cancelled', cancelled_at = ? WHERE user_id = ? AND cancelled_at IS NULL AND status != 'cancelled'");
+        $stmt->execute([$cancelledAt, $session['user']['id']]);
+        if ($stmt->rowCount() === 0) json_response(['error' => 'NO_DELETION_REQUEST', 'message' => 'There is no active deletion request to cancel.'], 404);
+        audit_log($session['user']['id'], 'account.deletion_cancelled', 'user', $session['user']['id']);
+        json_response(['ok' => true, 'cancelledAt' => $cancelledAt]);
     }
 
     if ($method === 'POST' && $path === '/api/me/push-subscriptions') {
@@ -6546,8 +6657,9 @@ function handle_api(string $path, string $method): void
         if (!provider_status()['social'][$m[1]]) redirect_response('/?oauth=provider_unavailable');
         $state = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
         $redirectUri = app_origin() . '/api/auth/oauth/' . $m[1] . '/callback';
-        $pdo->prepare('INSERT INTO oauth_states (state, provider, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
-            ->execute([$state, $m[1], $redirectUri, gmdate('Y-m-d\TH:i:s.v\Z', time() + 600), now_iso()]);
+        $linkSession = current_session();
+        $pdo->prepare('INSERT INTO oauth_states (state, provider, redirect_uri, link_user_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$state, $m[1], $redirectUri, $linkSession['user']['id'] ?? null, gmdate('Y-m-d\TH:i:s.v\Z', time() + 600), now_iso()]);
         if ($m[1] === 'google') {
             redirect_response('https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query(['client_id' => provider_config_value('GOOGLE_CLIENT_ID', 'google', 'client_id'), 'redirect_uri' => $redirectUri, 'response_type' => 'code', 'scope' => 'openid email profile', 'state' => $state]));
         }
@@ -6579,7 +6691,7 @@ function handle_api(string $path, string $method): void
                 $profile = http_request_json('https://www.googleapis.com/oauth2/v3/userinfo', [
                     'headers' => ['Authorization' => 'Bearer ' . ($token['access_token'] ?? '')],
                 ]);
-                finish_oauth_login('google', $profile);
+                finish_oauth_login('google', $profile, $oauthState['link_user_id'] ?? null);
             }
             $token = http_request_json('https://graph.facebook.com/v23.0/oauth/access_token?' . http_build_query([
                 'client_id' => provider_config_value('FACEBOOK_APP_ID', 'facebook', 'app_id'),
@@ -6588,7 +6700,7 @@ function handle_api(string $path, string $method): void
                 'code' => $code,
             ]));
             $profile = http_request_json('https://graph.facebook.com/me?' . http_build_query(['fields' => 'id,name,email', 'access_token' => $token['access_token'] ?? '']));
-            finish_oauth_login('facebook', $profile);
+            finish_oauth_login('facebook', $profile, $oauthState['link_user_id'] ?? null);
         } catch (Throwable $error) {
             redirect_response('/?oauth=provider_error');
         }

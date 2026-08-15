@@ -59,6 +59,9 @@ assert_true(in_array('environment', $columns, true), 'feature_flags.environment 
 $historyColumns = array_column($pdo->query('PRAGMA table_info(feature_flag_history)')->fetchAll(), 'name');
 assert_true(in_array('environment', $historyColumns, true), 'feature_flag_history.environment column exists');
 
+$oauthStateColumns = array_column($pdo->query('PRAGMA table_info(oauth_states)')->fetchAll(), 'name');
+assert_true(in_array('link_user_id', $oauthStateColumns, true), 'OAuth state can securely bind a provider connection to the initiating user');
+
 $suppressionTable = $pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'newsletter_suppressions'")->fetch();
 assert_true((bool) $suppressionTable, 'newsletter_suppressions table exists');
 
@@ -97,6 +100,13 @@ $adminSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin',
 $pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-SMOKE-WRITER', 'Smoke Writer', 'smoke-writer@example.com', ?, 'writer', 'Pro', 'active', 1, ?, ?)")
     ->execute([hash_password_value('SmokePassword!24'), $now, $now]);
 $writerSession = ['user' => ['id' => 'USR-SMOKE-WRITER', 'name' => 'Smoke Writer', 'email' => 'smoke-writer@example.com', 'role' => 'writer', 'subscription' => 'Pro']];
+$pdo->prepare("INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, 'preferences', ?, ?)")
+    ->execute(['USR-SMOKE-WRITER', json_encode(['communication' => ['emailNewsletters' => false, 'productUpdates' => false]]), $now]);
+assert_true(newsletter_user_suppressed(['id' => 'USR-SMOKE-WRITER', 'email' => 'smoke-writer@example.com']), 'newsletter delivery respects the user communication preference');
+create_notification('USR-SMOKE-WRITER', 'admin_push', 'Muted product update');
+$mutedNotification = $pdo->query("SELECT id FROM notifications WHERE user_id = 'USR-SMOKE-WRITER' AND title = 'Muted product update'")->fetch();
+assert_true(!$mutedNotification, 'optional product notifications respect the user communication preference');
+$pdo->prepare("DELETE FROM user_documents WHERE user_id = ? AND key = 'preferences'")->execute(['USR-SMOKE-WRITER']);
 $resourceTables = array_column($pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'resource_%'")->fetchAll(), 'name');
 assert_true(in_array('resource_entitlements', $resourceTables, true) && in_array('resource_access_tokens', $resourceTables, true) && in_array('resource_access_logs', $resourceTables, true), 'resource marketplace creates entitlement, temporary-token, and access-log tables');
 $pdo->prepare("INSERT INTO resources (id, slug, name, short_description, description, category, resource_type, access_kind, version, price_type, regular_price, discounted_price, currency, protected_storage_key, original_filename, mime_type, file_size, status, created_by_user_id, created_at, updated_at, published_at) VALUES ('RES-SMOKE-PAID', 'secure-resource', 'Secure Resource', 'Protected resource', 'A protected smoke resource.', 'Business', 'pdf', 'download', '1.0', 'paid', 10000, 7500, 'INR', 'resources/private-random.bin', 'friendly-name.pdf', 'application/pdf', 1234, 'published', 'USR-BIZ-ADMIN', ?, ?, ?)")

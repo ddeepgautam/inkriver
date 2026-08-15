@@ -1288,7 +1288,13 @@ async function hydratePlatformState() {
       state.recommendation = { ...emptyRecommendationProfile(), ...userDocuments["recommendation-profile"] };
       state.onboardingSelection = new Set(state.recommendation.selectedInterests);
     }
-    if (userDocuments.preferences) state.preferences = { ...state.preferences, ...userDocuments.preferences };
+    if (userDocuments.preferences) {
+      state.preferences = {
+        ...state.preferences,
+        ...userDocuments.preferences,
+        communication: { ...state.preferences.communication, ...(userDocuments.preferences.communication || {}) },
+      };
+    }
     await loadSecuritySessions();
     await loadSecuritySettings();
     await loadSupportTickets();
@@ -1307,6 +1313,20 @@ async function hydratePlatformState() {
   state.paymentPolicy = payload.paymentPolicy || state.paymentPolicy;
   state.pushPublicKey = payload.pushPublicKey || "";
   state.socialAccounts = payload.socialAccounts || [];
+  state.deletionRequest = payload.deletionRequest || null;
+  const oauthResult = new URLSearchParams(window.location.search).get("oauth");
+  if (oauthResult) {
+    if (oauthResult === "connected") {
+      state.userMessage = "Connected account added successfully.";
+      state.dashboardSection = "profile";
+    } else if (oauthResult === "already_linked") {
+      state.userMessage = "That provider account is already connected to another profile.";
+      state.dashboardSection = "profile";
+    } else if (oauthResult === "success") {
+      state.userMessage = "Signed in successfully.";
+    }
+    window.history.replaceState({}, "", window.location.pathname);
+  }
   state.adCampaigns = payload.ads || state.adCampaigns;
   await loadPlatformAddons();
   await loadResources();
@@ -1690,6 +1710,13 @@ function persistProductState(key, value) {
 
 const initialCreatorTools = loadProductState("creator-tools", creatorSeed);
 const initialOperations = loadProductState("operations", operationsSeed);
+const defaultCommunicationPreferences = {
+  emailNewsletters: true,
+  productUpdates: true,
+  profileActivity: true,
+  commentReplies: true,
+  newFollowers: true,
+};
 const initialPreferences = loadProductState("preferences", {
   focusMode: false,
   fontFamily: "serif",
@@ -1699,7 +1726,9 @@ const initialPreferences = loadProductState("preferences", {
   cookies: { essential: true, analytics: true, advertising: false },
   locale: "en-IN",
   speechRate: 1,
+  communication: defaultCommunicationPreferences,
 });
+initialPreferences.communication = { ...defaultCommunicationPreferences, ...(initialPreferences.communication || {}) };
 
 const state = {
   path: window.location.pathname,
@@ -1790,6 +1819,7 @@ const state = {
   paymentPolicy: { paypalIndiaRestriction: { restricted: false, adminExempt: false, signals: [] } },
   pushPublicKey: "",
   socialAccounts: [],
+  deletionRequest: null,
   adCampaigns: [],
   observedAds: new Set(),
   discounts: [],
@@ -1844,7 +1874,8 @@ const state = {
   adminModal: { type: "", fields: {} },
   adminCreateUserForm: emptyAdminCreateUserForm(),
   adminCreateUserMessage: "",
-  accountForm: { name: "", email: "", username: "", currentPassword: "", newPassword: "", confirmPassword: "" },
+  accountForm: { name: "", email: "", username: "", headline: null, bio: null, website: null, location: null, expertise: null, socialLinks: {}, currentPassword: "", newPassword: "", confirmPassword: "" },
+  profileSaving: false,
   userSearch: "",
   userMessage: "",
   securitySessions: [],
@@ -2315,7 +2346,6 @@ async function runServerSearch(includeSuggestions = false) {
 
 function userProfileFromUser(user, fallbackSlug = "") {
   const socialLinks = user.socialLinks || {};
-  const socialEntry = Object.entries(socialLinks).find(([, value]) => String(value || "").trim());
   const expertise = Array.isArray(user.expertise) && user.expertise.length
     ? user.expertise
     : state.recommendation.selectedInterests?.length && user.id === state.user?.id
@@ -2329,7 +2359,8 @@ function userProfileFromUser(user, fallbackSlug = "") {
     followers: Math.max(0, Object.values(state.following || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0)),
     badge: user.role === "admin" ? "Administrator" : user.role === "moderator" ? "Moderator" : user.role === "writer" ? "Writer" : "Reader",
     website: user.website || "",
-    social: socialEntry ? `${socialEntry[0]}: ${socialEntry[1]}` : (user.username ? user.username : ""),
+    social: user.username ? user.username : "",
+    socialLinks,
     publication: user.headline || user.location || siteName(),
     avatarUrl: user.avatarUrl || "",
     location: user.location || "",
@@ -2357,6 +2388,7 @@ function publicProfiles() {
       badge: existing.badge || (story.authorUserId ? "Verified writer" : "Writer"),
       website: existing.website || "",
       social: existing.social || "",
+      socialLinks: existing.socialLinks || {},
       publication: displayPublicationName(story.publication || existing.publication),
       avatarUrl: existing.avatarUrl || "",
       location: existing.location || "",
@@ -2489,6 +2521,22 @@ function safeImageUrl(value) {
   const url = String(value || "").trim();
   if (/^https?:\/\//i.test(url) || /^\/uploads\//i.test(url) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(url)) return url;
   return "";
+}
+
+function publicProfileLinkUrl(value, network = "") {
+  const input = String(value || "").trim();
+  if (!input) return "";
+  if (/^https?:\/\/[^\s]+$/i.test(input)) return input;
+  const handle = input.replace(/^@/, "").replace(/^\/+|\/+$/g, "");
+  if (!/^[a-z0-9._-]+$/i.test(handle)) return "";
+  const bases = {
+    x: "https://x.com/",
+    linkedin: "https://www.linkedin.com/in/",
+    instagram: "https://www.instagram.com/",
+    youtube: "https://www.youtube.com/@",
+    github: "https://github.com/",
+  };
+  return bases[network] ? `${bases[network]}${handle}` : "";
 }
 
 function sanitizeRichHtml(value) {
@@ -4218,6 +4266,8 @@ function profileTemplate(profile) {
   const featured = stories.sort((a, b) => b.reads - a.reads)[0];
   const publicLists = publicCuratedLists().filter((list) => list.owner === profile.name || list.owner === profile.publication);
   const followerCount = profile.followers + (isFollowing("writers", profile.name) ? 1 : 0);
+  const socialLabels = { x: "X", linkedin: "LinkedIn", instagram: "Instagram", youtube: "YouTube", github: "GitHub" };
+  const socialLinks = Object.entries(profile.socialLinks || {}).map(([network, value]) => ({ network, label: socialLabels[network] || network, url: publicProfileLinkUrl(value, network) })).filter((item) => item.url);
   return `
     <main class="profile-page">
       <section class="profile-hero">
@@ -4226,7 +4276,7 @@ function profileTemplate(profile) {
           <div class="profile-title-row"><div><h1>${escapeHtml(profile.name)}</h1><span class="profile-badge">${icon("check", 13)}${escapeHtml(profile.badge)}</span></div><button class="primary-button ${isFollowing("writers", profile.name) ? "following" : ""}" data-follow-type="writers" data-follow-value="${escapeHtml(profile.name)}">${followLabel("writers", profile.name)}</button></div>
           <p>${escapeHtml(profile.bio)}</p>
           <div class="profile-meta"><strong>${followerCount.toLocaleString("en-IN")} followers</strong><span>${stories.length} stories</span><span>${escapeHtml(profile.publication)}</span>${profile.location ? `<span>${escapeHtml(profile.location)}</span>` : ""}</div>
-          <div class="profile-links">${profile.website ? `<a href="${profile.website}" target="_blank" rel="noopener noreferrer">${icon("link", 14)}Website</a>` : ""}${profile.social ? `<span>${escapeHtml(profile.social)}</span>` : ""}</div>
+          <div class="profile-links">${publicProfileLinkUrl(profile.website) ? `<a href="${escapeHtml(publicProfileLinkUrl(profile.website))}" target="_blank" rel="noopener noreferrer">${icon("link", 14)}Website</a>` : ""}${socialLinks.map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${icon("link", 14)}${escapeHtml(item.label)}</a>`).join("")}${!socialLinks.length && profile.social ? `<span>@${escapeHtml(String(profile.social).replace(/^@/, ""))}</span>` : ""}</div>
         </div>
       </section>
       <section class="profile-content-grid">
@@ -5085,45 +5135,121 @@ function dashboardModeratorReportsTemplate() {
 }
 
 function dashboardProfileTemplate() {
+  const savedSocialLinks = state.user.socialLinks || {};
   const form = {
     name: state.accountForm.name || state.user.name,
     email: state.accountForm.email || state.user.email,
     username: state.accountForm.username || state.user.username || "",
+    headline: state.accountForm.headline ?? state.user.headline ?? "",
+    bio: state.accountForm.bio ?? state.user.bio ?? "",
+    website: state.accountForm.website ?? state.user.website ?? "",
+    location: state.accountForm.location ?? state.user.location ?? "",
+    expertise: state.accountForm.expertise ?? (state.user.expertise || []).join(", "),
+    socialLinks: { ...savedSocialLinks, ...(state.accountForm.socialLinks || {}) },
     currentPassword: state.accountForm.currentPassword || "",
     newPassword: state.accountForm.newPassword || "",
     confirmPassword: state.accountForm.confirmPassword || "",
   };
-  return `<section class="member-two-column profile-settings-grid">
+  const profileFields = [state.user.avatarUrl, form.name, form.username, form.headline, form.bio, form.location, form.website, form.expertise];
+  const completedFields = profileFields.filter((value) => String(value || "").trim()).length + (Object.values(form.socialLinks).some(Boolean) ? 1 : 0);
+  const profileProgress = Math.round((completedFields / 9) * 100);
+  const publicProfileRoute = state.user.username ? `/${state.user.username}` : "/me";
+  const socialFields = [
+    ["x", "X / Twitter", "@username or https://x.com/username"],
+    ["linkedin", "LinkedIn", "https://linkedin.com/in/username"],
+    ["instagram", "Instagram", "@username or profile URL"],
+    ["youtube", "YouTube", "@channel or channel URL"],
+    ["github", "GitHub", "username or profile URL"],
+  ];
+  const connectedProviders = ["google", "facebook"].map((provider) => ({
+    provider,
+    name: provider === "google" ? "Google" : "Facebook",
+    account: state.socialAccounts.find((item) => item.provider === provider),
+    available: Boolean(state.providerStatus.social[provider]),
+  }));
+  const communicationPreferences = { ...defaultCommunicationPreferences, ...(state.preferences.communication || {}) };
+  const communicationFields = [
+    ["emailNewsletters", "Email newsletters", "Editorial newsletters and curated reading sent to your inbox."],
+    ["productUpdates", "Product announcements", `Occasional news about new ${siteName()} features and improvements.`],
+    ["profileActivity", "Profile activity", "Updates about profile reviews, approvals, and account presence."],
+    ["commentReplies", "Comment replies", "Alerts when someone responds to your comments or discussions."],
+    ["newFollowers", "New followers", "Let you know when another reader starts following your work."],
+  ];
+  const deletionScheduledFor = state.deletionRequest?.scheduled_for || state.deletionRequest?.scheduledFor || "";
+  return `<section class="profile-settings-page">
     ${state.userMessage ? `<div class="payment-message profile-message">${escapeHtml(state.userMessage)}</div>` : ""}
-    <div class="work-panel">
-      <div class="panel-title">${icon("users")}<h2>Account identity</h2></div>
-      <div class="account-photo-editor">
-        ${userAvatarTemplate(state.user, "profile-avatar")}
-        <div><strong>${escapeHtml(state.user.name)}</strong><span>${escapeHtml(state.user.email)}</span><small>${state.user.username ? `@${escapeHtml(state.user.username)} - ` : ""}User ID: ${escapeHtml(state.user.id)} - Role: ${escapeHtml(state.user.role)}</small></div>
+    <header class="profile-settings-heading">
+      <div><span class="settings-eyebrow">Profile settings</span><h1>Make your profile feel like you.</h1><p>Control what readers see, how they find you, and how your account is secured.</p></div>
+      <button class="secondary-button" data-route="${publicProfileRoute}">${icon("eye", 15)}Preview public profile</button>
+    </header>
+    <div class="profile-settings-layout">
+      <aside class="profile-settings-sidebar">
+        <div class="work-panel profile-identity-card">
+          <div class="profile-avatar-ring">${userAvatarTemplate(state.user, "profile-avatar")}</div>
+          <strong>${escapeHtml(form.name)}</strong>
+          <span>${form.username ? `@${escapeHtml(form.username)}` : "Choose a username to publish your profile"}</span>
+          <div class="profile-completeness"><div><strong>${profileProgress}% complete</strong><span>${profileProgress === 100 ? "Ready to share" : "A complete profile helps readers know you"}</span></div><i aria-hidden="true"><span style="width:${profileProgress}%"></span></i></div>
+          <label class="file-field profile-photo-field"><span>Upload a new photo</span><input id="profilePhotoInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" /></label>
+          <button class="text-button danger-text" data-action="remove-profile-photo" ${state.user.avatarUrl ? "" : "disabled"}>Remove photo</button>
+        </div>
+        <nav class="work-panel profile-settings-nav" aria-label="Profile settings sections">
+          <a href="#public-profile">${icon("users", 15)}Public profile</a>
+          <a href="#social-profiles">${icon("link", 15)}Social profiles</a>
+          <a href="#connected-accounts">${icon("shield", 15)}Connected accounts</a>
+          <a href="#communication-preferences">${icon("bell", 15)}Notifications</a>
+          <a href="#account-details">${icon("lock", 15)}Account & security</a>
+          <a href="#your-data">${icon("eye", 15)}Your data</a>
+        </nav>
+      </aside>
+      <div class="profile-settings-content">
+        <section class="work-panel profile-form-section" id="public-profile">
+          <div class="profile-section-heading"><span>${icon("pen", 18)}</span><div><h2>Public profile</h2><p>This information appears on your profile page and beside your stories.</p></div></div>
+          <div class="profile-form-grid">
+            <label><span>Display name</span><input data-account-field="name" value="${escapeHtml(form.name)}" maxlength="100" autocomplete="name" /></label>
+            <label><span>Username</span><div class="prefixed-input"><span>@</span><input data-account-field="username" value="${escapeHtml(form.username)}" maxlength="30" placeholder="your_username" autocomplete="username" /></div><small>Your public address: /${escapeHtml(form.username || "your_username")}</small></label>
+            <label class="wide"><span>Profile headline</span><input data-account-field="headline" value="${escapeHtml(form.headline)}" maxlength="120" placeholder="What do you write about or work on?" /><small>Shown near your name across InkRiver.</small></label>
+            <label class="wide"><span>About you</span><textarea data-account-field="bio" maxlength="1000" rows="5" placeholder="Share a little about your background, interests, and the ideas you explore.">${escapeHtml(form.bio)}</textarea><small>${form.bio.length}/1,000 characters</small></label>
+            <label><span>Location</span><input data-account-field="location" value="${escapeHtml(form.location)}" maxlength="120" placeholder="City, country" autocomplete="address-level2" /></label>
+            <label><span>Website</span><input data-account-field="website" type="url" value="${escapeHtml(form.website)}" maxlength="240" placeholder="https://your-site.com" autocomplete="url" /></label>
+            <label class="wide"><span>Topics & expertise</span><input data-account-field="expertise" value="${escapeHtml(form.expertise)}" placeholder="Publishing, product design, climate" /><small>Separate topics with commas. Up to 12 will appear on your profile.</small></label>
+          </div>
+        </section>
+        <section class="work-panel profile-form-section" id="social-profiles">
+          <div class="profile-section-heading"><span>${icon("link", 18)}</span><div><h2>Social profiles</h2><p>Help readers find your work elsewhere. Only filled links are shown publicly.</p></div></div>
+          <div class="profile-social-grid">${socialFields.map(([key, label, placeholder]) => `<label><span>${label}</span><input data-account-social="${key}" value="${escapeHtml(form.socialLinks[key] || "")}" maxlength="240" placeholder="${escapeHtml(placeholder)}" /></label>`).join("")}</div>
+        </section>
+        <section class="work-panel profile-form-section" id="connected-accounts">
+          <div class="profile-section-heading"><span>${icon("shield", 18)}</span><div><h2>Connected accounts</h2><p>Use trusted providers to sign in without entering your password.</p></div></div>
+          <div class="connected-account-list">${connectedProviders.map(({ provider, name, account, available }) => `<article><span class="connected-provider-icon">${icon("link", 17)}</span><div><strong>${escapeHtml(name)}</strong><small>${account ? `Connected as ${escapeHtml(account.email || state.user.email)}` : available ? "Available to connect" : "Not configured by the site administrator"}</small>${account?.created_at ? `<time datetime="${escapeHtml(account.created_at)}">Connected ${new Date(account.created_at).toLocaleDateString("en-IN")}</time>` : ""}</div><button class="secondary-button ${account ? "danger-button" : ""}" ${account ? `data-social-disconnect="${provider}"` : `data-social-login="${provider}"`} ${!account && !available ? "disabled" : ""}>${account ? "Disconnect" : available ? "Connect" : "Unavailable"}</button></article>`).join("")}</div>
+          <p class="profile-section-note">Before disconnecting your only provider, make sure you know your account password.</p>
+        </section>
+        <section class="work-panel profile-form-section" id="communication-preferences">
+          <div class="profile-section-heading"><span>${icon("bell", 18)}</span><div><h2>Notifications & communication</h2><p>Choose which optional updates you want to receive. Essential security and billing messages remain enabled.</p></div></div>
+          <div class="profile-preference-list">${communicationFields.map(([key, label, help]) => `<label><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(help)}</small></span><input type="checkbox" data-communication-preference="${key}" ${communicationPreferences[key] ? "checked" : ""} /></label>`).join("")}</div>
+          <div class="profile-save-row"><span>These preferences apply across your signed-in devices.</span><button class="secondary-button" data-action="save-communication-preferences" ${state.profileSaving ? "disabled" : ""}>${state.profileSaving ? "Saving…" : "Save preferences"}</button></div>
+        </section>
+        <section class="work-panel profile-form-section" id="account-details">
+          <div class="profile-section-heading"><span>${icon("lock", 18)}</span><div><h2>Account details</h2><p>Private sign-in information. Your email address is never shown on your public profile.</p></div></div>
+          <div class="profile-form-grid">
+            <label class="wide"><span>Email address</span><input data-account-field="email" type="email" value="${escapeHtml(form.email)}" autocomplete="email" /><small>Changing your email requires your password and a new verification.</small></label>
+          </div>
+          <div class="profile-save-row"><span>Changes to your profile and account are saved together.</span><button class="primary-button" data-action="save-account-details" ${state.profileSaving ? "disabled" : ""}>${state.profileSaving ? "Saving…" : "Save changes"}</button></div>
+        </section>
+        <section class="work-panel profile-form-section profile-security-section">
+          <div class="profile-section-heading"><span>${icon("shield", 18)}</span><div><h2>Password & security</h2><p>Use a strong, unique password for your account.</p></div></div>
+          <div class="profile-form-grid password-fields">
+            <label><span>Current password</span><input data-account-field="currentPassword" type="password" value="${escapeHtml(form.currentPassword)}" autocomplete="current-password" /></label>
+            <label><span>New password</span><input data-account-field="newPassword" type="password" value="${escapeHtml(form.newPassword)}" autocomplete="new-password" /></label>
+            <label><span>Confirm new password</span><input data-account-field="confirmPassword" type="password" value="${escapeHtml(form.confirmPassword)}" autocomplete="new-password" /></label>
+          </div>
+          <div class="profile-save-row"><button class="dashboard-setting-link inline-setting-link" data-route="/security">${icon("shield", 15)}Manage sessions and sign-in security</button><button class="secondary-button" data-action="change-account-password" ${state.profileSaving ? "disabled" : ""}>${state.profileSaving ? "Updating…" : "Change password"}</button></div>
+        </section>
+        <section class="work-panel profile-form-section" id="your-data">
+          <div class="profile-section-heading"><span>${icon("eye", 18)}</span><div><h2>Your data</h2><p>Download a portable copy of the account information stored for you.</p></div></div>
+          <div class="account-data-actions"><article><span>${icon("link", 18)}</span><div><strong>Download account data</strong><small>Includes your profile, saved content, follows, reading history, preferences, and responses in JSON format.</small></div><button class="secondary-button" data-action="download-data">Download JSON</button></article><article><span>${icon("shield", 18)}</span><div><strong>Privacy controls</strong><small>Manage tracking, personalization, cookies, offline storage, and reading history.</small></div><button class="secondary-button" data-route="/privacy">Open privacy center</button></article></div>
+        </section>
+        ${state.deletionRequest ? `<section class="work-panel profile-deletion-scheduled"><div><span>${icon("refresh", 18)}</span><div><h2>Account deletion is scheduled</h2><p>Your profile is in its recovery period${deletionScheduledFor ? ` and is scheduled for deletion on ${new Date(deletionScheduledFor).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}` : ""}. You can cancel while this request remains active.</p></div></div><button class="secondary-button" data-action="cancel-account-deletion" ${state.profileSaving ? "disabled" : ""}>${state.profileSaving ? "Cancelling…" : "Cancel deletion"}</button></section>` : `<section class="work-panel profile-danger-zone"><div><span>${icon("close", 18)}</span><div><h2>Delete profile and account</h2><p>Start a verified deletion request. Your account is scheduled for deletion after a 30-day recovery period.</p></div></div><button class="secondary-button danger-button" data-action="request-account-deletion">Request account deletion</button></section>`}
       </div>
-      <label class="file-field"><span>Profile photo</span><input id="profilePhotoInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" /></label>
-      <div class="settings-actions"><button class="secondary-button" data-action="remove-profile-photo" ${state.user.avatarUrl ? "" : "disabled"}>Remove photo</button><button class="secondary-button" data-route="${state.user.username ? `/${state.user.username}` : "/me"}">Open public profile</button></div>
-    </div>
-    <div class="work-panel">
-      <div class="panel-title">${icon("pen")}<h2>Account details</h2></div>
-      <label><span>Display name</span><input data-account-field="name" value="${escapeHtml(form.name)}" /></label>
-      <label><span>Username</span><input data-account-field="username" value="${escapeHtml(form.username)}" placeholder="your_username" /></label>
-      <label><span>Email address</span><input data-account-field="email" type="email" value="${escapeHtml(form.email)}" /></label>
-      <label><span>Current password</span><input data-account-field="currentPassword" type="password" value="${escapeHtml(form.currentPassword)}" autocomplete="current-password" /></label>
-      <button class="primary-button" data-action="save-account-details">Save account details</button>
-    </div>
-    <div class="work-panel">
-      <div class="panel-title">${icon("lock")}<h2>Change password</h2></div>
-      <label><span>Current password</span><input data-account-field="currentPassword" type="password" value="${escapeHtml(form.currentPassword)}" autocomplete="current-password" /></label>
-      <label><span>New password</span><input data-account-field="newPassword" type="password" value="${escapeHtml(form.newPassword)}" autocomplete="new-password" /></label>
-      <label><span>Confirm new password</span><input data-account-field="confirmPassword" type="password" value="${escapeHtml(form.confirmPassword)}" autocomplete="new-password" /></label>
-      <button class="primary-button" data-action="change-account-password">Change password</button>
-    </div>
-    <div class="work-panel">
-      <div class="panel-title">${icon("link")}<h2>Account tools</h2></div>
-      <button class="dashboard-setting-link" data-route="/privacy">${icon("eye", 15)}Privacy center</button>
-      <button class="dashboard-setting-link" data-route="/security">${icon("lock", 15)}Security controls</button>
-      <button class="dashboard-setting-link" data-route="/support">${icon("comment", 15)}Help and support</button>
     </div>
   </section>`;
 }
@@ -7788,6 +7914,20 @@ function bindInputs() {
     field.addEventListener("input", update);
     field.addEventListener("change", update);
   });
+  document.querySelectorAll("[data-account-social]").forEach((field) => {
+    const update = (event) => {
+      state.accountForm.socialLinks ||= {};
+      state.accountForm.socialLinks[event.target.dataset.accountSocial] = event.target.value;
+    };
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  document.querySelectorAll("[data-communication-preference]").forEach((field) => {
+    field.addEventListener("change", (event) => {
+      state.preferences.communication ||= { ...defaultCommunicationPreferences };
+      state.preferences.communication[event.target.dataset.communicationPreference] = event.target.checked;
+    });
+  });
   document.querySelectorAll("[data-tax-setting]").forEach((field) => {
     const update = (event) => {
       const key = event.target.dataset.taxSetting;
@@ -9292,12 +9432,16 @@ document.addEventListener("click", async (event) => {
     socialLogin(socialProvider);
   }
   if (socialDisconnect) {
+    const providerName = socialDisconnect === "google" ? "Google" : "Facebook";
+    if (!window.confirm(`Disconnect ${providerName} from your account? Make sure you can sign in with your password or another connected provider.`)) return;
     try {
       await apiRequest(`/api/me/social-accounts/${encodeURIComponent(socialDisconnect)}`, { method: "DELETE" });
       state.socialAccounts = state.socialAccounts.filter((item) => item.provider !== socialDisconnect);
-      state.privacyMessage = `${socialDisconnect === "google" ? "Google" : "Facebook"} disconnected.`;
+      state.privacyMessage = `${providerName} disconnected.`;
+      state.userMessage = `${providerName} disconnected from your account.`;
     } catch (error) {
       state.privacyMessage = error.message;
+      state.userMessage = error.message;
     }
     render();
   }
@@ -9525,27 +9669,44 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "save-account-details") {
     try {
+      const nextEmail = state.accountForm.email || state.user.email;
+      let emailChangePassword = "";
+      if (nextEmail.trim().toLowerCase() !== String(state.user.email || "").trim().toLowerCase()) {
+        emailChangePassword = window.prompt("Enter your current password to confirm this email change:") || "";
+        if (!emailChangePassword) throw new Error("Your current password is required to change your email address.");
+      }
+      state.profileSaving = true;
+      render();
       const payload = await apiRequest("/api/me/account", {
         method: "PATCH",
         body: JSON.stringify({
           name: state.accountForm.name || state.user.name,
-          email: state.accountForm.email || state.user.email,
+          email: nextEmail,
           username: state.accountForm.username || state.user.username || "",
-          currentPassword: state.accountForm.currentPassword || "",
+          headline: state.accountForm.headline ?? state.user.headline ?? "",
+          bio: state.accountForm.bio ?? state.user.bio ?? "",
+          website: state.accountForm.website ?? state.user.website ?? "",
+          location: state.accountForm.location ?? state.user.location ?? "",
+          expertise: String(state.accountForm.expertise ?? (state.user.expertise || []).join(","))
+            .split(",").map((item) => item.trim()).filter(Boolean),
+          socialLinks: { ...(state.user.socialLinks || {}), ...(state.accountForm.socialLinks || {}) },
+          currentPassword: emailChangePassword,
         }),
       });
       if (payload.user) state.user = payload.user;
-      state.accountForm.currentPassword = "";
-      state.userMessage = payload.emailVerificationRequired ? "Account updated. Please verify your new email address." : "Account details updated.";
+      state.userMessage = payload.emailVerificationRequired ? "Profile saved. Please verify your new email address." : "Your profile changes are live.";
       await loadSecuritySettings();
     } catch (error) {
       state.userMessage = error.message;
     }
+    state.profileSaving = false;
     render();
   }
   if (action === "change-account-password") {
     try {
       if ((state.accountForm.newPassword || "") !== (state.accountForm.confirmPassword || "")) throw new Error("New password and confirmation do not match.");
+      state.profileSaving = true;
+      render();
       await apiRequest("/api/me/password", {
         method: "POST",
         body: JSON.stringify({
@@ -9560,6 +9721,22 @@ document.addEventListener("click", async (event) => {
     } catch (error) {
       state.userMessage = error.message;
     }
+    state.profileSaving = false;
+    render();
+  }
+  if (action === "save-communication-preferences") {
+    try {
+      state.profileSaving = true;
+      render();
+      await apiRequest("/api/me/documents/preferences", {
+        method: "PUT",
+        body: JSON.stringify({ value: state.preferences }),
+      });
+      state.userMessage = "Notification and communication preferences saved.";
+    } catch (error) {
+      state.userMessage = error.message;
+    }
+    state.profileSaving = false;
     render();
   }
   if (action === "remove-profile-photo") {
@@ -9851,18 +10028,42 @@ document.addEventListener("click", async (event) => {
       link.click();
       URL.revokeObjectURL(link.href);
       state.privacyMessage = "Your complete server data export has been prepared.";
+      state.userMessage = "Your account data download is ready.";
     } catch (error) {
       state.privacyMessage = error.message;
+      state.userMessage = error.message;
     }
     render();
   }
   if (action === "request-account-deletion") {
+    const confirmed = window.confirm("Request deletion of your profile and account? You will have a 30-day recovery period before deletion is completed.");
+    if (!confirmed) return;
     try {
       const payload = await apiRequest("/api/me/deletion-request", { method: "POST", body: "{}" });
-      state.privacyMessage = `Deletion requested. Scheduled for ${new Date(payload.scheduledFor).toLocaleDateString()} after identity verification.`;
+      state.deletionRequest = { status: payload.status, requestedAt: payload.requestedAt, scheduledFor: payload.scheduledFor };
+      const message = `Deletion requested. Scheduled for ${new Date(payload.scheduledFor).toLocaleDateString()} after identity verification.`;
+      state.privacyMessage = message;
+      state.userMessage = message;
     } catch (error) {
       state.privacyMessage = error.message;
+      state.userMessage = error.message;
     }
+    render();
+  }
+  if (action === "cancel-account-deletion") {
+    if (!window.confirm("Cancel your account deletion request and keep your profile active?")) return;
+    try {
+      state.profileSaving = true;
+      render();
+      await apiRequest("/api/me/deletion-request", { method: "DELETE" });
+      state.deletionRequest = null;
+      state.userMessage = "Account deletion cancelled. Your profile will remain active.";
+      state.privacyMessage = state.userMessage;
+    } catch (error) {
+      state.userMessage = error.message;
+      state.privacyMessage = error.message;
+    }
+    state.profileSaving = false;
     render();
   }
   if (action === "verify-backup") {

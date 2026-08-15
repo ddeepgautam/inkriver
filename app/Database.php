@@ -51,6 +51,7 @@ final class Database
         self::ensureColumn('content_imports', 'snapshot_json', "TEXT NOT NULL DEFAULT '[]'");
         self::ensureColumn('discount_codes', 'deleted_at', 'TEXT');
         self::ensureColumn('support_ticket_attachments', 'storage_path', 'TEXT');
+        self::ensureColumn('oauth_states', 'link_user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
     }
 
     private static function ensureColumn(string $table, string $column, string $definition): void

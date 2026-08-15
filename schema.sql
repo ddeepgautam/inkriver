@@ -597,6 +597,7 @@
     state TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
     redirect_uri TEXT NOT NULL,
+    link_user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
