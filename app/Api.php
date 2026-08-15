@@ -363,19 +363,38 @@ function stored_translations(): array
     $map = [];
     foreach ($rows as $row) {
         $map[$row['story_slug']] ??= [];
-        $map[$row['story_slug']][$row['locale']] = [
-            'storySlug' => $row['story_slug'],
-            'locale' => $row['locale'],
-            'title' => $row['title'],
-            'dek' => $row['dek'],
-            'body' => parse_json_field($row['body_json'], []),
-            'contentHtml' => $row['content_html'],
-            'seo' => parse_json_field($row['seo_json'], []),
-            'status' => $row['status'],
-            'updatedAt' => $row['updated_at'],
-        ];
+        $map[$row['story_slug']][$row['locale']] = translation_row_payload($row);
     }
     return $map;
+}
+
+function translation_row_payload(array $row): array
+{
+    return [
+        'storySlug' => $row['story_slug'],
+        'locale' => $row['locale'],
+        'title' => $row['title'],
+        'dek' => $row['dek'],
+        'body' => parse_json_field($row['body_json'], []),
+        'contentHtml' => $row['content_html'],
+        'seo' => parse_json_field($row['seo_json'], []),
+        'status' => $row['status'],
+        'updatedAt' => $row['updated_at'],
+    ];
+}
+
+function stored_story_translation(string $slug, string $locale, ?string $sourceHash = null): ?array
+{
+    $sql = "SELECT * FROM story_translations WHERE story_slug = ? AND locale = ? AND status = 'ready'";
+    $arguments = [$slug, $locale];
+    if ($sourceHash !== null) {
+        $sql .= ' AND source_hash = ?';
+        $arguments[] = $sourceHash;
+    }
+    $stmt = Database::pdo()->prepare($sql . ' LIMIT 1');
+    $stmt->execute($arguments);
+    $row = $stmt->fetch();
+    return $row ? translation_row_payload($row) : null;
 }
 
 function configured_translation_languages(): array
@@ -1977,7 +1996,7 @@ function translate_story_with_openai(array $story, array $language): array
     return $decoded;
 }
 
-function ensure_story_translations(array $story): array
+function ensure_story_translations(array $story, array $languages = []): array
 {
     $pdo = Database::pdo();
     $slug = (string) ($story['slug'] ?? '');
@@ -1985,7 +2004,8 @@ function ensure_story_translations(array $story): array
     $hash = story_source_hash($story);
     $created = 0;
     $failed = 0;
-    foreach (configured_translation_languages() as $language) {
+    $languages = $languages ?: configured_translation_languages();
+    foreach ($languages as $language) {
         $stmt = $pdo->prepare('SELECT source_hash, status FROM story_translations WHERE story_slug = ? AND locale = ?');
         $stmt->execute([$slug, $language['locale']]);
         $existing = $stmt->fetch();
@@ -4631,6 +4651,44 @@ function handle_api(string $path, string $method): void
         }
         audit_log($session['user']['id'], 'entitlement.story_unlock', 'story', $slug, ['source' => $decision['source'] ?? '', 'remaining' => $decision['remaining'] ?? null]);
         json_response(['story' => array_merge($story, ['accessLocked' => false]), 'translations' => stored_translations()[$slug] ?? [], 'usage' => $decision]);
+    }
+
+    if ($method === 'POST' && preg_match('#^/api/stories/([^/]+)/translations/([^/]+)$#', $path, $m)) {
+        $slug = rawurldecode($m[1]);
+        $locale = rawurldecode($m[2]);
+        $session = current_session();
+        $story = null;
+        foreach (document_value('stories', []) as $candidate) {
+            if (is_array($candidate) && ($candidate['slug'] ?? '') === $slug && ($candidate['status'] ?? '') === 'published') {
+                $story = $candidate;
+                break;
+            }
+        }
+        if (!$story) json_response(['error' => 'NOT_FOUND', 'message' => 'Published story not found.'], 404);
+        if (!empty(entitlement_story_payload($story, $session)['accessLocked'])) {
+            json_response(['error' => 'ARTICLE_LOCKED', 'message' => 'Unlock this article before translating it.'], 403);
+        }
+        $language = null;
+        foreach (configured_translation_languages() as $candidate) {
+            if (($candidate['locale'] ?? '') === $locale) {
+                $language = $candidate;
+                break;
+            }
+        }
+        if (!$language) json_response(['error' => 'UNSUPPORTED_LANGUAGE', 'message' => 'That translation language is not available.'], 400);
+        if (!provider_status()['ai']) json_response(['error' => 'AI_NOT_CONFIGURED', 'message' => 'Article translation is temporarily unavailable.'], 503);
+
+        $sourceHash = story_source_hash($story);
+        $ready = stored_story_translation($slug, $locale, $sourceHash);
+        if (!$ready) {
+            [$ipIdentity] = request_rate_limit_identity();
+            enforce_auth_rate_limit('article-translation', $ipIdentity, 20, 3600);
+            record_auth_rate_limit_failure('article-translation', $ipIdentity, 20, 3600, 3600);
+            ensure_story_translations($story, [$language]);
+            $ready = stored_story_translation($slug, $locale, $sourceHash);
+        }
+        if (!$ready) json_response(['error' => 'TRANSLATION_FAILED', 'message' => 'The translation could not be prepared. Please try again shortly.'], 502);
+        json_response(['translation' => $ready]);
     }
 
     if ($method === 'GET' && ($path === '/api/me/entitlements' || $path === '/api/me/usage')) {

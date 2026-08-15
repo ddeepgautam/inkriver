@@ -1800,6 +1800,8 @@ const state = {
   saved: new Set(loadSavedSlugs()),
   stories: initialStories,
   translations: {},
+  translationBusy: "",
+  translationMessage: "",
   translationLanguages: [
     { locale: "hi-IN", language: "Hindi" },
     { locale: "es-ES", language: "Spanish" },
@@ -2673,9 +2675,42 @@ function translationStatusLabel(story) {
   const locale = currentArticleLocale();
   if (!locale) return "";
   const labels = Object.fromEntries(state.translationLanguages.map((item) => [item.locale, item.language]));
+  if (state.translationBusy === `${story.slug}:${locale}`) return `Translating this article into ${labels[locale] || locale}…`;
+  if (state.translationMessage) return state.translationMessage;
   return state.translations?.[story.slug]?.[locale]
     ? `Showing ${labels[locale] || locale} translation`
-    : `${labels[locale] || locale} translation is being prepared. Showing original for now.`;
+    : `${labels[locale] || locale} translation is not cached yet.`;
+}
+
+function translationStatusTemplate(story) {
+  const label = translationStatusLabel(story);
+  if (!label) return "";
+  const locale = currentArticleLocale();
+  const canRetry = locale && !state.translationBusy && !state.translations?.[story.slug]?.[locale];
+  return `<div class="translation-status" role="status" aria-live="polite"><span>${escapeHtml(label)}</span>${canRetry ? `<button class="secondary-button" data-translate-story="${escapeHtml(story.slug)}" data-translate-locale="${escapeHtml(locale)}">Retry translation</button>` : ""}</div>`;
+}
+
+async function selectArticleLanguage(story, locale) {
+  state.preferences.locale = locale;
+  state.translationMessage = "";
+  persistProductState("preferences", state.preferences);
+  if (locale === "en-IN" || state.translations?.[story.slug]?.[locale]) {
+    render();
+    return;
+  }
+  state.translationBusy = `${story.slug}:${locale}`;
+  render();
+  try {
+    const payload = await apiRequest(`/api/stories/${encodeURIComponent(story.slug)}/translations/${encodeURIComponent(locale)}`, { method: "POST", body: "{}" });
+    state.translations[story.slug] ||= {};
+    state.translations[story.slug][locale] = payload.translation;
+    state.translationMessage = "";
+  } catch (error) {
+    state.translationMessage = error.message;
+  } finally {
+    state.translationBusy = "";
+    render();
+  }
 }
 
 function readerLanguageOptions() {
@@ -4632,7 +4667,7 @@ function storyPageTemplate(story) {
       <article class="article-page">
         <div class="article-progress-track"><span id="articleProgressBar" style="width:${history?.progress || 0}%"></span></div>
         ${readerToolbarTemplate(story, history)}
-        ${translationStatusLabel(story) ? `<div class="translation-status">${escapeHtml(translationStatusLabel(story))}</div>` : ""}
+        ${translationStatusTemplate(story)}
         <details class="reader-toc"><summary>${icon("filter", 14)}Table of contents</summary><nav><a href="#article-start">Introduction</a><a href="#article-body">Article</a>${story.interactiveBlocks?.length ? `<a href="#article-interactive">Reader questions</a>` : ""}<a href="#comments">Discussion</a></nav></details>
         <button class="back-link" data-route="/">Back to feed</button>
         <div class="article-kicker" id="article-start">${escapeHtml(story.topic)}</div>
@@ -4693,7 +4728,7 @@ function readerToolbarTemplate(story, history) {
     <button data-reader-scale="-10" title="Decrease text">A−</button><button data-reader-scale="10" title="Increase text">A+</button>
     <button data-action="toggle-speech">${icon(state.speechActive ? "pause" : "play", 15)}<span>${state.speechActive ? "Pause" : "Listen"}</span></button>
     <span class="remaining-time">${minutes} min remaining</span>
-    <select data-locale aria-label="Article language">${readerLanguageOptions().map((item) => `<option value="${escapeHtml(item.locale)}" ${state.preferences.locale === item.locale ? "selected" : ""}>${escapeHtml(item.language)}</option>`).join("")}</select>
+    <select data-locale aria-label="Article language" ${state.translationBusy ? "disabled" : ""}>${readerLanguageOptions().map((item) => `<option value="${escapeHtml(item.locale)}" ${state.preferences.locale === item.locale ? "selected" : ""}>${escapeHtml(item.language)}</option>`).join("")}</select>
   </div>`;
 }
 
@@ -7698,9 +7733,8 @@ function bindInputs() {
     state.pwaSettings[event.target.dataset.pwaSetting] = event.target.checked;
   }));
   document.querySelector("[data-locale]")?.addEventListener("change", (event) => {
-    state.preferences.locale = event.target.value;
-    persistProductState("preferences", state.preferences);
-    render();
+    const story = state.stories.find((item) => item.status === "published" && state.path.includes(`/stories/${item.slug}`));
+    if (story) selectArticleLanguage(story, event.target.value);
   });
   const commentDraft = document.getElementById("commentDraft");
   commentDraft?.addEventListener("input", (event) => {
@@ -8126,6 +8160,7 @@ document.addEventListener("click", async (event) => {
   const checkout = target.dataset.checkout;
   const paymentSubmit = target.dataset.paymentSubmit;
   const gateway = target.dataset.gateway;
+  const translateStory = target.dataset.translateStory;
   const paymentGatewayToggle = target.dataset.paymentGatewayToggle;
   const saveProvider = target.dataset.saveProvider;
   const menuMove = target.dataset.menuMove;
@@ -9497,6 +9532,11 @@ document.addEventListener("click", async (event) => {
     state.gatewaySettingsSaved = false;
     persistGatewaySettings();
     render();
+    return;
+  }
+  if (translateStory) {
+    const story = state.stories.find((item) => item.slug === translateStory);
+    if (story) selectArticleLanguage(story, target.dataset.translateLocale || state.preferences.locale);
     return;
   }
   if (saveProvider) {

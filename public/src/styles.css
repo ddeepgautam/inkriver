@@ -6378,6 +6378,9 @@ button:disabled {
 .reader-toolbar select { max-width: 100px; }
 .translation-status {
   display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   width: fit-content;
   max-width: 100%;
   margin: -18px 0 18px;
@@ -6389,6 +6392,7 @@ button:disabled {
   font-size: 12px;
   font-weight: 750;
 }
+.translation-status .secondary-button { min-height: 36px; padding: 7px 10px; }
 .remaining-time { margin-left: auto; color: var(--muted); font-size: 10px; }
 .reader-toc { margin: -18px 0 24px; border-bottom: 1px solid var(--line); }
 .reader-toc summary { display: inline-flex; align-items: center; gap: 6px; padding: 8px 0; color: var(--muted); font-size: 10px; font-weight: 700; cursor: pointer; }

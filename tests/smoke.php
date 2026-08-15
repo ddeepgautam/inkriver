@@ -26,6 +26,15 @@ $pdo->prepare("INSERT INTO provider_credentials (provider, key, value_encrypted,
     ->execute([encrypt_secret_value('smoke-openai-key'), $now]);
 assert_true(configured_openai_api_key() === 'smoke-openai-key' && provider_status()['ai'], 'legacy generic AI vault keys remain valid for OpenAI translations');
 
+$cachedTranslationStory = ['slug' => 'cached-translation-story', 'title' => 'Original title', 'dek' => 'Original summary', 'body' => ['Original body'], 'contentHtml' => '<p>Original body</p>', 'seo' => [], 'status' => 'published'];
+$cachedTranslationHash = story_source_hash($cachedTranslationStory);
+$pdo->prepare("INSERT INTO story_translations (story_slug, locale, title, dek, body_json, content_html, seo_json, status, source_hash, provider, error, created_at, updated_at) VALUES (?, 'hi-IN', 'अनुवादित शीर्षक', 'अनुवादित सारांश', '[]', '<p>अनुवादित सामग्री</p>', '{}', 'ready', ?, 'openai', '', ?, ?)")
+    ->execute([$cachedTranslationStory['slug'], $cachedTranslationHash, $now, $now]);
+$cachedTranslationResult = ensure_story_translations($cachedTranslationStory, [['locale' => 'hi-IN', 'language' => 'Hindi']]);
+assert_true($cachedTranslationResult['created'] === 0 && isset(stored_translations()[$cachedTranslationStory['slug']]['hi-IN']), 'reader translation requests reuse a ready cached translation');
+assert_true(stored_story_translation($cachedTranslationStory['slug'], 'hi-IN', $cachedTranslationHash)['title'] === 'अनुवादित शीर्षक', 'language-specific copies are served from the shared database cache');
+assert_true(stored_story_translation($cachedTranslationStory['slug'], 'hi-IN', hash('sha256', 'edited-source')) === null, 'cached translations are invalidated when the source article changes');
+
 $publicPreferences = [
     'paymentGatewayEnabled' => ['razorpay' => false],
     'navigationMenus' => ['header' => [['Stories', '/']], 'footer' => [['Help', '/support']]],
