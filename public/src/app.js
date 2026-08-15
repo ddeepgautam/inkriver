@@ -2946,11 +2946,11 @@ function continueBusinessListingIntent() {
 }
 
 async function submitAuthentication() {
+  const registering = state.authMode === "register";
   state.authBusy = true;
   state.loginMessage = "";
   render();
   try {
-    const registering = state.authMode === "register";
     const payload = await apiRequest(`/api/auth/${registering ? "register" : "login"}`, {
       method: "POST",
       body: JSON.stringify({ ...state.authForm, authorIntent: state.authorIntent }),
@@ -7046,7 +7046,7 @@ function loginTemplate() {
             <small>Use at least 10 characters.</small>
             <button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Updating..." : "Reset password"}</button>
           </form>
-          ${state.loginMessage ? `<div class="payment-message">${state.loginMessage}</div>` : ""}
+          ${state.loginMessage ? `<div class="payment-message" role="alert">${state.loginMessage}</div>` : ""}
         </section>
       </div>
     `;
@@ -7070,7 +7070,7 @@ function loginTemplate() {
     `;
   }
   if (state.authMode === "login" && state.authStep === "two-factor") {
-    return `<div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="two-factor-title"><section class="checkout-modal auth-modal"><button class="close-button" data-action="close-login" aria-label="Close login">${icon("close")}</button><span class="auth-step-icon">${icon("shield", 22)}</span><h2 id="two-factor-title">Verify it’s you</h2><p>Your account has two-factor authentication enabled. Enter the current code from your authenticator app, or a recovery code.</p><form class="auth-form" id="authForm"><label><span>Authenticator or recovery code</span><input id="authTwoFactorCode" name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="20" value="${escapeHtml(state.authForm.twoFactorCode || "")}" autofocus required /></label><button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Verifying…" : "Verify and sign in"}</button></form><button class="text-button auth-forgot" data-action="back-to-login">Back to email and password</button>${state.loginMessage ? `<div class="payment-message">${escapeHtml(state.loginMessage)}</div>` : ""}</section></div>`;
+    return `<div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="two-factor-title"><section class="checkout-modal auth-modal"><button class="close-button" data-action="close-login" aria-label="Close login">${icon("close")}</button><span class="auth-step-icon">${icon("shield", 22)}</span><h2 id="two-factor-title">Verify it’s you</h2><p>Your account has two-factor authentication enabled. Enter the current code from your authenticator app, or a recovery code.</p><form class="auth-form" id="authForm"><label><span>Authenticator or recovery code</span><input id="authTwoFactorCode" name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="20" value="${escapeHtml(state.authForm.twoFactorCode || "")}" autofocus required /></label><button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Verifying…" : "Verify and sign in"}</button></form><button class="text-button auth-forgot" data-action="back-to-login">Back to email and password</button>${state.loginMessage ? `<div class="payment-message" role="alert">${escapeHtml(state.loginMessage)}</div>` : ""}</section></div>`;
   }
   const providers = enabledSocialProviders();
   return `
@@ -7107,7 +7107,7 @@ function loginTemplate() {
               : `<div class="empty-state">Social login is disabled by the admin. Enable Google, Facebook, or both from the Admin dashboard.</div>`
           }
         </div>
-        ${state.loginMessage ? `<div class="payment-message">${state.loginMessage}</div>` : ""}
+        ${state.loginMessage ? `<div class="payment-message" role="alert">${state.loginMessage}</div>` : ""}
         <div class="auth-note">Passwords are hashed on the server. Sessions use an HTTP-only cookie and cannot be read by page scripts.</div>
       </section>
     </div>
