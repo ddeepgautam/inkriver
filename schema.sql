@@ -194,6 +194,102 @@
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS subscription_plans (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('draft', 'active', 'archived')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS subscription_plan_versions (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL REFERENCES subscription_plans(id) ON DELETE RESTRICT,
+    version INTEGER NOT NULL,
+    price INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    billing_period TEXT NOT NULL CHECK (billing_period IN ('month', 'quarter', 'year')),
+    note TEXT NOT NULL DEFAULT '',
+    features_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('draft', 'published', 'retired')),
+    effective_at TEXT NOT NULL,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(plan_id, version)
+  );
+
+  CREATE TABLE IF NOT EXISTS capabilities (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    value_type TEXT NOT NULL CHECK (value_type IN ('boolean', 'quota', 'scope')),
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS plan_capabilities (
+    plan_version_id TEXT NOT NULL REFERENCES subscription_plan_versions(id) ON DELETE CASCADE,
+    capability_key TEXT NOT NULL REFERENCES capabilities(key) ON DELETE RESTRICT,
+    mode TEXT NOT NULL CHECK (mode IN ('denied', 'allowed', 'quota', 'unlimited')),
+    limit_value INTEGER,
+    reset_period TEXT NOT NULL DEFAULT 'subscription_cycle' CHECK (reset_period IN ('subscription_cycle', 'month', 'year', 'lifetime')),
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (plan_version_id, capability_key)
+  );
+
+  CREATE TABLE IF NOT EXISTS roles (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS user_roles (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_key TEXT NOT NULL REFERENCES roles(key) ON DELETE RESTRICT,
+    assigned_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    assigned_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, role_key)
+  );
+
+  CREATE TABLE IF NOT EXISTS role_capabilities (
+    role_key TEXT NOT NULL REFERENCES roles(key) ON DELETE CASCADE,
+    capability_key TEXT NOT NULL REFERENCES capabilities(key) ON DELETE RESTRICT,
+    mode TEXT NOT NULL CHECK (mode IN ('denied', 'allowed', 'unlimited')),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (role_key, capability_key)
+  );
+
+  CREATE TABLE IF NOT EXISTS user_capability_overrides (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    capability_key TEXT NOT NULL REFERENCES capabilities(key) ON DELETE RESTRICT,
+    mode TEXT NOT NULL CHECK (mode IN ('denied', 'allowed', 'quota', 'unlimited')),
+    limit_value INTEGER,
+    reset_period TEXT NOT NULL DEFAULT 'subscription_cycle',
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    starts_at TEXT,
+    ends_at TEXT,
+    reason TEXT NOT NULL DEFAULT '',
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS entitlement_usage_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subscription_id TEXT REFERENCES subscriptions(id) ON DELETE CASCADE,
+    capability_key TEXT NOT NULL REFERENCES capabilities(key) ON DELETE RESTRICT,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, capability_key, subject_type, subject_id, period_start)
+  );
+
   CREATE TABLE IF NOT EXISTS resources (
     id TEXT PRIMARY KEY,
     slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -224,6 +320,7 @@
     access_disabled INTEGER NOT NULL DEFAULT 0,
     single_use_links INTEGER NOT NULL DEFAULT 0,
     download_limit_per_hour INTEGER NOT NULL DEFAULT 20,
+    subscription_eligible INTEGER NOT NULL DEFAULT 0,
     created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -1098,6 +1195,8 @@
   CREATE INDEX IF NOT EXISTS idx_comments_story_created ON comments(story_slug, created_at);
   CREATE INDEX IF NOT EXISTS idx_story_translations_locale ON story_translations(locale, status);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_plan_versions_plan_status ON subscription_plan_versions(plan_id, status, version DESC);
+  CREATE INDEX IF NOT EXISTS idx_usage_user_cap_period ON entitlement_usage_events(user_id, capability_key, period_start, period_end);
   CREATE INDEX IF NOT EXISTS idx_payments_user_created ON payments(user_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_resources_status_category ON resources(status, category, updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_resource_versions_resource ON resource_versions(resource_id, created_at DESC);

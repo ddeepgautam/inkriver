@@ -29,10 +29,19 @@ function resource_entitlement(string $resourceId, string $userId): ?array
     return $stmt->fetch() ?: null;
 }
 
+function resource_subscription_access(array $resource, ?array $session): ?array
+{
+    if (!$session || ($resource['status'] ?? '') !== 'published' || !empty($resource['access_disabled'])) return null;
+    $decision = entitlement_decision($session, CAPABILITY_INCLUDED_RESOURCES);
+    if (!entitlement_resource_scope_allows($decision, $resource)) return null;
+    return ['acquisition_type' => 'subscription', 'status' => 'active', 'subscription_id' => $decision['subscription']['id'] ?? null, 'decision' => $decision];
+}
+
 function public_resource(array $row, ?array $session = null, bool $admin = false): array
 {
     $entitlement = $session ? resource_entitlement((string) $row['id'], (string) $session['user']['id']) : null;
-    $owned = $entitlement && $entitlement['status'] === 'active';
+    $subscriptionAccess = !$entitlement || $entitlement['status'] !== 'active' ? resource_subscription_access($row, $session) : null;
+    $owned = ($entitlement && $entitlement['status'] === 'active') || $subscriptionAccess;
     $regular = (int) $row['regular_price'];
     $effective = resource_effective_price($row);
     $item = [
@@ -48,7 +57,8 @@ function public_resource(array $row, ?array $session = null, bool $admin = false
         'accessDisabled' => (bool) $row['access_disabled'], 'fileSize' => (int) $row['file_size'],
         'hasProtectedFile' => !empty($row['protected_storage_key']), 'hasExternalAccess' => !empty($row['external_url']),
         'owned' => (bool) $owned, 'entitlementStatus' => $entitlement['status'] ?? null,
-        'acquiredAt' => $entitlement['acquired_at'] ?? null, 'acquisitionType' => $entitlement['acquisition_type'] ?? null,
+        'acquiredAt' => $entitlement['acquired_at'] ?? null, 'acquisitionType' => $entitlement['acquisition_type'] ?? ($subscriptionAccess ? 'subscription' : null),
+        'subscriptionEligible' => (bool) ($row['subscription_eligible'] ?? false),
         'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at'], 'publishedAt' => $row['published_at'],
     ];
     if ($admin) {
@@ -134,6 +144,7 @@ function resource_clean_fields(array $body, ?array $existing = null): array
         'externalUrl' => $existing['external_url'], 'sampleUrl' => $existing['sample_url'], 'status' => $existing['status'],
         'accessDisabled' => $existing['access_disabled'], 'singleUseLinks' => $existing['single_use_links'],
         'downloadLimitPerHour' => $existing['download_limit_per_hour'],
+        'subscriptionEligible' => $existing['subscription_eligible'] ?? 0,
     ];
     $get = fn(string $key, mixed $fallback = '') => array_key_exists($key, $body) ? $body[$key] : ($existing[$key] ?? $fallback);
     $name = trim((string) $get('name'));
@@ -172,6 +183,7 @@ function resource_clean_fields(array $body, ?array $existing = null): array
         'access_disabled' => filter_var($get('accessDisabled', false), FILTER_VALIDATE_BOOL) ? 1 : 0,
         'single_use_links' => filter_var($get('singleUseLinks', false), FILTER_VALIDATE_BOOL) ? 1 : 0,
         'download_limit_per_hour' => max(1, min(500, (int) $get('downloadLimitPerHour', 20))),
+        'subscription_eligible' => filter_var($get('subscriptionEligible', false), FILTER_VALIDATE_BOOL) ? 1 : 0,
     ];
 }
 
@@ -205,6 +217,7 @@ function resource_require_access(array $resource, array $session, string $action
         json_response(['error' => 'RESOURCE_ACCESS_DISABLED', 'message' => 'Access to this resource is currently unavailable.'], 403);
     }
     $entitlement = resource_entitlement($resource['id'], $session['user']['id']);
+    if (!$entitlement || $entitlement['status'] !== 'active') $entitlement = resource_subscription_access($resource, $session);
     if (!$entitlement || $entitlement['status'] !== 'active') {
         resource_access_log($resource['id'], $session['user']['id'], $action, 'denied_no_entitlement');
         json_response(['error' => 'RESOURCE_NOT_OWNED', 'message' => 'This resource is not in your library.'], 403);

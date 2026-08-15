@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/Auth.php';
+require_once __DIR__ . '/Entitlements.php';
 require_once __DIR__ . '/BusinessNetwork.php';
 require_once __DIR__ . '/Resources.php';
 
@@ -2046,6 +2047,11 @@ function story_plain_text(array $story): string
     return trim($body . ' ' . strip_tags($html));
 }
 
+function public_story_search_text(array $story): string
+{
+    return !empty($story['premium']) ? '' : story_plain_text($story);
+}
+
 function fts_query(string $query): string
 {
     $terms = preg_split('/\s+/', trim($query));
@@ -2070,7 +2076,7 @@ function story_catalog_hash(array $stories): string
             'publication' => (string) ($story['publication'] ?? $story['role'] ?? ''),
             'topic' => (string) ($story['topic'] ?? ''),
             'tags' => is_array($story['tags'] ?? null) ? array_values($story['tags']) : [],
-            'body' => story_plain_text($story),
+            'body' => public_story_search_text($story),
         ];
     }
     usort($compact, fn($a, $b) => $a['slug'] <=> $b['slug']);
@@ -2096,7 +2102,7 @@ function rebuild_story_search_index(?array $stories = null): int
                 (string) ($story['publication'] ?? $story['role'] ?? ''),
                 (string) ($story['topic'] ?? ''),
                 implode(' ', is_array($story['tags'] ?? null) ? $story['tags'] : []),
-                story_plain_text($story),
+                public_story_search_text($story),
             ]);
             $count++;
         }
@@ -2158,7 +2164,7 @@ function search_stories(array $params): array
     } catch (Throwable) {
         $needle = strtolower($query);
         foreach ($bySlug as $slug => $story) {
-            $haystack = strtolower(($story['title'] ?? '') . ' ' . ($story['dek'] ?? '') . ' ' . ($story['author'] ?? '') . ' ' . ($story['topic'] ?? '') . ' ' . implode(' ', $story['tags'] ?? []) . ' ' . story_plain_text($story));
+            $haystack = strtolower(($story['title'] ?? '') . ' ' . ($story['dek'] ?? '') . ' ' . ($story['author'] ?? '') . ' ' . ($story['topic'] ?? '') . ' ' . implode(' ', $story['tags'] ?? []) . ' ' . public_story_search_text($story));
             if ($needle === '' || str_contains($haystack, $needle)) {
                 $slugs[] = $slug;
                 $scores[$slug] = substr_count($haystack, $needle ?: ' ') + (str_contains(strtolower((string) ($story['title'] ?? '')), $needle) ? 10 : 0);
@@ -2350,6 +2356,7 @@ function trusted_payment_plans(): array
         ['id' => 'patron', 'name' => 'Patron', 'price' => 4999, 'period' => 'year'],
     ];
     $configured = document_value('plans', $fallback);
+    entitlement_sync_plans(is_array($configured) ? $configured : $fallback);
     $plans = [];
     foreach (is_array($configured) ? $configured : $fallback as $plan) {
         if (!is_array($plan)) continue;
@@ -2358,7 +2365,7 @@ function trusted_payment_plans(): array
         $price = (int) round((float) ($plan['price'] ?? 0));
         $period = strtolower(trim((string) ($plan['period'] ?? 'month')));
         if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,79}$/', $id) || $name === '' || $price < 1 || $price > 10000000) continue;
-        $plans[$id] = ['id' => $id, 'name' => substr($name, 0, 120), 'price' => $price, 'period' => $period === 'year' ? 'year' : 'month'];
+        $plans[$id] = ['id' => $id, 'name' => substr($name, 0, 120), 'price' => $price, 'period' => in_array($period, ['month', 'quarter', 'year'], true) ? $period : 'month'];
     }
     return $plans ?: array_column($fallback, null, 'id');
 }
@@ -3076,11 +3083,15 @@ function activate_paid_payment(string $paymentId, string $providerPaymentId = ''
     }
 
     $planId = (string) ($metadata['planId'] ?? 'premium');
-    $months = str_contains(strtolower((string) ($metadata['period'] ?? 'monthly')), 'year') ? 12 : 1;
+    $period = strtolower((string) ($metadata['period'] ?? 'month'));
+    $months = $period === 'year' ? 12 : ($period === 'quarter' ? 3 : 1);
     $subId = uuid_value('SUB-');
     $ends = gmdate('Y-m-d\TH:i:s.v\Z', time() + $months * 30 * 86400);
-    $pdo->prepare("INSERT INTO subscriptions (id, user_id, plan_id, provider, provider_subscription_id, currency, amount, status, starts_at, ends_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)")
-        ->execute([$subId, $payment['user_id'], $planId, $payment['provider'], $providerSubscriptionId ?: $providerPaymentId, $payment['currency'], (int) $payment['amount'], $now, $ends, $now, $now]);
+    $planVersionStmt = $pdo->prepare("SELECT id FROM subscription_plan_versions WHERE plan_id = ? AND status = 'published' ORDER BY version DESC LIMIT 1");
+    $planVersionStmt->execute([$planId]);
+    $planVersionId = $planVersionStmt->fetchColumn() ?: null;
+    $pdo->prepare("INSERT INTO subscriptions (id, user_id, plan_id, plan_version_id, provider, provider_subscription_id, currency, amount, status, starts_at, ends_at, current_period_start, current_period_end, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)")
+        ->execute([$subId, $payment['user_id'], $planId, $planVersionId, $payment['provider'], $providerSubscriptionId ?: $providerPaymentId, $payment['currency'], (int) $payment['amount'], $now, $ends, $now, $ends, $now, $now]);
     $pdo->prepare('UPDATE payments SET subscription_id = ? WHERE id = ?')->execute([$subId, $paymentId]);
     $pdo->prepare('UPDATE users SET subscription = ?, updated_at = ? WHERE id = ?')->execute([$metadata['planName'] ?? 'Premium', $now, $payment['user_id']]);
     $pdo->prepare('INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -3142,7 +3153,7 @@ function sync_subscription_lifecycle(): array
 {
     $pdo = Database::pdo();
     $now = now_iso();
-    $expired = $pdo->prepare("SELECT * FROM subscriptions WHERE status = 'active' AND ends_at IS NOT NULL AND ends_at < ?");
+    $expired = $pdo->prepare("SELECT * FROM subscriptions WHERE status = 'active' AND COALESCE(current_period_end, ends_at) IS NOT NULL AND COALESCE(current_period_end, ends_at) < ?");
     $expired->execute([$now]);
     $expiredRows = $expired->fetchAll();
     foreach ($expiredRows as $row) {
@@ -3150,6 +3161,9 @@ function sync_subscription_lifecycle(): array
         $pdo->prepare("INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, 'expired', 'active', 'expired', '{}', ?)")
             ->execute([uuid_value('SEV-'), $row['id'], $row['user_id'], $row['provider'], $now]);
         create_notification($row['user_id'], 'subscription_expired', 'Membership expired', 'Your membership period ended. Update payment to continue premium access.', '/pricing');
+        $other = $pdo->prepare("SELECT 1 FROM subscriptions WHERE user_id = ? AND id != ? AND status = 'active' AND (COALESCE(current_period_end, ends_at) IS NULL OR COALESCE(current_period_end, ends_at) > ?) LIMIT 1");
+        $other->execute([$row['user_id'], $row['id'], $now]);
+        if (!$other->fetchColumn()) $pdo->prepare("UPDATE users SET subscription = 'Free', updated_at = ? WHERE id = ?")->execute([$now, $row['user_id']]);
     }
     $pastDue = $pdo->query("SELECT * FROM subscriptions WHERE status IN ('past_due', 'failed')")->fetchAll();
     foreach ($pastDue as $row) {
@@ -4509,6 +4523,17 @@ function handle_api(string $path, string $method): void
             $row = $stmt->fetch();
             if ($row) $documents[$key] = parse_json_field($row['value_json'], null);
         }
+        $plansForEntitlements = is_array($documents['plans'] ?? null) ? $documents['plans'] : array_values(trusted_payment_plans());
+        entitlement_sync_plans($plansForEntitlements);
+        $lockedStorySlugs = [];
+        if (is_array($documents['stories'] ?? null) && (!$session || ($session['user']['role'] ?? '') !== 'admin')) {
+            $documents['stories'] = array_map(function ($story) use ($session, &$lockedStorySlugs) {
+                if (!is_array($story)) return $story;
+                $public = entitlement_story_payload($story, $session);
+                if (!empty($public['accessLocked'])) $lockedStorySlugs[(string) ($story['slug'] ?? '')] = true;
+                return $public;
+            }, $documents['stories']);
+        }
         $userDocuments = [];
         if ($session) {
             $stmt = $pdo->prepare('SELECT key, value_json FROM user_documents WHERE user_id = ?');
@@ -4547,12 +4572,14 @@ function handle_api(string $path, string $method): void
             $deletionStmt->execute([$session['user']['id']]);
             $deletionRequest = $deletionStmt->fetch() ?: null;
         }
+        $translations = stored_translations();
+        foreach (array_keys($lockedStorySlugs) as $slug) unset($translations[$slug]);
         json_response([
             'documents' => $documents,
             'userDocuments' => $userDocuments,
             'storyStats' => $storyStats,
             'likedStorySlugs' => $likedStorySlugs,
-            'translations' => stored_translations(),
+            'translations' => $translations,
             'translationLanguages' => configured_translation_languages(),
             'ads' => active_ads(),
             'featureFlags' => public_feature_flags($session),
@@ -4561,7 +4588,32 @@ function handle_api(string $path, string $method): void
             'pushPublicKey' => provider_config_value('VAPID_PUBLIC_KEY', 'push', 'vapid_public_key', '') ?: '',
             'socialAccounts' => $socialAccounts,
             'deletionRequest' => $deletionRequest,
+            'entitlements' => $session ? entitlement_usage_summary($session) : [],
+            'activeSubscription' => $session ? entitlement_active_subscription($session['user']['id']) : null,
         ]);
+    }
+
+    if ($method === 'POST' && preg_match('#^/api/stories/([^/]+)/unlock$#', $path, $m)) {
+        $session = require_auth();
+        $slug = rawurldecode($m[1]);
+        $story = null;
+        foreach (document_value('stories', []) as $candidate) {
+            if (is_array($candidate) && ($candidate['slug'] ?? '') === $slug && ($candidate['status'] ?? '') === 'published') { $story = $candidate; break; }
+        }
+        if (!$story) json_response(['error' => 'NOT_FOUND', 'message' => 'Published story not found.'], 404);
+        if (empty($story['premium'])) json_response(['story' => array_merge($story, ['accessLocked' => false]), 'usage' => null]);
+        $decision = entitlement_consume($session, CAPABILITY_PAID_ARTICLES, 'story', $slug);
+        if (empty($decision['allowed'])) {
+            $message = ($decision['reason'] ?? '') === 'QUOTA_EXHAUSTED' ? 'Your paid article allowance has been used for this period.' : 'Your current subscription does not include this paid article.';
+            json_response(['error' => $decision['reason'] ?? 'PAID_ARTICLE_REQUIRED', 'message' => $message], 403);
+        }
+        audit_log($session['user']['id'], 'entitlement.story_unlock', 'story', $slug, ['source' => $decision['source'] ?? '', 'remaining' => $decision['remaining'] ?? null]);
+        json_response(['story' => array_merge($story, ['accessLocked' => false]), 'translations' => stored_translations()[$slug] ?? [], 'usage' => $decision]);
+    }
+
+    if ($method === 'GET' && ($path === '/api/me/entitlements' || $path === '/api/me/usage')) {
+        $session = require_auth();
+        json_response(['entitlements' => entitlement_usage_summary($session), 'subscription' => entitlement_active_subscription($session['user']['id'])]);
     }
 
     if ($method === 'GET' && $path === '/api/search') {
@@ -4807,6 +4859,7 @@ function handle_api(string $path, string $method): void
                     ->execute([json_encode($value, JSON_UNESCAPED_SLASHES), $session['user']['id'], $updatedAt]);
             }
             if ($key === 'stories') rebuild_story_search_index(is_array($value) ? $value : null);
+            if ($key === 'plans' && is_array($value)) entitlement_sync_plans($value, $session['user']['id']);
             if ($key === 'stories' && is_array($value)) {
                 foreach ($value as $story) if (is_array($story)) record_story_revision($story, $session['user']['id'], 'Admin stories document update');
             }
@@ -5379,7 +5432,11 @@ function handle_api(string $path, string $method): void
         } else {
             $stmt = $pdo->query("SELECT * FROM users WHERE status != 'deleted' ORDER BY created_at DESC LIMIT 200");
         }
-        json_response(['users' => array_map('public_user', $stmt->fetchAll())]);
+        json_response(['users' => array_map(function ($row) {
+            $user = public_user($row);
+            $user['roles'] = user_role_keys($row['id'], $row['role']);
+            return $user;
+        }, $stmt->fetchAll())]);
     }
 
     if ($method === 'POST' && $path === '/api/admin/users') {
@@ -5428,10 +5485,15 @@ function handle_api(string $path, string $method): void
         $now = now_iso();
         $pdo->prepare('INSERT INTO users (id, name, email, username, avatar_url, headline, bio, website, location, social_links_json, expertise_json, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
             ->execute([$id, $name, $email, $username !== '' ? $username : null, $avatarUrl, $headline, $bio, $website, $location, json_encode($socialLinks), json_encode(array_slice($expertise, 0, 12)), hash_password_value($password), $role, $subscription, $status, $emailVerified ? 1 : 0, $now, $now]);
+        entitlement_catalog_bootstrap();
+        $secondaryRoles = is_array($body['roles'] ?? null) ? $body['roles'] : [];
+        $effectiveRoles = replace_secondary_user_roles($id, $secondaryRoles, $role, $session['user']['id']);
         audit_log($session['user']['id'], 'admin.user_create', 'user', $id, compact('role', 'status', 'subscription', 'username'));
         $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
         $stmt->execute([$id]);
-        json_response(['user' => public_user($stmt->fetch())], 201);
+        $createdUser = public_user($stmt->fetch());
+        $createdUser['roles'] = $effectiveRoles;
+        json_response(['user' => $createdUser], 201);
     }
 
     if (preg_match('#^/api/admin/users/([^/]+)$#', $path, $m) && $method === 'PATCH') {
@@ -5449,11 +5511,17 @@ function handle_api(string $path, string $method): void
         $subscription = substr((string) ($body['subscription'] ?? $target['subscription']), 0, 120);
         $pdo->prepare('UPDATE users SET role = ?, status = ?, subscription = ?, updated_at = ? WHERE id = ?')
             ->execute([$role, $status, $subscription, now_iso(), $targetId]);
+        entitlement_catalog_bootstrap();
+        $effectiveRoles = array_key_exists('roles', $body) && is_array($body['roles'])
+            ? replace_secondary_user_roles($targetId, $body['roles'], $role, $session['user']['id'])
+            : user_role_keys($targetId, $role);
         if ($status !== 'active') $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$targetId]);
         audit_log($session['user']['id'], 'admin.user_update', 'user', $targetId, compact('role', 'status', 'subscription'));
         $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
         $stmt->execute([$targetId]);
-        json_response(['user' => public_user($stmt->fetch())]);
+        $updatedUser = public_user($stmt->fetch());
+        $updatedUser['roles'] = $effectiveRoles;
+        json_response(['user' => $updatedUser]);
     }
 
     if (preg_match('#^/api/admin/users/([^/]+)$#', $path, $m) && $method === 'DELETE') {
@@ -5557,15 +5625,18 @@ function handle_api(string $path, string $method): void
             json_response(['error' => 'PROVIDER_CANCELLATION_FAILED', 'message' => $error->getMessage()], 502);
         }
         $now = now_iso();
-        $pdo->prepare("UPDATE subscriptions SET status = 'cancelled', updated_at = ? WHERE id = ?")->execute([$now, $subscription['id']]);
+        $accessUntil = (string) ($subscription['current_period_end'] ?? $subscription['ends_at'] ?? '');
+        $endsLater = $accessUntil !== '' && $accessUntil > $now;
+        $nextStatus = $endsLater ? 'active' : 'cancelled';
+        $pdo->prepare('UPDATE subscriptions SET status = ?, cancel_at_period_end = ?, cancelled_at = ?, updated_at = ? WHERE id = ?')->execute([$nextStatus, $endsLater ? 1 : 0, $now, $now, $subscription['id']]);
         $pdo->prepare('INSERT INTO subscription_events (id, subscription_id, user_id, provider, event_type, status_before, status_after, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            ->execute([uuid_value('SEV-'), $subscription['id'], $session['user']['id'], $subscription['provider'], 'cancelled_by_user', $subscription['status'], 'cancelled', json_encode($providerCancellation, JSON_UNESCAPED_SLASHES), $now]);
-        $pdo->prepare("UPDATE users SET subscription = 'Free', updated_at = ? WHERE id = ?")->execute([$now, $session['user']['id']]);
+            ->execute([uuid_value('SEV-'), $subscription['id'], $session['user']['id'], $subscription['provider'], $endsLater ? 'cancellation_scheduled' : 'cancelled_by_user', $subscription['status'], $nextStatus, json_encode($providerCancellation, JSON_UNESCAPED_SLASHES), $now]);
+        if (!$endsLater) $pdo->prepare("UPDATE users SET subscription = 'Free', updated_at = ? WHERE id = ?")->execute([$now, $session['user']['id']]);
         create_notification($session['user']['id'], 'subscription_cancelled', 'Membership cancelled', !empty($providerCancellation['remote']) ? 'Your provider subscription cancellation has been submitted.' : 'Your local subscription has been cancelled.', '/dashboard');
         audit_log($session['user']['id'], 'subscription.cancel', 'subscription', $subscription['id']);
         $userStmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
         $userStmt->execute([$session['user']['id']]);
-        json_response(['status' => 'cancelled', 'provider' => $providerCancellation, 'user' => public_user($userStmt->fetch())]);
+        json_response(['status' => $endsLater ? 'cancellation_scheduled' : 'cancelled', 'accessUntil' => $accessUntil ?: null, 'provider' => $providerCancellation, 'user' => public_user($userStmt->fetch())]);
     }
 
     if ($path === '/api/me/pwa/settings') {

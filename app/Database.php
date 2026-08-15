@@ -52,6 +52,13 @@ final class Database
         self::ensureColumn('discount_codes', 'deleted_at', 'TEXT');
         self::ensureColumn('support_ticket_attachments', 'storage_path', 'TEXT');
         self::ensureColumn('oauth_states', 'link_user_id', 'TEXT REFERENCES users(id) ON DELETE CASCADE');
+        self::ensureColumn('subscriptions', 'plan_version_id', 'TEXT REFERENCES subscription_plan_versions(id) ON DELETE RESTRICT');
+        self::ensureColumn('subscriptions', 'current_period_start', 'TEXT');
+        self::ensureColumn('subscriptions', 'current_period_end', 'TEXT');
+        self::ensureColumn('subscriptions', 'cancel_at_period_end', 'INTEGER NOT NULL DEFAULT 0');
+        self::ensureColumn('subscriptions', 'cancelled_at', 'TEXT');
+        self::ensureColumn('subscriptions', 'grace_ends_at', 'TEXT');
+        self::ensureColumn('resources', 'subscription_eligible', 'INTEGER NOT NULL DEFAULT 0');
     }
 
     private static function ensureColumn(string $table, string $column, string $definition): void

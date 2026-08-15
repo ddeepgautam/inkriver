@@ -68,11 +68,7 @@ function business_is_staff(?array $session): bool
 function business_has_contact_access(?array $session): bool
 {
     if (!$session) return false;
-    if (business_is_staff($session)) return true;
-    if (($session['user']['subscription'] ?? 'Free') !== 'Free') return true;
-    $stmt = Database::pdo()->prepare("SELECT 1 FROM subscriptions WHERE user_id = ? AND status = 'active' AND (ends_at IS NULL OR ends_at > ?) LIMIT 1");
-    $stmt->execute([$session['user']['id'], now_iso()]);
-    return (bool) $stmt->fetch();
+    return !empty(entitlement_decision($session, CAPABILITY_BUSINESS_CONTACTS)['allowed']);
 }
 
 function business_profile_can_manage(array $row, ?array $session): bool
@@ -93,7 +89,9 @@ function business_decode_row(array $row, string $type, ?array $session = null): 
     $row['verified'] = (bool) ($row['verified'] ?? false);
     $row['claimed'] = !empty($row['claimed_owner_user_id']);
     $row['canManage'] = business_profile_can_manage($row, $session);
-    $row['contactLocked'] = !business_has_contact_access($session) && !$row['canManage'];
+    // Contact fields are never disclosed by listing/detail reads. Paid access is
+    // released only by the quota-consuming reveal endpoint below.
+    $row['contactLocked'] = !$row['canManage'];
     if ($row['contactLocked']) {
         foreach (['contact_name', 'contact_role', 'contact_email', 'contact_phone', 'contact_address'] as $field) {
             if (array_key_exists($field, $row)) $row[$field] = '';
@@ -425,6 +423,15 @@ function business_admin_paginated_profiles(array $filters, int $perPage = 12): a
     ];
 }
 
+function business_audit_contact_reveal(array $profile, array $session, string $outcome, array $decision): void
+{
+    audit_log($session['user']['id'], 'business.contact_reveal_' . $outcome, 'business_profile', (string) ($profile['id'] ?? ''), [
+        'source' => $decision['source'] ?? '',
+        'reason' => $decision['reason'] ?? '',
+        'remaining' => $decision['remaining'] ?? null,
+    ]);
+}
+
 function business_review_submission(string $type, string $id, array $body, array $session): array
 {
     $config = business_profile_config($type);
@@ -544,6 +551,23 @@ function handle_business_api(string $path, string $method): bool
         $profile = business_get_profile($m[1] === 'companies' ? 'company' : 'person', rawurldecode($m[2]), $session);
         if (!$profile) json_response(['error' => 'NOT_FOUND', 'message' => 'Profile not found.'], 404);
         json_response(['profile' => $profile, 'contactAccess' => business_has_contact_access($session)]);
+    }
+    if ($method === 'POST' && preg_match('#^/api/(companies|founders)/([^/]+)/contact-reveal$#', $path, $m)) {
+        $auth = require_auth();
+        $type = $m[1] === 'companies' ? 'company' : 'person';
+        $raw = business_get_raw_profile($type, rawurldecode($m[2]));
+        if (!$raw || ($raw['status'] ?? '') !== 'published') json_response(['error' => 'NOT_FOUND', 'message' => 'Profile not found.'], 404);
+        $canManage = business_profile_can_manage($raw, $auth);
+        $decision = $canManage ? ['allowed' => true, 'source' => 'profile_owner', 'remaining' => null] : entitlement_consume($auth, CAPABILITY_BUSINESS_CONTACTS, $type, (string) $raw['id']);
+        if (empty($decision['allowed'])) {
+            $message = ($decision['reason'] ?? '') === 'QUOTA_EXHAUSTED' ? 'Your business contact allowance has been used for this month.' : 'Your current subscription does not include business contact details.';
+            business_audit_contact_reveal($raw, $auth, 'denied', $decision);
+            json_response(['error' => $decision['reason'] ?? 'CONTACT_SUBSCRIPTION_REQUIRED', 'message' => $message], 403);
+        }
+        $contact = [];
+        foreach (['contact_name', 'contact_role', 'contact_email', 'contact_phone', 'contact_address'] as $field) $contact[$field] = (string) ($raw[$field] ?? '');
+        business_audit_contact_reveal($raw, $auth, 'success', $decision);
+        json_response(['contact' => $contact, 'contactLocked' => false, 'usage' => ['remaining' => $decision['remaining'] ?? null, 'periodEnd' => $decision['periodEnd'] ?? null]]);
     }
     if ($method === 'GET' && preg_match('#^/api/me/(companies|founders)$#', $path, $m)) {
         $auth = require_auth();
@@ -687,7 +711,7 @@ function business_mcp_field_map(): array
             'relationshipShape' => ['companyId', 'roleTitle', 'isFounder', 'isCurrent', 'startedOn', 'endedOn'],
         ],
         'statuses' => ['draft', 'published', 'unpublished'],
-        'privacy' => 'Contact fields are returned only to active subscribers, profile managers, moderators, and administrators.',
+        'privacy' => 'Contact fields are redacted from reads and returned only by the audited quota-consuming reveal endpoint, except for profile managers and authorized staff.',
     ];
 }
 

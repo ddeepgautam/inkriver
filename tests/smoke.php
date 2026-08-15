@@ -100,6 +100,40 @@ $adminSession = ['user' => ['id' => 'USR-BIZ-ADMIN', 'name' => 'Business Admin',
 $pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-SMOKE-WRITER', 'Smoke Writer', 'smoke-writer@example.com', ?, 'writer', 'Pro', 'active', 1, ?, ?)")
     ->execute([hash_password_value('SmokePassword!24'), $now, $now]);
 $writerSession = ['user' => ['id' => 'USR-SMOKE-WRITER', 'name' => 'Smoke Writer', 'email' => 'smoke-writer@example.com', 'role' => 'writer', 'subscription' => 'Pro']];
+$pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-FAKE-PAID', 'Fake Paid Label', 'fake-paid@example.com', ?, 'reader', 'Patron', 'active', 1, ?, ?)")
+    ->execute([hash_password_value('SmokePassword!25'), $now, $now]);
+$fakePaidSession = ['user' => ['id' => 'USR-FAKE-PAID', 'name' => 'Fake Paid Label', 'email' => 'fake-paid@example.com', 'role' => 'reader', 'subscription' => 'Patron', 'status' => 'active']];
+$multiRoles = replace_secondary_user_roles('USR-FAKE-PAID', ['writer'], 'reader', 'USR-BIZ-ADMIN');
+assert_true(in_array('reader', $multiRoles, true) && in_array('writer', $multiRoles, true), 'users can hold multiple operational roles independently of subscription plans');
+assert_true(!entitlement_decision($fakePaidSession, CAPABILITY_PAID_ARTICLES)['allowed'], 'a forged or manually edited subscription label grants no paid article access');
+assert_true(!entitlement_decision($fakePaidSession, CAPABILITY_BUSINESS_CONTACTS)['allowed'], 'a forged or manually edited subscription label grants no business contact access');
+$protectedStory = ['slug' => 'server-protected-story', 'premium' => true, 'contentHtml' => '<p>Paid secret body</p>', 'body' => ['Paid secret body'], 'interactiveBlocks' => [['type' => 'poll']]];
+$redactedStory = entitlement_story_payload($protectedStory, $fakePaidSession);
+assert_true(!empty($redactedStory['accessLocked']) && ($redactedStory['contentHtml'] ?? 'leaked') === '' && ($redactedStory['body'] ?? ['leaked']) === [], 'paid story bodies are redacted by the server for users without a valid entitlement');
+assert_true(public_story_search_text($protectedStory) === '', 'public search indexes no paid article body text that could be queried as an extraction oracle');
+
+entitlement_sync_plans(document_value('plans', [
+    ['id' => 'starter', 'name' => 'Reader', 'price' => 299, 'period' => 'month'],
+    ['id' => 'patron', 'name' => 'Patron', 'price' => 4999, 'period' => 'year'],
+]));
+$planVersionCount = (int) $pdo->query('SELECT COUNT(*) FROM subscription_plan_versions')->fetchColumn();
+entitlement_sync_plans(document_value('plans', [
+    ['id' => 'starter', 'name' => 'Reader', 'price' => 299, 'period' => 'month'],
+    ['id' => 'patron', 'name' => 'Patron', 'price' => 4999, 'period' => 'year'],
+]));
+assert_true((int) $pdo->query('SELECT COUNT(*) FROM subscription_plan_versions')->fetchColumn() === $planVersionCount, 'synchronizing unchanged plan capabilities is idempotent and does not create phantom versions');
+$starterVersion = $pdo->query("SELECT id FROM subscription_plan_versions WHERE plan_id = 'starter' AND status = 'published' ORDER BY version DESC LIMIT 1")->fetchColumn();
+$pdo->prepare("INSERT INTO subscriptions (id, user_id, plan_id, plan_version_id, provider, currency, amount, status, starts_at, ends_at, current_period_start, current_period_end, created_at, updated_at) VALUES ('SUB-STARTER-SMOKE', 'USR-FAKE-PAID', 'starter', ?, 'smoke', 'INR', 29900, 'active', ?, ?, ?, ?, ?, ?)")
+    ->execute([$starterVersion, $now, gmdate('Y-m-d\TH:i:s.v\Z', time() + 30 * 86400), $now, gmdate('Y-m-d\TH:i:s.v\Z', time() + 30 * 86400), $now, $now]);
+assert_true(entitlement_decision($fakePaidSession, CAPABILITY_PAID_ARTICLES)['allowed'], 'a valid active plan grants its configured paid article capability');
+for ($index = 1; $index <= 5; $index++) {
+    $contactUse = entitlement_consume($fakePaidSession, CAPABILITY_BUSINESS_CONTACTS, 'company', 'CONTACT-' . $index);
+    assert_true($contactUse['allowed'], 'starter contact reveal within quota is allowed');
+}
+$repeatContact = entitlement_consume($fakePaidSession, CAPABILITY_BUSINESS_CONTACTS, 'company', 'CONTACT-1');
+$overContact = entitlement_consume($fakePaidSession, CAPABILITY_BUSINESS_CONTACTS, 'company', 'CONTACT-6');
+assert_true($repeatContact['allowed'] && ($repeatContact['used'] ?? 0) === 5, 'revealing the same contact twice is idempotent and does not consume quota again');
+assert_true(!$overContact['allowed'] && ($overContact['reason'] ?? '') === 'QUOTA_EXHAUSTED', 'business contact quota fails closed after the configured distinct-profile limit');
 $pdo->prepare("INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, 'preferences', ?, ?)")
     ->execute(['USR-SMOKE-WRITER', json_encode(['communication' => ['emailNewsletters' => false, 'productUpdates' => false]]), $now]);
 assert_true(newsletter_user_suppressed(['id' => 'USR-SMOKE-WRITER', 'email' => 'smoke-writer@example.com']), 'newsletter delivery respects the user communication preference');
@@ -112,6 +146,19 @@ assert_true(in_array('resource_entitlements', $resourceTables, true) && in_array
 $pdo->prepare("INSERT INTO resources (id, slug, name, short_description, description, category, resource_type, access_kind, version, price_type, regular_price, discounted_price, currency, protected_storage_key, original_filename, mime_type, file_size, status, created_by_user_id, created_at, updated_at, published_at) VALUES ('RES-SMOKE-PAID', 'secure-resource', 'Secure Resource', 'Protected resource', 'A protected smoke resource.', 'Business', 'pdf', 'download', '1.0', 'paid', 10000, 7500, 'INR', 'resources/private-random.bin', 'friendly-name.pdf', 'application/pdf', 1234, 'published', 'USR-BIZ-ADMIN', ?, ?, ?)")
     ->execute([$now, $now, $now]);
 $resourceRow = resource_find_by_slug_or_id('secure-resource');
+assert_true(resource_subscription_access($resourceRow, $fakePaidSession) === null, 'starter subscriptions cannot access a paid resource that is not included in their plan scope');
+$pdo->prepare("UPDATE resources SET subscription_eligible = 1 WHERE id = 'RES-SMOKE-PAID'")->execute();
+$resourceRow = resource_find_by_slug_or_id('secure-resource');
+$pdo->prepare("INSERT INTO users (id, name, email, password_hash, role, subscription, status, email_verified, created_at, updated_at) VALUES ('USR-PATRON-SMOKE', 'Patron Smoke', 'patron-smoke@example.com', ?, 'reader', 'Patron', 'active', 1, ?, ?)")
+    ->execute([hash_password_value('SmokePassword!26'), $now, $now]);
+$patronVersion = $pdo->query("SELECT id FROM subscription_plan_versions WHERE plan_id = 'patron' AND status = 'published' ORDER BY version DESC LIMIT 1")->fetchColumn();
+$patronEnd = gmdate('Y-m-d\TH:i:s.v\Z', time() + 365 * 86400);
+$pdo->prepare("INSERT INTO subscriptions (id, user_id, plan_id, plan_version_id, provider, currency, amount, status, starts_at, ends_at, current_period_start, current_period_end, created_at, updated_at) VALUES ('SUB-PATRON-SMOKE', 'USR-PATRON-SMOKE', 'patron', ?, 'smoke', 'INR', 499900, 'active', ?, ?, ?, ?, ?, ?)")
+    ->execute([$patronVersion, $now, $patronEnd, $now, $patronEnd, $now, $now]);
+$patronSession = ['user' => ['id' => 'USR-PATRON-SMOKE', 'name' => 'Patron Smoke', 'email' => 'patron-smoke@example.com', 'role' => 'reader', 'subscription' => 'Patron', 'status' => 'active']];
+assert_true((resource_subscription_access($resourceRow, $patronSession)['acquisition_type'] ?? '') === 'subscription', 'an active plan can access a paid resource only when both plan scope and resource eligibility match');
+$pdo->prepare("UPDATE subscriptions SET status = 'expired' WHERE id = 'SUB-PATRON-SMOKE'")->execute();
+assert_true(resource_subscription_access($resourceRow, $patronSession) === null, 'expired subscriptions immediately lose included resource access');
 $resourceCheckout = authoritative_payment_checkout(['amount' => 1, 'currency' => 'INR', 'metadata' => ['kind' => 'resource', 'resourceId' => 'RES-SMOKE-PAID']]);
 assert_true(($resourceCheckout['payment']['amount'] ?? 0) === 7500, 'resource checkout uses server-owned discounted pricing instead of client amount');
 $publicResource = public_resource($resourceRow, null);
@@ -247,6 +294,8 @@ $company = business_save_profile('company', [
 ], $adminSession);
 assert_true(count($company['people'] ?? []) === 1, 'company links to an existing founder profile');
 assert_true(($company['logo_url'] ?? '') === '/uploads/avatars/test-company.png', 'company profile logo is stored');
+$subscriberCompany = business_get_profile('company', (string) $company['id'], $fakePaidSession);
+assert_true(!empty($subscriberCompany['contactLocked']) && ($subscriberCompany['contact_email'] ?? '') === '', 'ordinary profile reads never leak contact fields even to a contact-enabled subscriber');
 for ($index = 1; $index <= 24; $index++) {
     business_save_profile('company', [
         'name' => 'Pagination Company ' . str_pad((string) $index, 2, '0', STR_PAD_LEFT),

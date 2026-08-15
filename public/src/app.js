@@ -262,6 +262,7 @@ const defaultPlans = [
     period: "month",
     note: "Unlimited member stories",
     features: ["Full paywall access", "Ad-light reading", "Save lists", "Audio queue"],
+    capabilities: { "content.paid_articles.read": { mode: "unlimited", period: "subscription_cycle" }, "business.contacts.reveal": { mode: "quota", limit: 5, period: "month" }, "resources.included.access": { mode: "denied", scope: { kind: "selected", resourceIds: [] } } },
   },
   {
     id: "annual",
@@ -270,6 +271,7 @@ const defaultPlans = [
     period: "year",
     note: "Best for regular readers",
     features: ["Everything in Reader", "No reader ads", "Gift links", "Priority recommendations"],
+    capabilities: { "content.paid_articles.read": { mode: "unlimited", period: "subscription_cycle" }, "business.contacts.reveal": { mode: "quota", limit: 25, period: "month" }, "resources.included.access": { mode: "denied", scope: { kind: "selected", resourceIds: [] } } },
   },
   {
     id: "patron",
@@ -278,6 +280,7 @@ const defaultPlans = [
     period: "year",
     note: "Support writers directly",
     features: ["Everything in Plus", "Writer bonus pool", "Publication invites", "Early editorial drops"],
+    capabilities: { "content.paid_articles.read": { mode: "unlimited", period: "subscription_cycle" }, "business.contacts.reveal": { mode: "quota", limit: 100, period: "month" }, "resources.included.access": { mode: "allowed", scope: { kind: "all_eligible" } } },
   },
 ];
 
@@ -681,7 +684,8 @@ function persistSiteSeo() {
 }
 
 function normalizeStory(story, index = 0) {
-  const body = Array.isArray(story.body) && story.body.length ? story.body : configuredStoryBody();
+  const accessLocked = Boolean(story.accessLocked ?? (story.premium && !story.contentHtml && !(Array.isArray(story.body) && story.body.length)));
+  const body = accessLocked ? [] : (Array.isArray(story.body) && story.body.length ? story.body : configuredStoryBody());
   const generatedTags = `${story.title || ""} ${story.dek || ""}`
     .toLowerCase()
     .split(/[^a-z0-9]+/)
@@ -699,11 +703,12 @@ function normalizeStory(story, index = 0) {
     tags: Array.isArray(story.tags) && story.tags.length ? story.tags : generatedTags,
     publication: story.publication || defaultProfiles[slugifyName(story.author)]?.publication || story.role || "InkRiver",
     publishedAt: story.publishedAt || new Date(Date.UTC(2026, 4, Math.max(1, 28 - index))).toISOString(),
-    interactiveBlocks: Array.isArray(story.interactiveBlocks) && story.interactiveBlocks.length
+    accessLocked,
+    interactiveBlocks: !accessLocked && Array.isArray(story.interactiveBlocks) && story.interactiveBlocks.length
       ? story.interactiveBlocks
-      : defaultInteractiveBlocks(story.slug),
+      : (accessLocked ? [] : defaultInteractiveBlocks(story.slug)),
     body,
-    contentHtml: story.contentHtml || body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join(""),
+    contentHtml: accessLocked ? "" : (story.contentHtml || body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")),
     seo: { ...defaultPostSeo(story), ...(story.seo || {}) },
   };
 }
@@ -1065,6 +1070,12 @@ function emptyPlanForm() {
     period: "month",
     note: "",
     features: "",
+    paidArticleMode: "unlimited",
+    paidArticleLimit: 20,
+    contactMode: "quota",
+    contactLimit: 5,
+    resourceMode: "denied",
+    resourceIds: "",
   };
 }
 
@@ -1121,10 +1132,20 @@ function slugifyPlanId(name) {
 }
 
 function populatePlanForm(plan) {
+  const capabilities = plan.capabilities || {};
+  const articles = capabilities["content.paid_articles.read"] || { mode: "unlimited", limit: 20 };
+  const contacts = capabilities["business.contacts.reveal"] || { mode: "quota", limit: 5 };
+  const resources = capabilities["resources.included.access"] || { mode: "denied", scope: { resourceIds: [] } };
   state.editingPlanId = plan.id;
   state.planForm = {
     ...plan,
     features: plan.features.join("\n"),
+    paidArticleMode: articles.mode || "denied",
+    paidArticleLimit: Number(articles.limit || 20),
+    contactMode: contacts.mode || "denied",
+    contactLimit: Number(contacts.limit || 5),
+    resourceMode: resources.mode === "denied" ? "denied" : (["all_eligible", "all_published"].includes(resources.scope?.kind) ? resources.scope.kind : "selected"),
+    resourceIds: (resources.scope?.resourceIds || []).join(", "),
   };
   state.planMessage = `Editing ${plan.name}`;
   render();
@@ -1148,6 +1169,11 @@ function savePlanFromForm() {
       .split("\n")
       .map((feature) => feature.trim())
       .filter(Boolean),
+    capabilities: {
+      "content.paid_articles.read": { mode: state.planForm.paidArticleMode, limit: state.planForm.paidArticleMode === "quota" ? Number(state.planForm.paidArticleLimit) : null, period: "subscription_cycle" },
+      "business.contacts.reveal": { mode: state.planForm.contactMode, limit: state.planForm.contactMode === "quota" ? Number(state.planForm.contactLimit) : null, period: "month" },
+      "resources.included.access": { mode: state.planForm.resourceMode === "denied" ? "denied" : "allowed", scope: ["all_eligible", "all_published"].includes(state.planForm.resourceMode) ? { kind: state.planForm.resourceMode } : { kind: "selected", resourceIds: state.planForm.resourceIds.split(",").map((id) => id.trim()).filter(Boolean) } },
+    },
   };
   if (!nextPlan.features.length) nextPlan.features = ["Member-only access"];
   if (state.editingPlanId) {
@@ -1268,6 +1294,9 @@ async function hydratePlatformState() {
   if (Array.isArray(documents.categories) && documents.categories.length) state.categories = documents.categories;
   if (Array.isArray(documents.plans) && documents.plans.length) state.plans = documents.plans;
   state.translations = payload.translations || {};
+  state.entitlements = payload.entitlements || {};
+  state.activeSubscription = payload.activeSubscription || null;
+  if (state.user) state.isMember = Boolean(state.activeSubscription);
   if (Array.isArray(payload.translationLanguages)) state.translationLanguages = payload.translationLanguages;
   if (documents["site-seo-public"]) state.siteSeo = { ...state.siteSeo, ...documents["site-seo-public"] };
   if (documents["site-seo"]) state.siteSeo = { ...state.siteSeo, ...documents["site-seo"] };
@@ -3392,7 +3421,7 @@ async function loadBusinessProfileRoute() {
   render();
   try {
     const payload = await apiRequest(`/api/${parts[0]}/${encodeURIComponent(parts[1])}`);
-    state.businessProfile = payload.profile;
+    state.businessProfile = { ...payload.profile, contactAccess: Boolean(payload.contactAccess) };
   } catch (error) {
     state.businessProfileMessage = error.message;
   } finally {
@@ -3537,7 +3566,7 @@ function businessContactPanel(profile) {
     ].filter(([, value]) => value);
     return `<div class="business-contact-panel unlocked"><div class="panel-title">${icon("card")}<h2>Direct contact</h2></div>${rows.length ? rows.map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("") : `<div class="empty-state">No direct contact details have been added.</div>`}</div>`;
   }
-  return `<div class="business-contact-panel locked"><span>${icon("lock", 24)}</span><h2>Member-only contact details</h2><p>Subscribe to access verified email addresses, phone numbers, and representative details.</p><button class="primary-button" data-route="/pricing">View membership plans</button></div>`;
+  return `<div class="business-contact-panel locked"><span>${icon("lock", 24)}</span><h2>Plan-controlled contact details</h2><p>${profile.contactAccess ? "Reveal this profile using your monthly contact allowance." : "Choose a plan that includes business contact reveals."}</p>${state.user && profile.contactAccess ? `<button class="primary-button" data-business-contact-reveal="${escapeHtml(profile.id)}">Reveal contact details</button>` : `<button class="primary-button" data-route="/pricing">View membership plans</button>`}</div>`;
 }
 
 function businessClaimActions(profile, type) {
@@ -3675,6 +3704,32 @@ function businessEditorTemplate(type) {
     <section class="business-form-section private-section"><div class="business-form-section-head"><div><span>${icon("lock", 14)}Private contact data</span><h3>Subscriber-only contact details</h3></div><p>These fields are never shown to public visitors.</p></div><div class="business-form-grid">${company ? businessFormField("contact_name", "Contact person") + businessFormField("contact_role", "Contact role") : ""}${businessFormField("contact_email", "Contact email", "email")}${businessFormField("contact_phone", "Contact number", "tel")}${company ? businessFormField("contact_address", "Contact address", "textarea") : ""}</div></section>
     <div class="business-form-actions"><span>${escapeHtml(state.businessMessage || (staffEditor ? "You can update this profile later." : "Your profile will stay private until an admin or moderator approves it."))}</span><button type="button" class="secondary-button" data-action="close-business-editor">Cancel</button><button class="primary-button" type="submit" ${state.businessSaving ? "disabled" : ""}>${icon("check", 15)}${state.businessSaving ? (staffEditor ? "Saving…" : "Submitting…") : staffEditor ? `Save ${company ? "company" : "founder"} profile` : "Submit for approval"}</button></div>
   </form>`;
+}
+
+async function revealBusinessContact(profileId) {
+  if (!state.user) { openLogin(false); return; }
+  const collection = state.path.startsWith('/companies/') ? 'companies' : 'founders';
+  try {
+    const payload = await apiRequest(`/api/${collection}/${encodeURIComponent(profileId)}/contact-reveal`, { method: 'POST', body: '{}' });
+    state.businessProfile = { ...state.businessProfile, ...(payload.contact || {}), contactLocked: false, contactUsage: payload.usage || null };
+    state.businessProfileMessage = payload.usage?.remaining == null ? 'Contact details unlocked.' : `Contact details unlocked. ${payload.usage.remaining} reveals remain this month.`;
+  } catch (error) {
+    state.businessProfileMessage = error.message;
+  }
+  render();
+}
+
+async function unlockPaidStory(slug) {
+  if (!state.user) { openLogin(false); return; }
+  try {
+    const payload = await apiRequest(`/api/stories/${encodeURIComponent(slug)}/unlock`, { method: 'POST', body: '{}' });
+    state.stories = state.stories.map((story) => story.slug === slug ? { ...story, ...payload.story, accessLocked: false } : story);
+    if (payload.translations) state.translations[slug] = payload.translations;
+    state.userMessage = payload.usage?.remaining == null ? 'Paid article unlocked.' : `Article unlocked. ${payload.usage.remaining} paid article unlocks remain.`;
+  } catch (error) {
+    state.userMessage = error.message;
+  }
+  render();
 }
 
 function businessWorkspaceTemplate() {
@@ -4537,7 +4592,7 @@ function earnPanelTemplate() {
 
 function storyPageTemplate(story) {
   const displayStory = translatedStory(story);
-  const locked = story.premium && !state.isMember;
+  const locked = Boolean(story.accessLocked ?? (story.premium && !state.isMember));
   const saved = state.saved.has(story.slug);
   const shares = shareUrls(displayStory);
   const imageUrl = safeImageUrl(story.imageUrl);
@@ -4590,7 +4645,7 @@ function storyPageTemplate(story) {
             <h2>Continue reading with membership</h2>
             <p>This story is behind the member paywall. Subscribe to unlock the full library and support writers.</p>
             <div class="paywall-actions">
-              <button class="primary-button" data-checkout="${state.plans[0]?.id || ""}">Unlock from ${formatMoneyFromINR(state.plans[0]?.price || 299)}</button>
+              ${state.user ? `<button class="primary-button" data-story-unlock="${escapeHtml(story.slug)}">Use plan access</button>` : `<button class="primary-button" data-checkout="${state.plans[0]?.id || ""}">Unlock from ${formatMoneyFromINR(state.plans[0]?.price || 299)}</button>`}
               <button class="secondary-button">Use friend link</button>
             </div>
           </section>
@@ -6796,6 +6851,12 @@ function subscriptionManagerTemplate() {
             <span>Features, one per line</span>
             <textarea id="planFeatures" placeholder="Unlimited member stories&#10;Ad-free reading">${state.planForm.features}</textarea>
           </label>
+          <label><span>Paid articles</span><select id="planPaidArticleMode"><option value="denied" ${state.planForm.paidArticleMode === "denied" ? "selected" : ""}>Not included</option><option value="quota" ${state.planForm.paidArticleMode === "quota" ? "selected" : ""}>Limited per billing cycle</option><option value="unlimited" ${state.planForm.paidArticleMode === "unlimited" ? "selected" : ""}>Unlimited</option></select></label>
+          <label><span>Paid article limit</span><input id="planPaidArticleLimit" type="number" min="1" value="${state.planForm.paidArticleLimit}" ${state.planForm.paidArticleMode === "quota" ? "" : "disabled"} /></label>
+          <label><span>Business contacts</span><select id="planContactMode"><option value="denied" ${state.planForm.contactMode === "denied" ? "selected" : ""}>Not included</option><option value="quota" ${state.planForm.contactMode === "quota" ? "selected" : ""}>Monthly limit</option><option value="unlimited" ${state.planForm.contactMode === "unlimited" ? "selected" : ""}>Unlimited</option></select></label>
+          <label><span>Monthly contact reveals</span><input id="planContactLimit" type="number" min="1" value="${state.planForm.contactLimit}" ${state.planForm.contactMode === "quota" ? "" : "disabled"} /></label>
+          <label><span>Included paid resources</span><select id="planResourceMode"><option value="denied" ${state.planForm.resourceMode === "denied" ? "selected" : ""}>None</option><option value="selected" ${state.planForm.resourceMode === "selected" ? "selected" : ""}>Selected resource IDs</option><option value="all_eligible" ${state.planForm.resourceMode === "all_eligible" ? "selected" : ""}>All subscription-eligible</option><option value="all_published" ${state.planForm.resourceMode === "all_published" ? "selected" : ""}>All published resources (including future)</option></select></label>
+          <label><span>Selected resource IDs</span><input id="planResourceIds" value="${escapeHtml(state.planForm.resourceIds)}" placeholder="RES-123, RES-456" ${state.planForm.resourceMode === "selected" ? "" : "disabled"} /></label>
           <div class="settings-actions">
             <button class="primary-button" type="button" data-action="save-plan">${state.editingPlanId ? "Update package" : "Create package"}</button>
             <button class="secondary-button" type="button" data-action="reset-plan-form">Clear form</button>
@@ -7709,13 +7770,20 @@ function bindInputs() {
     ["planPeriod", "period"],
     ["planNote", "note"],
     ["planFeatures", "features"],
+    ["planPaidArticleMode", "paidArticleMode"],
+    ["planPaidArticleLimit", "paidArticleLimit"],
+    ["planContactMode", "contactMode"],
+    ["planContactLimit", "contactLimit"],
+    ["planResourceMode", "resourceMode"],
+    ["planResourceIds", "resourceIds"],
   ];
   planBindings.forEach(([id, key]) => {
     document.getElementById(id)?.addEventListener("input", (event) => {
-      state.planForm[key] = key === "price" ? Number(event.target.value) : event.target.value;
+      state.planForm[key] = ["price", "paidArticleLimit", "contactLimit"].includes(key) ? Number(event.target.value) : event.target.value;
+      if (["paidArticleMode", "contactMode", "resourceMode"].includes(key)) render();
     });
     document.getElementById(id)?.addEventListener("change", (event) => {
-      state.planForm[key] = key === "price" ? Number(event.target.value) : event.target.value;
+      state.planForm[key] = ["price", "paidArticleLimit", "contactLimit"].includes(key) ? Number(event.target.value) : event.target.value;
     });
   });
   const categoryBindings = [
@@ -8162,7 +8230,11 @@ document.addEventListener("click", async (event) => {
   const resourceArchive = target.dataset.resourceArchive;
   const resourceEntitlement = target.dataset.resourceEntitlement;
   const resourceOwner = target.dataset.resourceOwner;
+  const storyUnlock = target.dataset.storyUnlock;
+  const businessContactReveal = target.dataset.businessContactReveal;
 
+  if (storyUnlock) { await unlockPaidStory(storyUnlock); return; }
+  if (businessContactReveal) { await revealBusinessContact(businessContactReveal); return; }
   if (resourceAcquire) { await acquireResource(resourceAcquire); return; }
   if (resourceAccess) { await accessResource(resourceAccess); return; }
   if (resourcePay) { await payForResource(resourcePay); return; }

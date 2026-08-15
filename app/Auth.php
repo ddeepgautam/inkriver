@@ -72,13 +72,45 @@ function require_auth(array $roles = []): array
 {
     $session = current_session();
     if (!$session) json_response(['error' => 'AUTH_REQUIRED', 'message' => 'Sign in to continue.'], 401);
-    if ($roles && !in_array($session['user']['role'], $roles, true)) {
+    $assignedRoles = user_role_keys((string) $session['user']['id'], (string) $session['user']['role']);
+    $matchingRoles = $roles ? array_values(array_intersect($assignedRoles, $roles)) : [(string) $session['user']['role']];
+    if ($roles && !$matchingRoles) {
         json_response(['error' => 'FORBIDDEN', 'message' => 'This account cannot perform that action.'], 403);
     }
-    if (!role_permission_allows_request($session['user']['role'])) {
+    $policyAllowed = false;
+    foreach ($matchingRoles as $role) {
+        if (role_permission_allows_request($role)) { $policyAllowed = true; break; }
+    }
+    if (!$policyAllowed) {
         json_response(['error' => 'FORBIDDEN_BY_POLICY', 'message' => 'This role is blocked by the permission matrix.'], 403);
     }
+    $session['roles'] = $assignedRoles;
     return $session;
+}
+
+function user_role_keys(string $userId, string $primaryRole): array
+{
+    $roles = [$primaryRole];
+    try {
+        $stmt = Database::pdo()->prepare('SELECT role_key FROM user_roles WHERE user_id = ?');
+        $stmt->execute([$userId]);
+        $roles = array_merge($roles, array_column($stmt->fetchAll(), 'role_key'));
+    } catch (Throwable) {
+        // Existing databases remain usable while migrations are being applied.
+    }
+    return array_values(array_unique(array_filter($roles)));
+}
+
+function replace_secondary_user_roles(string $userId, array $roles, string $primaryRole, ?string $actorId): array
+{
+    $allowed = ['reader', 'writer', 'moderator', 'admin'];
+    $roles = array_values(array_unique(array_intersect(array_map('strval', $roles), $allowed)));
+    $roles = array_values(array_filter($roles, fn($role) => $role !== $primaryRole));
+    $pdo = Database::pdo();
+    $pdo->prepare('DELETE FROM user_roles WHERE user_id = ?')->execute([$userId]);
+    $stmt = $pdo->prepare('INSERT INTO user_roles (user_id, role_key, assigned_by, assigned_at) VALUES (?, ?, ?, ?)');
+    foreach ($roles as $role) $stmt->execute([$userId, $role, $actorId, now_iso()]);
+    return user_role_keys($userId, $primaryRole);
 }
 
 function role_permission_allows_request(string $role): bool
