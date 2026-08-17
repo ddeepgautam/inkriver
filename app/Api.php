@@ -186,7 +186,7 @@ function toggle_story_like(string $slug, string $userId): array
 
 function app_url(string $path = '/'): string
 {
-    $configured = rtrim((string) (env_value('APP_URL') ?? ''), '/');
+    $configured = rtrim((string) (env_value('APP_URL') ?: env_value('APP_ORIGIN') ?: ''), '/');
     if ($configured !== '') return $configured . '/' . ltrim($path, '/');
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
