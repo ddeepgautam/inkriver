@@ -1115,7 +1115,7 @@ function mcp_unauthorized_response(string $message = 'OAuth authorization is req
     mcp_json_response(
         ['error' => 'AUTH_REQUIRED', 'message' => $message],
         401,
-        ['WWW-Authenticate' => 'Bearer resource_metadata="' . $origin . '/.well-known/oauth-protected-resource/mcp"'],
+        ['WWW-Authenticate' => 'Bearer resource_metadata="' . $origin . '/.well-known/oauth-protected-resource/mcp", scope="mcp:publish"'],
     );
 }
 
@@ -1208,6 +1208,7 @@ function handle_oauth(string $path, string $method): void
             'resource' => $origin . '/mcp',
             'authorization_servers' => [$origin],
             'bearer_methods_supported' => ['header'],
+            'scopes_supported' => ['mcp:publish', 'offline_access'],
             'resource_documentation' => $origin . '/mcp',
         ]);
     }
@@ -1222,7 +1223,7 @@ function handle_oauth(string $path, string $method): void
             'code_challenge_methods_supported' => ['S256', 'plain'],
             'token_endpoint_auth_methods_supported' => ['client_secret_post', 'client_secret_basic', 'none'],
             'registration_endpoint_auth_methods_supported' => ['none'],
-            'scopes_supported' => ['mcp:publish'],
+            'scopes_supported' => ['mcp:publish', 'offline_access'],
         ]);
     }
     if ($method === 'OPTIONS' && $path === '/oauth/register') {
@@ -1241,7 +1242,7 @@ function handle_oauth(string $path, string $method): void
         if (!$redirectUris && !empty($body['redirect_uri'])) $redirectUris = [(string) $body['redirect_uri']];
         if (!$redirectUris) oauth_metadata_response(['error' => 'invalid_client_metadata', 'error_description' => 'redirect_uris is required.'], 400);
         Database::pdo()->prepare('INSERT INTO oauth_clients (client_id, client_secret_hash, client_name, redirect_uris_json, scope, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-            ->execute([$clientId, oauth_client_secret_hash($clientSecret), substr((string) ($body['client_name'] ?? 'MCP Client'), 0, 180), json_encode($redirectUris, JSON_UNESCAPED_SLASHES), 'mcp:publish', now_iso(), now_iso()]);
+            ->execute([$clientId, oauth_client_secret_hash($clientSecret), substr((string) ($body['client_name'] ?? 'MCP Client'), 0, 180), json_encode($redirectUris, JSON_UNESCAPED_SLASHES), 'mcp:publish offline_access', now_iso(), now_iso()]);
         oauth_metadata_response([
             'client_id' => $clientId,
             'client_secret' => $clientSecret,
@@ -1250,7 +1251,7 @@ function handle_oauth(string $path, string $method): void
             'redirect_uris' => $redirectUris,
             'grant_types' => ['authorization_code', 'refresh_token'],
             'response_types' => ['code'],
-            'scope' => 'mcp:publish',
+            'scope' => 'mcp:publish offline_access',
             'token_endpoint_auth_method' => 'client_secret_post',
         ], 201);
     }
@@ -1707,14 +1708,14 @@ function mcp_handle_request(array $request): ?array
             'tools/list' => ['tools' => array_merge(mcp_tool_definitions(), business_mcp_tool_definitions())],
             'tools/call' => mcp_call_tool((string) ($request['params']['name'] ?? ''), is_array($request['params']['arguments'] ?? null) ? $request['params']['arguments'] : []),
             'resources/list' => ['resources' => [
-                ['uri' => 'inkriver://blog-editor/schema', 'name' => configured_site_name() . ' blog editor schema', 'mimeType' => 'application/json'],
-                ['uri' => 'inkriver://business-network/schema', 'name' => configured_site_name() . ' company and founder profile schema', 'mimeType' => 'application/json'],
+                ['uri' => rtrim(app_origin(), '/') . '/mcp/resources/blog-editor/schema', 'name' => configured_site_name() . ' blog editor schema', 'mimeType' => 'application/json'],
+                ['uri' => rtrim(app_origin(), '/') . '/mcp/resources/business-network/schema', 'name' => configured_site_name() . ' company and founder profile schema', 'mimeType' => 'application/json'],
             ]],
             'resources/read' => ['contents' => [[
                 'uri' => (string) ($request['params']['uri'] ?? 'inkriver://blog-editor/schema'),
                 'mimeType' => 'application/json',
                 'text' => json_encode(
-                    ($request['params']['uri'] ?? '') === 'inkriver://business-network/schema' ? business_mcp_field_map() : mcp_blog_editor_schema(),
+                    in_array((string) ($request['params']['uri'] ?? ''), ['inkriver://business-network/schema', rtrim(app_origin(), '/') . '/mcp/resources/business-network/schema'], true) ? business_mcp_field_map() : mcp_blog_editor_schema(),
                     JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
                 ),
             ]]],

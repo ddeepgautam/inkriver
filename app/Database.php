@@ -59,6 +59,10 @@ final class Database
         self::ensureColumn('subscriptions', 'cancelled_at', 'TEXT');
         self::ensureColumn('subscriptions', 'grace_ends_at', 'TEXT');
         self::ensureColumn('resources', 'subscription_eligible', 'INTEGER NOT NULL DEFAULT 0');
+        self::ensureColumn('business_profile_claims', 'proof_file_name', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('business_profile_claims', 'proof_file_path', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('business_profile_claims', 'proof_file_mime', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('business_profile_claims', 'proof_file_size', 'INTEGER NOT NULL DEFAULT 0');
     }
 
     private static function ensureColumn(string $table, string $column, string $definition): void

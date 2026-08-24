@@ -6070,6 +6070,47 @@ button:disabled {
   margin: 20px 0;
 }
 
+.auth-message {
+  margin: -4px 0 2px;
+}
+
+.nitross-auth-submit {
+  position: relative;
+  isolation: isolate;
+}
+
+.nitross-auth-submit::after {
+  position: absolute;
+  z-index: -1;
+  right: 16%;
+  bottom: -7px;
+  left: 16%;
+  height: 16px;
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse at 18% 100%, color-mix(in srgb, var(--accent) 70%, transparent) 0 22%, transparent 26%),
+    radial-gradient(ellipse at 50% 100%, color-mix(in srgb, var(--accent) 82%, transparent) 0 28%, transparent 32%),
+    radial-gradient(ellipse at 82% 100%, color-mix(in srgb, var(--accent) 70%, transparent) 0 22%, transparent 26%);
+  content: "";
+  opacity: .42;
+  pointer-events: none;
+  transform-origin: 50% 100%;
+}
+
+.nitross-auth-submit:is(:hover, :focus-visible)::after {
+  opacity: .75;
+  animation: nitross-flame .28s ease-out 1 alternate;
+}
+
+.nitross-auth-submit:disabled::after {
+  animation: nitross-flame .38s ease-in-out 2 alternate;
+}
+
+@keyframes nitross-flame {
+  from { transform: translateY(1px) scaleX(.88) scaleY(.75); filter: blur(1.5px); }
+  to { transform: translateY(-5px) scaleX(1.04) scaleY(1.18); filter: blur(.25px); }
+}
+
 .auth-form label {
   display: grid;
   gap: 6px;
@@ -8042,6 +8083,20 @@ button:disabled {
   grid-column: 1 / -1;
 }
 
+.business-proof-file input[type="file"] {
+  min-height: 46px;
+  padding: 8px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: 10px;
+  background: var(--soft);
+}
+
+.business-proof-file small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .business-image-editor {
   display: grid;
   grid-template-columns: 144px minmax(0, 1fr);
@@ -8998,6 +9053,12 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .nitross-auth-submit::after {
+    animation: none;
+    opacity: .35;
+    transform: none;
+  }
+
   .business-card,
   .business-pagination button,
   .business-cta-button {

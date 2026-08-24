@@ -99,6 +99,8 @@ assert_true(in_array('environment', $historyColumns, true), 'feature_flag_histor
 
 $oauthStateColumns = array_column($pdo->query('PRAGMA table_info(oauth_states)')->fetchAll(), 'name');
 assert_true(in_array('link_user_id', $oauthStateColumns, true), 'OAuth state can securely bind a provider connection to the initiating user');
+$claimColumns = array_column($pdo->query('PRAGMA table_info(business_profile_claims)')->fetchAll(), 'name');
+assert_true(!array_diff(['proof_file_name', 'proof_file_path', 'proof_file_mime', 'proof_file_size'], $claimColumns), 'business ownership claims support private verification files');
 
 $suppressionTable = $pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'newsletter_suppressions'")->fetch();
 assert_true((bool) $suppressionTable, 'newsletter_suppressions table exists');
@@ -407,6 +409,11 @@ assert_true(!array_diff($requiredBusinessTools, $mcpToolNames), 'MCP advertises 
 $toolsListResponse = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 7, 'method' => 'tools/list', 'params' => new stdClass()]);
 $advertisedToolNames = array_column($toolsListResponse['result']['tools'] ?? [], 'name');
 assert_true(!array_diff($requiredBusinessTools, $advertisedToolNames), 'MCP tools/list includes dedicated business profile actions');
+$resourceListResponse = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 8, 'method' => 'resources/list', 'params' => new stdClass()]);
+$resourceUris = array_column($resourceListResponse['result']['resources'] ?? [], 'uri');
+assert_true(count($resourceUris) === 2 && !array_filter($resourceUris, fn($uri) => !str_starts_with($uri, 'https://inkriver.test/mcp/resources/')), 'MCP resources use the configured canonical domain');
+$legacyBusinessResource = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 9, 'method' => 'resources/read', 'params' => ['uri' => 'inkriver://business-network/schema']]);
+assert_true(str_contains((string) ($legacyBusinessResource['result']['contents'][0]['text'] ?? ''), 'company'), 'legacy InkRiver MCP resource identifiers remain readable after the domain rename');
 $companySchema = business_mcp_call_tool('get_company_profile_schema', [], $adminSession);
 $founderSchema = business_mcp_call_tool('get_founder_profile_schema', [], $adminSession);
 assert_true(in_array('logo_url', $companySchema['fields'] ?? [], true) && in_array('image_url', $founderSchema['fields'] ?? [], true), 'dedicated MCP schemas expose company logo and founder photo fields');

@@ -3824,7 +3824,7 @@ function businessOverlayTemplate() {
   return `<div class="modal-backdrop" data-action="close-business-overlay"><section class="business-overlay" role="dialog" aria-modal="true" aria-labelledby="businessOverlayTitle" data-stop-propagation><button class="modal-close" data-action="close-business-overlay" aria-label="Close">${icon("close")}</button><span class="eyebrow">${claim ? "Ownership verification" : "Community correction"}</span><h2 id="businessOverlayTitle">${claim ? "Claim" : "Suggest a change to"} ${escapeHtml(overlay.profileName)}</h2><p>${claim ? "Tell the review team how you are connected to this profile. Once approved, you can manage it from your dashboard." : "Share the correction and where possible include the exact replacement information. We’ll email you after review."}</p>
     <form id="${claim ? "businessClaimForm" : "businessSuggestionForm"}" class="business-overlay-form">
       <label><span>Your name</span><input name="name" value="${escapeHtml(state.user?.name || "")}" required /></label><label><span>Email address</span><input name="email" type="email" value="${escapeHtml(state.user?.email || "")}" required /></label>
-      ${claim ? `<label><span>Your role</span><input name="role" placeholder="Founder, director, authorized representative…" required /></label><label><span>Proof URL</span><input name="proofUrl" type="url" placeholder="Company website or professional profile" /></label><label class="wide"><span>Verification details</span><textarea name="evidence" placeholder="Explain how the team can verify your relationship." required></textarea></label>` : `<label class="wide"><span>What should change?</span><textarea name="summary" placeholder="Describe the current information and the accurate replacement." required minlength="10"></textarea></label>`}
+      ${claim ? `<label><span>Your role</span><input name="role" placeholder="Founder, director, authorized representative…" required /></label><label><span>Proof URL (optional)</span><input name="proofUrl" type="url" placeholder="Company website or professional profile" /></label><label class="wide business-proof-file"><span>Photo, screenshot, or document (optional)</span><input name="proofFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif,application/pdf" /><small>JPG, PNG, WebP, GIF, or PDF · up to 10 MB. Only admins and moderators can open this file.</small></label><label class="wide"><span>Verification details</span><textarea name="evidence" placeholder="Explain how the team can verify your relationship." required minlength="10"></textarea></label>` : `<label class="wide"><span>What should change?</span><textarea name="summary" placeholder="Describe the current information and the accurate replacement." required minlength="10"></textarea></label>`}
       ${overlay.message ? `<div class="form-message wide">${escapeHtml(overlay.message)}</div>` : ""}<button class="primary-button wide" type="submit">${icon("check", 15)}Submit for review</button>
   </form></section></div>`;
 }
@@ -3978,13 +3978,20 @@ function businessCleanFrontendList(value) {
 }
 
 async function submitBusinessOverlay(form, claim) {
-  const data = Object.fromEntries(new FormData(form).entries());
   const overlay = state.businessOverlay;
+  const formData = new FormData(form);
+  const data = Object.fromEntries(formData.entries());
   const payload = { ...data, profileType: overlay.profileType, profileId: overlay.profileId };
   overlay.message = "Submitting for review…";
   render();
   try {
-    await apiRequest(`/api/business-network/${claim ? "claims" : "suggestions"}`, { method: "POST", body: JSON.stringify(payload) });
+    if (claim) {
+      formData.set("profileType", overlay.profileType);
+      formData.set("profileId", overlay.profileId);
+      await apiRequest('/api/business-network/claims', { method: 'POST', body: formData });
+    } else {
+      await apiRequest('/api/business-network/suggestions', { method: 'POST', body: JSON.stringify(payload) });
+    }
     state.businessOverlay = { type: "", profileType: "", profileId: "", profileName: "", message: "" };
     state.businessProfileMessage = claim ? "Your claim is awaiting staff review." : "Thank you. Your suggestion is awaiting review.";
     render();
@@ -7180,14 +7187,15 @@ function loginTemplate() {
           <button class="${state.authMode === "register" ? "active" : ""}" data-auth-mode="register">Create account</button>
         </div>
         <h2 id="login-title">${state.authMode === "register" ? `Create your ${escapeHtml(siteName())} account` : "Welcome back"}</h2>
-        <p>${state.authorIntent ? "You are continuing the author path. A paid membership is required before writer access and earning tools are enabled." : state.authMode === "register" ? "New accounts start with the reader role. Staff permissions can only be granted by an administrator." : "Sign in to access your personal dashboard, reading history, subscriptions, and saved stories."}</p>
+        <p>${state.authorIntent ? "You are continuing the author path. A paid membership is required before writer access and earning tools are enabled." : state.authMode === "register" ? "Hone your entrepreneurial knack with worth-reading stories, a trusted business network, and helpful resources." : "Sign in to access your personal dashboard, reading history, subscriptions, and saved stories."}</p>
         <form class="auth-form" id="authForm">
+          ${state.loginMessage ? `<div class="payment-message auth-message" role="alert">${escapeHtml(state.loginMessage)}</div>` : ""}
           ${state.authMode === "register" ? `<label><span>Full name</span><input id="authName" name="name" autocomplete="name" maxlength="80" value="${escapeHtml(state.authForm.name)}" required /></label>` : ""}
           <label><span>Email address</span><input id="authEmail" name="email" type="email" autocomplete="email" maxlength="254" value="${escapeHtml(state.authForm.email)}" required /></label>
           <label><span>Password</span><div class="password-field"><input id="authPassword" name="password" type="${state.authPasswordVisible ? "text" : "password"}" value="${escapeHtml(state.authForm.password)}" autocomplete="${state.authMode === "register" ? "new-password" : "current-password"}" minlength="10" maxlength="128" required /><button type="button" class="password-toggle" data-action="toggle-auth-password" aria-label="${state.authPasswordVisible ? "Hide password" : "Show password"}">${state.authPasswordVisible ? "Hide" : "Show"}</button></div></label>
           ${state.authMode === "login" ? `<label class="auth-remember"><input id="authRememberMe" type="checkbox" ${state.authForm.rememberMe ? "checked" : ""} /><span>Remember me on this device</span></label>` : ""}
           ${state.authMode === "register" ? `<small>Use at least 10 characters with uppercase, lowercase, and a number.</small>` : ""}
-          <button class="primary-button wide-button" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait…" : state.authMode === "register" ? "Create secure account" : "Sign in"}</button>
+          <button class="primary-button wide-button nitross-auth-submit" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait…" : state.authMode === "register" ? "Create secure account" : "Sign in"}</button>
         </form>
         ${state.authMode === "login" ? `<button class="secondary-button wide-button" data-action="login-passkey" ${state.authBusy ? "disabled" : ""}>${icon("lock", 15)}Sign in with passkey</button>` : ""}
         ${state.authMode === "login" ? `<button class="text-button auth-forgot" data-action="forgot-password">Forgot password?</button>` : ""}
@@ -7205,8 +7213,6 @@ function loginTemplate() {
               : `<div class="empty-state">Social login is disabled by the admin. Enable Google, Facebook, or both from the Admin dashboard.</div>`
           }
         </div>
-        ${state.loginMessage ? `<div class="payment-message" role="alert">${state.loginMessage}</div>` : ""}
-        <div class="auth-note">Passwords are hashed on the server. Sessions use an HTTP-only cookie and cannot be read by page scripts.</div>
       </section>
     </div>
   `;
@@ -7478,6 +7484,7 @@ function render() {
   document.body.classList.toggle("focus-reading", state.preferences.focusMode && state.path.startsWith("/stories/"));
   document.body.classList.toggle("reader-sans", state.preferences.fontFamily === "sans");
   document.getElementById("root").innerHTML = appTemplate();
+  document.querySelector(".resource-detail-page .resource-security-note")?.remove();
   bindInputs();
   applyDocumentSeo();
   const selectedStory = state.stories.find((story) => story.status === "published" && state.path.includes(`/stories/${story.slug}`));

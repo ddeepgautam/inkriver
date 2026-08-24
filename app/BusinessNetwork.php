@@ -343,11 +343,71 @@ function business_admin_queue(string $kind): array
 {
     $table = $kind === 'claims' ? 'business_profile_claims' : 'business_profile_suggestions';
     $stmt = Database::pdo()->query("SELECT q.*, u.name AS user_name FROM {$table} q LEFT JOIN users u ON u.id = " . ($kind === 'claims' ? 'q.claimant_user_id' : 'q.submitter_user_id') . ' ORDER BY q.created_at DESC LIMIT 300');
-    return array_map(function ($row) {
+    return array_map(function ($row) use ($kind) {
         if (isset($row['proposed_changes_json'])) $row['proposed_changes'] = parse_json_field($row['proposed_changes_json'], []);
         unset($row['proposed_changes_json']);
+        if ($kind === 'claims') {
+            $row['proof_file_url'] = !empty($row['proof_file_path']) ? '/api/admin/business-network/claims/' . rawurlencode((string) $row['id']) . '/proof' : '';
+            if ($row['proof_file_url'] !== '') {
+                $row['submitted_proof_url'] = (string) ($row['proof_url'] ?? '');
+                $row['proof_url'] = $row['proof_file_url'];
+            }
+            unset($row['proof_file_path']);
+            $row['proof_file_size'] = (int) ($row['proof_file_size'] ?? 0);
+        }
         return $row;
     }, $stmt->fetchAll());
+}
+
+function business_store_claim_proof(string $fieldName = 'proofFile'): array
+{
+    $file = $_FILES[$fieldName] ?? null;
+    if (!$file || ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) return [];
+    if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK || empty($file['tmp_name']) || !is_uploaded_file((string) $file['tmp_name'])) {
+        json_response(['error' => 'UPLOAD_FAILED', 'message' => 'The verification file could not be uploaded.'], 400);
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size <= 0 || $size > 10 * 1024 * 1024) {
+        json_response(['error' => 'FILE_TOO_LARGE', 'message' => 'Verification files must be between 1 byte and 10 MB.'], 413);
+    }
+    $allowed = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        'image/gif' => 'gif',
+        'application/pdf' => 'pdf',
+    ];
+    $mime = mime_content_type((string) $file['tmp_name']) ?: (string) ($file['type'] ?? 'application/octet-stream');
+    if (!isset($allowed[$mime])) {
+        json_response(['error' => 'UNSUPPORTED_ATTACHMENT', 'message' => 'Use a JPG, PNG, WebP, GIF, or PDF verification file.'], 400);
+    }
+    $relativeDir = 'business-claim-proofs' . DIRECTORY_SEPARATOR . gmdate('Y') . DIRECTORY_SEPARATOR . gmdate('m');
+    $absoluteDir = private_storage_path($relativeDir);
+    if (!is_dir($absoluteDir) && !mkdir($absoluteDir, 0700, true) && !is_dir($absoluteDir)) {
+        json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not prepare private verification storage.'], 500);
+    }
+    @chmod($absoluteDir, 0700);
+    $storedName = uuid_value('BCP-') . '.' . $allowed[$mime];
+    $target = $absoluteDir . DIRECTORY_SEPARATOR . $storedName;
+    if (!move_uploaded_file((string) $file['tmp_name'], $target)) {
+        json_response(['error' => 'UPLOAD_STORE_FAILED', 'message' => 'Could not save the verification file.'], 500);
+    }
+    @chmod($target, 0600);
+    return [
+        'name' => substr((string) basename((string) ($file['name'] ?? 'verification-file')), 0, 180),
+        'path' => str_replace(DIRECTORY_SEPARATOR, '/', $relativeDir . DIRECTORY_SEPARATOR . $storedName),
+        'mime' => $mime,
+        'size' => $size,
+    ];
+}
+
+function business_claim_proof_path(array $claim): ?string
+{
+    $storagePath = trim((string) ($claim['proof_file_path'] ?? ''));
+    if ($storagePath === '') return null;
+    $candidate = realpath(private_storage_path($storagePath));
+    $root = realpath(private_storage_root());
+    return $candidate && $root && path_is_within($candidate, $root) && is_file($candidate) ? $candidate : null;
 }
 
 function business_admin_counts(): array
@@ -600,7 +660,7 @@ function handle_business_api(string $path, string $method): bool
     }
     if ($method === 'POST' && $path === '/api/business-network/claims') {
         $auth = require_auth();
-        $body = read_json();
+        $body = str_starts_with(strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? '')), 'multipart/form-data') ? $_POST : read_json();
         $type = business_profile_config((string) ($body['profileType'] ?? ''))['type'];
         $profile = business_get_raw_profile($type, (string) ($body['profileId'] ?? ''));
         if (!$profile) json_response(['error' => 'NOT_FOUND', 'message' => 'Profile not found.'], 404);
@@ -608,10 +668,18 @@ function handle_business_api(string $path, string $method): bool
         $existing = Database::pdo()->prepare("SELECT id FROM business_profile_claims WHERE profile_type = ? AND profile_id = ? AND claimant_user_id = ? AND status = 'pending'");
         $existing->execute([$type, $profile['id'], $auth['user']['id']]);
         if ($existing->fetch()) json_response(['error' => 'PENDING_CLAIM', 'message' => 'Your claim is already awaiting review.'], 409);
+        $name = trim((string) ($body['name'] ?? $auth['user']['name']));
+        $email = trim((string) ($body['email'] ?? $auth['user']['email']));
+        $role = trim((string) ($body['role'] ?? ''));
+        $evidence = trim((string) ($body['evidence'] ?? ''));
+        if (strlen($name) < 2 || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($role) < 2 || strlen($evidence) < 10) {
+            json_response(['error' => 'INVALID_CLAIM', 'message' => 'Enter your name, a valid email, your role, and clear verification details.'], 400);
+        }
+        $proofFile = business_store_claim_proof();
         $id = uuid_value('CLM-');
         $now = now_iso();
-        Database::pdo()->prepare('INSERT INTO business_profile_claims (id, profile_type, profile_id, claimant_user_id, claimant_name, claimant_email, claimant_role, proof_url, evidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-            ->execute([$id, $type, $profile['id'], $auth['user']['id'], trim((string) ($body['name'] ?? $auth['user']['name'])), trim((string) ($body['email'] ?? $auth['user']['email'])), trim((string) ($body['role'] ?? '')), trim((string) ($body['proofUrl'] ?? '')), trim((string) ($body['evidence'] ?? '')), $now, $now]);
+        Database::pdo()->prepare('INSERT INTO business_profile_claims (id, profile_type, profile_id, claimant_user_id, claimant_name, claimant_email, claimant_role, proof_url, proof_file_name, proof_file_path, proof_file_mime, proof_file_size, evidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$id, $type, $profile['id'], $auth['user']['id'], $name, $email, $role, trim((string) ($body['proofUrl'] ?? '')), $proofFile['name'] ?? '', $proofFile['path'] ?? '', $proofFile['mime'] ?? '', $proofFile['size'] ?? 0, $evidence, $now, $now]);
         business_notify_staff('New profile claim', $auth['user']['name'] . ' requested control of ' . $profile[business_profile_config($type)['nameColumn']] . '.', '/admin/business-network/claims');
         json_response(['id' => $id, 'status' => 'pending'], 201);
     }
@@ -657,6 +725,25 @@ function handle_business_api(string $path, string $method): bool
             $response['suggestions'] = business_admin_queue('suggestions');
         }
         json_response($response);
+    }
+    if ($method === 'GET' && preg_match('#^/api/admin/business-network/claims/([^/]+)/proof$#', $path, $m)) {
+        require_auth(['admin', 'moderator']);
+        $stmt = Database::pdo()->prepare('SELECT * FROM business_profile_claims WHERE id = ?');
+        $stmt->execute([rawurldecode($m[1])]);
+        $claim = $stmt->fetch();
+        $filePath = $claim ? business_claim_proof_path($claim) : null;
+        if (!$claim || !$filePath) json_response(['error' => 'NOT_FOUND', 'message' => 'Verification file not found.'], 404);
+        $displayName = preg_replace('/[^A-Za-z0-9_. -]/', '_', basename((string) ($claim['proof_file_name'] ?? 'verification-file'))) ?: 'verification-file';
+        http_response_code(200);
+        foreach (security_headers() + [
+            'Content-Type' => (string) ($claim['proof_file_mime'] ?: 'application/octet-stream'),
+            'Content-Length' => (string) filesize($filePath),
+            'Content-Disposition' => 'inline; filename="' . addcslashes($displayName, '"\\') . '"',
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ] as $key => $value) header($key . ': ' . $value);
+        readfile($filePath);
+        exit;
     }
     if ($method === 'PATCH' && preg_match('#^/api/admin/business-network/submissions/(companies|founders)/([^/]+)$#', $path, $m)) {
         $auth = require_auth(['admin', 'moderator']);

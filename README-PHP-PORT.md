@@ -151,6 +151,8 @@ Dynamic client registration is published at `/api/oauth/register`; `/oauth/regis
 
 Only administrator accounts can complete the MCP OAuth flow. Non-admin users see a clear access-denied message. `MCP_API_TOKEN` is still available as a server-to-server bearer fallback, but OAuth is the preferred connector path.
 
+`APP_ORIGIN` must match the canonical public domain because it is the OAuth issuer and the base for MCP resource identifiers. After a domain change, update `APP_ORIGIN` and recreate/reconnect external MCP clients so they discard the previous issuer. OAuth metadata advertises `offline_access` and issues refresh tokens for durable connections.
+
 Supported MCP methods:
 
 - `initialize`
