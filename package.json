@@ -1,0 +1,11 @@
+{
+  "name": "nitross-php-frontend",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build-frontend.mjs",
+    "check": "node --check public/src/app.js && node --check public/sw.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

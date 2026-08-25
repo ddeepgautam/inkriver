@@ -83,6 +83,31 @@ body {
   transition: background 180ms ease, color 180ms ease;
 }
 
+.route-loading-bar {
+  position: fixed;
+  z-index: 40;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
+}
+
+.route-loading-bar span {
+  display: block;
+  width: 38%;
+  height: 100%;
+  background: var(--accent);
+  animation: route-loading-progress 900ms ease-in-out infinite;
+}
+
+@keyframes route-loading-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(290%); }
+}
+
 button,
 input,
 textarea,
@@ -6960,6 +6985,11 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .route-loading-bar span {
+    width: 100%;
+    animation: none;
+  }
+
   *,
   html {
     scroll-behavior: auto;

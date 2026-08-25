@@ -53,7 +53,7 @@ if ($method === 'GET' && $path === '/manifest.webmanifest') {
     exit;
 }
 
-$publicAsset = preg_match('#^/src/[A-Za-z0-9_./-]+\.(?:css|js|svg|png|jpe?g|webp|gif|woff2?)$#i', $path)
+$publicAsset = preg_match('#^/(?:src|dist)/[A-Za-z0-9_./-]+\.(?:css|js|svg|png|jpe?g|webp|gif|woff2?)$#i', $path)
     || preg_match('#^/uploads/(?!support(?:/|$))[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif)$#i', $path)
     || in_array($path, ['/sw.js'], true);
 $file = $publicAsset ? realpath(__DIR__ . $path) : false;
@@ -78,7 +78,7 @@ if ($insideRoot && is_file($file)) {
     header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
     if ($path === '/sw.js') {
         header('Cache-Control: no-cache');
-    } elseif (str_starts_with($path, '/src/')) {
+    } elseif (str_starts_with($path, '/src/') || str_starts_with($path, '/dist/')) {
         header('Cache-Control: public, max-age=31536000, immutable');
     } else {
         header('Cache-Control: public, max-age=3600');

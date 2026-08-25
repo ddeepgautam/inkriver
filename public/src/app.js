@@ -1357,14 +1357,11 @@ async function hydratePlatformState() {
         communication: { ...state.preferences.communication, ...(userDocuments.preferences.communication || {}) },
       };
     }
-    const accountLoads = [loadSecuritySessions(), loadSecuritySettings(), loadSupportTickets()];
+    const accountLoads = [];
     if (state.authorIntent && state.isMember && !["writer", "admin"].includes(state.user.role)) {
       accountLoads.push(requestAuthorAccess(false));
     } else if (state.authorIntent && !state.isMember) {
       state.authorMessage = "Author path saved. Choose a paid subscription to activate writer access and earning tools.";
-    }
-    if (["writer", "admin"].includes(state.user.role)) {
-      accountLoads.push(loadCreatorAnalytics(), loadWriterPayouts());
     }
     await Promise.all(accountLoads);
   }
@@ -1388,13 +1385,8 @@ async function hydratePlatformState() {
     window.history.replaceState({}, "", window.location.pathname);
   }
   state.adCampaigns = payload.ads || state.adCampaigns;
-  const resourcesLoad = loadResources();
-  const secondaryLoads = [loadPlatformAddons(), resourcesLoad];
-  if (state.user) secondaryLoads.push(resourcesLoad.then(() => loadResourceLibrary()));
-  if (["moderator", "admin"].includes(state.user?.role)) secondaryLoads.push(loadAdminOperationalData());
-  if (state.user?.role === "admin") {
-    secondaryLoads.push(loadAdminCommerceData(), loadProductionSuite(), loadAdminResources());
-  }
+  const secondaryLoads = [];
+  if (state.user || state.path.startsWith("/publications")) secondaryLoads.push(loadPlatformAddons());
   await Promise.all(secondaryLoads);
   if (state.user?.role === "admin") {
     if (!Array.isArray(documents.stories) || !documents.stories.length) persistAdminDocument("stories", state.stories);
@@ -1437,7 +1429,7 @@ async function loadProductionSuite() {
   }
 }
 
-async function loadPlatformAddons() {
+async function loadPlatformAddons(loadAdminExtras = false) {
   try {
     const publications = await apiRequest("/api/publications");
     state.publications = publications.publications || [];
@@ -1456,7 +1448,7 @@ async function loadPlatformAddons() {
   } catch (error) {
     state.userMessage = error.message;
   }
-  if (state.user.role === "admin") {
+  if (loadAdminExtras && state.user.role === "admin") {
     try {
       const [seo, dictionary, permissions] = await Promise.all([
         apiRequest("/api/admin/seo/artifacts"),
@@ -2000,6 +1992,7 @@ const state = {
   supportCreating: false,
   supportSelectedTicketId: "",
   supportTicketDetail: null,
+  routeDataLoading: false,
   supportTicketForm: { subject: "", category: "Account", priority: "Normal", details: "" },
   supportReply: { body: "", visibility: "public", status: "Open", priority: "Normal", owner: "Support" },
   businessNetwork: { type: "companies", profiles: [], industries: [], q: "", industry: "", page: 1, perPage: 12, total: 0, totalPages: 1, loaded: false, loading: window.location.pathname === "/business-network" },
@@ -2295,7 +2288,6 @@ function upsertReadingHistory(story, patch = {}) {
     position: 0,
     completed: false,
     openedAt: new Date().toISOString(),
-    lastReadAt: new Date().toISOString(),
     ...existing,
     ...patch,
     lastReadAt: new Date().toISOString(),
@@ -2589,6 +2581,73 @@ function safeImageUrl(value) {
   const url = String(value || "").trim();
   if (/^https?:\/\//i.test(url) || /^\/uploads\//i.test(url) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(url)) return url;
   return "";
+}
+
+let routeDataRequestSequence = 0;
+
+async function loadRouteData(path = state.path, dashboardSection = state.dashboardSection) {
+  const requestSequence = ++routeDataRequestSequence;
+  const tasks = [];
+  const add = (task) => tasks.push(task);
+  const resourceRoute = path.startsWith("/resources") || (path.startsWith("/dashboard") && dashboardSection === "resources") || path.startsWith("/admin/resources");
+
+  if (resourceRoute) {
+    const resources = loadResources();
+    add(resources);
+    if (state.user) add(resources.then(() => loadResourceLibrary()));
+    if (path.startsWith("/admin/resources")) add(loadAdminResources());
+  }
+  if (path.startsWith("/security") || (path.startsWith("/dashboard") && dashboardSection === "security")) {
+    add(loadSecuritySessions());
+    add(loadSecuritySettings());
+  }
+  if (path.startsWith("/support") || path.startsWith("/admin/support")) add(loadSupportTickets());
+  if (path.startsWith("/dashboard") && ["stories", "analytics", "earnings"].includes(dashboardSection) && ["writer", "admin"].includes(state.user?.role)) {
+    add(loadCreatorAnalytics());
+    add(loadWriterPayouts());
+  }
+  if (path.startsWith("/admin/creator")) {
+    add(loadCreatorAnalytics());
+    add(loadWriterPayouts());
+    add(loadAdminOperationalData());
+    add(loadAdminCommerceData());
+  }
+  if (path === "/admin") {
+    add(loadAdminOperationalData());
+    add(loadAdminUsers());
+  }
+  if (path.startsWith("/admin/moderation") || path.startsWith("/admin/copyright")) {
+    add(loadAdminOperationalData());
+    add(loadPlatformAddons(true));
+  }
+  if (path.startsWith("/admin/settings")) {
+    add(loadAdminCommerceData());
+    add(loadProductionSuite());
+  }
+  if (path.startsWith("/admin/production") || path.startsWith("/admin/health")) add(loadProductionSuite());
+  if (path.startsWith("/admin/security")) add(loadProductionSuite());
+  if (path.startsWith("/admin/seo")) add(loadPlatformAddons(true));
+  if (path.startsWith("/admin/users")) add(loadAdminUsers());
+  if (path.startsWith("/admin/blogs") || path === "/write") add(loadMediaAssets());
+
+  if (!tasks.length) {
+    state.routeDataLoading = false;
+    return;
+  }
+  const loadingTimer = window.setTimeout(() => {
+    if (requestSequence !== routeDataRequestSequence) return;
+    state.routeDataLoading = true;
+    render();
+  }, 300);
+  try {
+    await Promise.all(tasks);
+  } finally {
+    window.clearTimeout(loadingTimer);
+    if (requestSequence === routeDataRequestSequence) {
+      state.routeDataLoading = false;
+      render();
+    }
+  }
 }
 
 function publicProfileLinkUrl(value, network = "") {
@@ -3366,12 +3425,15 @@ function setRoute(to) {
   state.loginOpen = false;
   window.scrollTo({ top: 0, behavior: "smooth" });
   render();
-  if (to.startsWith("/admin/users")) loadAdminUsers();
   if (to.startsWith("/search")) runServerSearch(false);
   if (to === "/business-network") loadBusinessNetwork();
   if (to.startsWith("/companies/") || to.startsWith("/founders/")) loadBusinessProfileRoute();
   if (to.startsWith("/admin/business-network")) loadBusinessAdmin();
   if (to.startsWith("/dashboard") && state.dashboardSection === "business") loadMyBusinessProfiles();
+  loadRouteData(to).catch((error) => {
+    state.userMessage = `Route data could not be loaded: ${error.message}`;
+    render();
+  });
 }
 
 function filteredStories(topic = state.activeTopic) {
@@ -4040,6 +4102,7 @@ function appTemplate() {
   return `
     <div class="app-shell">
       ${headerTemplate()}
+      ${state.routeDataLoading ? `<div class="route-loading-bar" role="status" aria-label="Loading page data"><span></span></div>` : ""}
       ${
         selectedStory
           ? storyPageTemplate(selectedStory)
@@ -8580,6 +8643,10 @@ document.addEventListener("click", async (event) => {
     state.dashboardSection = allowed.has(dashboardSection) ? dashboardSection : "overview";
     render();
     if (state.dashboardSection === "business") loadMyBusinessProfiles();
+    loadRouteData(state.path, state.dashboardSection).catch((error) => {
+      state.userMessage = `Workspace data could not be loaded: ${error.message}`;
+      render();
+    });
   }
 
   if (installerStep) {
@@ -10496,6 +10563,10 @@ window.addEventListener("popstate", () => {
   if (state.path.startsWith("/business-network")) loadBusinessNetwork();
   if (state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) loadBusinessProfileRoute();
   if (state.path.startsWith("/admin/business-network")) loadBusinessAdmin();
+  loadRouteData(state.path).catch((error) => {
+    state.userMessage = `Route data could not be loaded: ${error.message}`;
+    render();
+  });
 });
 
 window.addEventListener("scroll", trackArticleDepth, { passive: true });
@@ -10536,8 +10607,7 @@ async function bootstrapApp() {
   }
   try {
     await hydratePlatformState();
-    await loadRecommendationFeed();
-    await criticalRoutePromise;
+    await Promise.all([loadRecommendationFeed(), loadRouteData(state.path), criticalRoutePromise]);
   } catch (error) {
     state.userMessage = `Platform data could not be synchronized: ${error.message}`;
   }
@@ -10592,9 +10662,6 @@ async function bootstrapApp() {
   if (!criticalRouteLoaded && (state.path.startsWith("/companies/") || state.path.startsWith("/founders/"))) loadBusinessProfileRoute();
   if (!criticalRouteLoaded && state.path.startsWith("/admin/business-network")) loadBusinessAdmin();
   if (state.path.startsWith("/dashboard") && state.dashboardSection === "business") loadMyBusinessProfiles();
-  if (state.user?.role === "admin") {
-    await Promise.all([loadAdminUsers(), loadMediaAssets()]);
-  }
   fetchCurrencyRates();
 }
 
