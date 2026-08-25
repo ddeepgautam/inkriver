@@ -1,5 +1,5 @@
-const CACHE = "inkriver-v44-ownership-auth-mcp";
-const CORE = ["/", "/index.html", "/src/app.js?v=20260824-ownership-auth-mcp-1", "/src/styles.css?v=20260824-ownership-auth-mcp-1", "/manifest.webmanifest", "/src/icon.svg"];
+const CACHE = "inkriver-v45-performance";
+const CORE = ["/", "/index.html", "/src/app.js?v=20260825-performance-1", "/src/styles.css?v=20260825-performance-1", "/manifest.webmanifest", "/src/icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));

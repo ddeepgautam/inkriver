@@ -589,13 +589,17 @@ function handle_business_api(string $path, string $method): bool
     if ($method === 'GET' && $path === '/api/business-network') {
         $type = (string) ($_GET['type'] ?? 'companies');
         $listing = business_paginated_profiles($type, $_GET, $session, 12);
+        $cacheHeaders = $session ? [] : [
+            'Cache-Control' => 'public, max-age=30, stale-while-revalidate=300',
+            'Vary' => 'Cookie',
+        ];
         json_response([
             'type' => $type,
             'profiles' => $listing['profiles'],
             'pagination' => $listing['pagination'],
             'industries' => array_values(array_filter(array_column(Database::pdo()->query("SELECT DISTINCT industry FROM business_companies WHERE status = 'published' ORDER BY industry")->fetchAll(), 'industry'))),
             'contactAccess' => business_has_contact_access($session),
-        ]);
+        ], 200, $cacheHeaders);
     }
     if ($method === 'GET' && $path === '/api/business-network/suggest') {
         $type = (string) ($_GET['type'] ?? 'companies');

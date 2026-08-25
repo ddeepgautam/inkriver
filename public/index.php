@@ -76,7 +76,13 @@ if ($insideRoot && is_file($file)) {
     $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
     foreach (security_headers() as $key => $value) header($key . ': ' . $value);
     header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
-    header('Cache-Control: public, max-age=3600');
+    if ($path === '/sw.js') {
+        header('Cache-Control: no-cache');
+    } elseif (str_starts_with($path, '/src/')) {
+        header('Cache-Control: public, max-age=31536000, immutable');
+    } else {
+        header('Cache-Control: public, max-age=3600');
+    }
     readfile($file);
     exit;
 }

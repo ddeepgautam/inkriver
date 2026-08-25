@@ -1253,7 +1253,6 @@ async function apiRequest(path, options = {}) {
   const headers = options.body instanceof FormData ? { ...(options.headers || {}) } : { "Content-Type": "application/json", ...(options.headers || {}) };
   const response = await fetch(path, {
     credentials: "same-origin",
-    cache: "no-store",
     headers,
     ...options,
   });
@@ -1358,18 +1357,16 @@ async function hydratePlatformState() {
         communication: { ...state.preferences.communication, ...(userDocuments.preferences.communication || {}) },
       };
     }
-    await loadSecuritySessions();
-    await loadSecuritySettings();
-    await loadSupportTickets();
+    const accountLoads = [loadSecuritySessions(), loadSecuritySettings(), loadSupportTickets()];
     if (state.authorIntent && state.isMember && !["writer", "admin"].includes(state.user.role)) {
-      await requestAuthorAccess(false);
+      accountLoads.push(requestAuthorAccess(false));
     } else if (state.authorIntent && !state.isMember) {
       state.authorMessage = "Author path saved. Choose a paid subscription to activate writer access and earning tools.";
     }
     if (["writer", "admin"].includes(state.user.role)) {
-      await loadCreatorAnalytics();
-      await loadWriterPayouts();
+      accountLoads.push(loadCreatorAnalytics(), loadWriterPayouts());
     }
+    await Promise.all(accountLoads);
   }
   state.providerStatus = payload.providers || state.providerStatus;
   state.featureFlags = payload.featureFlags || {};
@@ -1391,17 +1388,15 @@ async function hydratePlatformState() {
     window.history.replaceState({}, "", window.location.pathname);
   }
   state.adCampaigns = payload.ads || state.adCampaigns;
-  await loadPlatformAddons();
-  await loadResources();
-  if (state.user) await loadResourceLibrary();
-
-  if (["moderator", "admin"].includes(state.user?.role)) {
-    await loadAdminOperationalData();
-  }
+  const resourcesLoad = loadResources();
+  const secondaryLoads = [loadPlatformAddons(), resourcesLoad];
+  if (state.user) secondaryLoads.push(resourcesLoad.then(() => loadResourceLibrary()));
+  if (["moderator", "admin"].includes(state.user?.role)) secondaryLoads.push(loadAdminOperationalData());
   if (state.user?.role === "admin") {
-    await loadAdminCommerceData();
-    await loadProductionSuite();
-    await loadAdminResources();
+    secondaryLoads.push(loadAdminCommerceData(), loadProductionSuite(), loadAdminResources());
+  }
+  await Promise.all(secondaryLoads);
+  if (state.user?.role === "admin") {
     if (!Array.isArray(documents.stories) || !documents.stories.length) persistAdminDocument("stories", state.stories);
     if (!Array.isArray(documents.categories) || !documents.categories.length) persistAdminDocument("categories", state.categories);
     if (!Array.isArray(documents.plans) || !documents.plans.length) persistAdminDocument("plans", state.plans);
@@ -1604,9 +1599,13 @@ async function loadWriterPayouts() {
 async function loadAdminOperationalData() {
   if (!["moderator", "admin"].includes(state.user?.role)) return;
   try {
-    const moderation = await apiRequest("/api/admin/moderation");
-    if (state.user.role === "admin") state.adminAnalytics = await apiRequest("/api/admin/analytics");
-    if (state.user.role === "admin") state.adminRecommendationStatus = await apiRequest("/api/admin/recommendations/status");
+    const [moderation, analytics, recommendationStatus] = await Promise.all([
+      apiRequest("/api/admin/moderation"),
+      state.user.role === "admin" ? apiRequest("/api/admin/analytics") : Promise.resolve(null),
+      state.user.role === "admin" ? apiRequest("/api/admin/recommendations/status") : Promise.resolve(null),
+    ]);
+    if (analytics) state.adminAnalytics = analytics;
+    if (recommendationStatus) state.adminRecommendationStatus = recommendationStatus;
     state.operations.moderation = (moderation.cases || []).map((item) => ({
       id: item.id,
       kind: item.kind,
@@ -2003,7 +2002,7 @@ const state = {
   supportTicketDetail: null,
   supportTicketForm: { subject: "", category: "Account", priority: "Normal", details: "" },
   supportReply: { body: "", visibility: "public", status: "Open", priority: "Normal", owner: "Support" },
-  businessNetwork: { type: "companies", profiles: [], industries: [], q: "", industry: "", page: 1, perPage: 12, total: 0, totalPages: 1, loaded: false, loading: false },
+  businessNetwork: { type: "companies", profiles: [], industries: [], q: "", industry: "", page: 1, perPage: 12, total: 0, totalPages: 1, loaded: false, loading: window.location.pathname === "/business-network" },
   businessProfile: null,
   businessProfileLoading: false,
   businessProfileMessage: "",
@@ -3461,16 +3460,30 @@ function profileToBusinessForm(profile, type) {
   return form;
 }
 
+let businessNetworkRequestSequence = 0;
+let businessNetworkAbortController = null;
+
 async function loadBusinessNetwork() {
-  if (state.businessNetwork.loading) return;
+  const requestSequence = ++businessNetworkRequestSequence;
+  businessNetworkAbortController?.abort();
+  const controller = new AbortController();
+  businessNetworkAbortController = controller;
+  const request = {
+    type: state.businessNetwork.type,
+    q: state.businessNetwork.q,
+    industry: state.businessNetwork.industry,
+    page: state.businessNetwork.page || 1,
+  };
   state.businessNetwork.loading = true;
+  state.businessMessage = "";
   render();
   try {
-    const params = new URLSearchParams({ type: state.businessNetwork.type });
-    if (state.businessNetwork.q) params.set("q", state.businessNetwork.q);
-    if (state.businessNetwork.industry && state.businessNetwork.type === "companies") params.set("industry", state.businessNetwork.industry);
-    params.set("page", String(state.businessNetwork.page || 1));
-    const payload = await apiRequest(`/api/business-network?${params}`);
+    const params = new URLSearchParams({ type: request.type });
+    if (request.q) params.set("q", request.q);
+    if (request.industry && request.type === "companies") params.set("industry", request.industry);
+    params.set("page", String(request.page));
+    const payload = await apiRequest(`/api/business-network?${params}`, { signal: controller.signal });
+    if (requestSequence !== businessNetworkRequestSequence) return;
     state.businessNetwork.profiles = payload.profiles || [];
     state.businessNetwork.industries = payload.industries || [];
     state.businessNetwork.page = Number(payload.pagination?.page || 1);
@@ -3479,10 +3492,12 @@ async function loadBusinessNetwork() {
     state.businessNetwork.totalPages = Number(payload.pagination?.totalPages || 1);
     state.businessNetwork.loaded = true;
   } catch (error) {
-    state.businessMessage = error.message;
+    if (requestSequence === businessNetworkRequestSequence && error.name !== "AbortError") state.businessMessage = error.message;
   } finally {
-    state.businessNetwork.loading = false;
-    render();
+    if (requestSequence === businessNetworkRequestSequence) {
+      state.businessNetwork.loading = false;
+      render();
+    }
   }
 }
 
@@ -10507,9 +10522,22 @@ async function bootstrapApp() {
     state.user = null;
     state.role = "reader";
   }
+  let criticalRouteLoaded = false;
+  let criticalRoutePromise = Promise.resolve();
+  if (state.path === "/business-network") {
+    criticalRouteLoaded = true;
+    criticalRoutePromise = loadBusinessNetwork();
+  } else if (state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) {
+    criticalRouteLoaded = true;
+    criticalRoutePromise = loadBusinessProfileRoute();
+  } else if (state.path.startsWith("/admin/business-network")) {
+    criticalRouteLoaded = true;
+    criticalRoutePromise = loadBusinessAdmin();
+  }
   try {
     await hydratePlatformState();
     await loadRecommendationFeed();
+    await criticalRoutePromise;
   } catch (error) {
     state.userMessage = `Platform data could not be synchronized: ${error.message}`;
   }
@@ -10560,13 +10588,12 @@ async function bootstrapApp() {
     state.loginMessage = "";
   }
   render();
-  if (state.path.startsWith("/business-network")) loadBusinessNetwork();
-  if (state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) loadBusinessProfileRoute();
-  if (state.path.startsWith("/admin/business-network")) loadBusinessAdmin();
+  if (!criticalRouteLoaded && state.path.startsWith("/business-network")) loadBusinessNetwork();
+  if (!criticalRouteLoaded && (state.path.startsWith("/companies/") || state.path.startsWith("/founders/"))) loadBusinessProfileRoute();
+  if (!criticalRouteLoaded && state.path.startsWith("/admin/business-network")) loadBusinessAdmin();
   if (state.path.startsWith("/dashboard") && state.dashboardSection === "business") loadMyBusinessProfiles();
   if (state.user?.role === "admin") {
-    await loadAdminUsers();
-    await loadMediaAssets();
+    await Promise.all([loadAdminUsers(), loadMediaAssets()]);
   }
   fetchCurrencyRates();
 }

@@ -5,6 +5,7 @@ require_once __DIR__ . '/config.php';
 
 final class Database
 {
+    private const SCHEMA_VERSION = 20260825;
     private static ?PDO $pdo = null;
 
     public static function pdo(): PDO
@@ -20,15 +21,18 @@ final class Database
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
         self::$pdo->exec('PRAGMA foreign_keys = ON');
-        self::$pdo->exec('PRAGMA journal_mode = WAL');
         self::$pdo->exec('PRAGMA busy_timeout = 5000');
         @chmod($path, 0600);
-        self::migrate();
+        $schemaVersion = (int) self::$pdo->query('PRAGMA user_version')->fetchColumn();
+        if ($schemaVersion < self::SCHEMA_VERSION) self::migrate();
         return self::$pdo;
     }
 
     private static function migrate(): void
     {
+        // WAL is persistent for the database. Setting it only while migrating
+        // avoids taking a journal-mode lock on every web request.
+        self::$pdo->exec('PRAGMA journal_mode = WAL');
         $schema = file_get_contents(dirname(__DIR__) . '/schema.sql');
         if ($schema === false) throw new RuntimeException('schema.sql not found');
         self::$pdo->exec($schema);
@@ -63,6 +67,7 @@ final class Database
         self::ensureColumn('business_profile_claims', 'proof_file_path', "TEXT NOT NULL DEFAULT ''");
         self::ensureColumn('business_profile_claims', 'proof_file_mime', "TEXT NOT NULL DEFAULT ''");
         self::ensureColumn('business_profile_claims', 'proof_file_size', 'INTEGER NOT NULL DEFAULT 0');
+        self::$pdo->exec('PRAGMA user_version = ' . self::SCHEMA_VERSION);
     }
 
     private static function ensureColumn(string $table, string $column, string $definition): void

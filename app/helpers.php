@@ -9,7 +9,7 @@ function now_iso(): string
 function json_response(array $payload, int $status = 200, array $headers = []): never
 {
     http_response_code($status);
-    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'] + $headers as $key => $value) {
+    foreach (security_headers() + array_merge(['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store'], $headers) as $key => $value) {
         header($key . ': ' . $value);
     }
     echo json_encode($payload, JSON_UNESCAPED_SLASHES);

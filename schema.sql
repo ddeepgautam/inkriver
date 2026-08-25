@@ -1262,8 +1262,11 @@
   CREATE INDEX IF NOT EXISTS idx_oauth_codes_client_expires ON oauth_authorization_codes(client_id, expires_at);
   CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user_expires ON oauth_access_tokens(user_id, expires_at);
   CREATE INDEX IF NOT EXISTS idx_business_companies_status_industry ON business_companies(status, industry, name);
+  CREATE INDEX IF NOT EXISTS idx_business_companies_listing ON business_companies(status, verified DESC, updated_at DESC, name);
+  CREATE INDEX IF NOT EXISTS idx_business_companies_industry_listing ON business_companies(status, industry, verified DESC, updated_at DESC, name);
   CREATE INDEX IF NOT EXISTS idx_business_companies_owner ON business_companies(claimed_owner_user_id, created_by_user_id);
   CREATE INDEX IF NOT EXISTS idx_business_people_status_name ON business_people(status, full_name);
+  CREATE INDEX IF NOT EXISTS idx_business_people_listing ON business_people(status, verified DESC, updated_at DESC, full_name);
   CREATE INDEX IF NOT EXISTS idx_business_people_owner ON business_people(claimed_owner_user_id, created_by_user_id);
   CREATE INDEX IF NOT EXISTS idx_business_links_company ON business_person_company_links(company_id, is_founder);
   CREATE INDEX IF NOT EXISTS idx_business_links_person ON business_person_company_links(person_id, is_current);
