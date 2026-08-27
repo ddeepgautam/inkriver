@@ -25,6 +25,9 @@ Options -Indexes -MultiViews
 RewriteEngine On
 RewriteRule ^index\.html$ index.php [L,NC]
 RewriteRule ^\.well-known/(?:oauth-(?:protected-resource|authorization-server)(?:/.*)?|openid-configuration)$ index.php [L,NC]
+# Keep the MCP application route ahead of mod_dir even when a hosting control
+# panel uses a physical `mcp/` folder as the dedicated subdomain document root.
+RewriteRule ^mcp/?$ index.php [L,NC]
 
 # The document root contains public files only. Keep dotfiles and executable uploads blocked.
 RewriteRule "(^|/)\." - [F,L]
