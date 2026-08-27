@@ -151,7 +151,9 @@ Dynamic client registration is published at `/api/oauth/register`; `/oauth/regis
 
 Only administrator accounts can complete the MCP OAuth flow. Non-admin users see a clear access-denied message. `MCP_API_TOKEN` is still available as a server-to-server bearer fallback, but OAuth is the preferred connector path.
 
-`APP_ORIGIN` must match the canonical public domain because it is the OAuth issuer and the base for MCP resource identifiers. After a domain change, update `APP_ORIGIN` and recreate/reconnect external MCP clients so they discard the previous issuer. OAuth metadata advertises `offline_access` and issues refresh tokens for durable connections.
+`APP_ORIGIN` must match the canonical website domain. Set `MCP_ORIGIN` to the dedicated HTTPS MCP origin (for example, `https://mcp.nitross.com`); it becomes the OAuth issuer and the base for MCP resource identifiers. When `MCP_ORIGIN` is omitted, it falls back to `APP_ORIGIN` for backwards compatibility. After an MCP domain change, recreate/reconnect external MCP clients so they discard the previous issuer. OAuth metadata advertises `offline_access` and issues refresh tokens for durable connections.
+
+The dedicated MCP host exposes unauthenticated `GET /health` and `GET /version` JSON endpoints, and rejects unrelated website routes. `MCP_RATE_LIMIT_PER_MINUTE` defaults to 120 authenticated requests per identity and `MCP_REQUEST_MAX_BYTES` defaults to 2 MiB. MCP request logs are structured and contain request metadata only; bearer credentials and request bodies are never logged.
 
 Supported MCP methods:
 

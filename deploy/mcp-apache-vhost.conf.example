@@ -1,0 +1,23 @@
+<VirtualHost *:443>
+    ServerName mcp.nitross.com
+    DocumentRoot "/var/www/inkriver/public"
+
+    <Directory "/var/www/inkriver">
+        Options -Indexes
+        AllowOverride None
+        Require all denied
+    </Directory>
+
+    <Directory "/var/www/inkriver/public">
+        Options -Indexes -MultiViews
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    LimitRequestBody 2097152
+    Header always unset X-Powered-By
+    Header always set X-Robots-Tag "noindex, nofollow"
+
+    # Configure the managed TLS certificate, logs, and trusted proxy settings.
+    # Redirect the matching port 80 virtual host to HTTPS.
+</VirtualHost>

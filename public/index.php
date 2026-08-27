@@ -11,6 +11,14 @@ if (is_production()) {
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
+if ($method === 'GET' && rtrim($path, '/') === '/health') {
+    json_response(['status' => 'ok', 'service' => 'nitross-mcp'], 200, ['X-Robots-Tag' => 'noindex, nofollow']);
+}
+
+if ($method === 'GET' && rtrim($path, '/') === '/version') {
+    json_response(['service' => 'nitross-mcp', 'version' => mcp_version()], 200, ['X-Robots-Tag' => 'noindex, nofollow']);
+}
+
 if (str_starts_with($path, '/.well-known/oauth-') || $path === '/.well-known/openid-configuration' || str_starts_with($path, '/oauth/') || str_starts_with($path, '/api/oauth/')) {
     handle_oauth($path, $method);
 }
@@ -21,6 +29,13 @@ if (str_starts_with($path, '/api/')) {
 
 if (rtrim($path, '/') === '/mcp') {
     handle_mcp($method);
+}
+
+if (is_mcp_host_request()) {
+    http_response_code(404);
+    foreach (security_headers() + ['Content-Type' => 'application/json; charset=utf-8', 'Cache-Control' => 'no-store', 'X-Robots-Tag' => 'noindex, nofollow'] as $key => $value) header($key . ': ' . $value);
+    echo json_encode(['error' => 'NOT_FOUND', 'message' => 'This host serves only the Nitross MCP API.'], JSON_UNESCAPED_SLASHES);
+    exit;
 }
 
 if ($method === 'GET' && $path === '/sitemap.xml') {

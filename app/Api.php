@@ -1111,7 +1111,7 @@ function mcp_json_response(array $payload, int $status = 200, array $headers = [
 
 function mcp_unauthorized_response(string $message = 'OAuth authorization is required.'): never
 {
-    $origin = rtrim((string) (env_value('APP_ORIGIN') ?: env_value('APP_URL') ?: app_url('/')), '/');
+    $origin = mcp_origin();
     mcp_json_response(
         ['error' => 'AUTH_REQUIRED', 'message' => $message],
         401,
@@ -1202,7 +1202,7 @@ function handle_oauth(string $path, string $method): void
 {
     $path = rtrim($path, '/') ?: '/';
     if (str_starts_with($path, '/api/oauth/')) $path = '/oauth/' . substr($path, strlen('/api/oauth/'));
-    $origin = rtrim((string) (env_value('APP_ORIGIN') ?: env_value('APP_URL') ?: app_url('/')), '/');
+    $origin = mcp_origin();
     if ($method === 'GET' && ($path === '/.well-known/oauth-protected-resource' || $path === '/.well-known/oauth-protected-resource/mcp')) {
         oauth_metadata_response([
             'resource' => $origin . '/mcp',
@@ -1701,21 +1701,21 @@ function mcp_handle_request(array $request): ?array
             'initialize' => [
                 'protocolVersion' => '2025-11-25',
                 'capabilities' => ['tools' => ['listChanged' => false], 'resources' => ['listChanged' => false]],
-                'serverInfo' => ['name' => configured_site_name() . ' MCP', 'title' => configured_site_name() . ' Publishing and Business Network MCP', 'version' => '1.3.0'],
+                'serverInfo' => ['name' => configured_site_name() . ' MCP', 'title' => configured_site_name() . ' Publishing and Business Network MCP', 'version' => mcp_version()],
                 'instructions' => 'Founder and company profiles are separate from article authors. Use get_company_profile_schema or get_founder_profile_schema, check existing records with list_company_profiles or list_founder_profiles, upload logos/headshots with upload_profile_image, then call create_or_update_company_profile or create_or_update_founder_profile. Use link_founder_to_company to add a relationship without replacing other links.',
             ],
             'ping' => new stdClass(),
             'tools/list' => ['tools' => array_merge(mcp_tool_definitions(), business_mcp_tool_definitions())],
             'tools/call' => mcp_call_tool((string) ($request['params']['name'] ?? ''), is_array($request['params']['arguments'] ?? null) ? $request['params']['arguments'] : []),
             'resources/list' => ['resources' => [
-                ['uri' => rtrim(app_origin(), '/') . '/mcp/resources/blog-editor/schema', 'name' => configured_site_name() . ' blog editor schema', 'mimeType' => 'application/json'],
-                ['uri' => rtrim(app_origin(), '/') . '/mcp/resources/business-network/schema', 'name' => configured_site_name() . ' company and founder profile schema', 'mimeType' => 'application/json'],
+                ['uri' => mcp_origin() . '/mcp/resources/blog-editor/schema', 'name' => configured_site_name() . ' blog editor schema', 'mimeType' => 'application/json'],
+                ['uri' => mcp_origin() . '/mcp/resources/business-network/schema', 'name' => configured_site_name() . ' company and founder profile schema', 'mimeType' => 'application/json'],
             ]],
             'resources/read' => ['contents' => [[
                 'uri' => (string) ($request['params']['uri'] ?? 'inkriver://blog-editor/schema'),
                 'mimeType' => 'application/json',
                 'text' => json_encode(
-                    in_array((string) ($request['params']['uri'] ?? ''), ['inkriver://business-network/schema', rtrim(app_origin(), '/') . '/mcp/resources/business-network/schema'], true) ? business_mcp_field_map() : mcp_blog_editor_schema(),
+                    in_array((string) ($request['params']['uri'] ?? ''), ['inkriver://business-network/schema', mcp_origin() . '/mcp/resources/business-network/schema'], true) ? business_mcp_field_map() : mcp_blog_editor_schema(),
                     JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
                 ),
             ]]],
@@ -1729,19 +1729,39 @@ function mcp_handle_request(array $request): ?array
 
 function handle_mcp(string $method): void
 {
+    $startedAt = microtime(true);
+    $requestId = trim((string) ($_SERVER['HTTP_X_REQUEST_ID'] ?? ''));
+    if ($requestId === '' || !preg_match('/^[A-Za-z0-9._:-]{1,100}$/', $requestId)) $requestId = uuid_value('req-');
+    header('X-Request-ID: ' . $requestId);
     if ($method === 'GET') {
         mcp_unauthorized_response('Connect with OAuth to use the ' . configured_site_name() . ' MCP endpoint.');
     }
     if ($method !== 'POST') mcp_json_response(['error' => 'METHOD_NOT_ALLOWED', 'message' => 'Use POST for MCP JSON-RPC calls.'], 405);
+    $contentType = strtolower(trim((string) ($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '')));
+    if ($contentType !== '' && !str_starts_with($contentType, 'application/json')) {
+        mcp_json_response(['error' => 'UNSUPPORTED_MEDIA_TYPE', 'message' => 'MCP requests must use application/json.'], 415);
+    }
     try {
-        mcp_authorize_session();
+        $session = mcp_authorize_session();
     } catch (Throwable $error) {
         if (str_contains($error->getMessage(), 'Only administrator')) {
             mcp_json_response(['error' => 'FORBIDDEN', 'message' => 'Only administrator accounts can connect and use ' . configured_site_name() . ' MCP.'], 403);
         }
         mcp_unauthorized_response($error->getMessage());
     }
-    $payload = read_json();
+    $identity = (string) ($session['user']['id'] ?? 'unknown');
+    $limit = max(10, min(1000, (int) (env_value('MCP_RATE_LIMIT_PER_MINUTE', '120') ?? '120')));
+    enforce_auth_rate_limit('mcp-request', $identity, $limit, 60);
+    record_auth_rate_limit_failure('mcp-request', $identity, $limit, 60, 60);
+    $maxBytes = max(65536, min(16777216, (int) (env_value('MCP_REQUEST_MAX_BYTES', '2097152') ?? '2097152')));
+    $declaredBytes = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($declaredBytes > $maxBytes) mcp_json_response(['error' => 'REQUEST_TOO_LARGE', 'message' => 'MCP request body is too large.'], 413);
+    $raw = file_get_contents('php://input', false, null, 0, $maxBytes + 1) ?: '';
+    if (strlen($raw) > $maxBytes) mcp_json_response(['error' => 'REQUEST_TOO_LARGE', 'message' => 'MCP request body is too large.'], 413);
+    $payload = json_decode($raw, true);
+    if (!is_array($payload) || json_last_error() !== JSON_ERROR_NONE) {
+        mcp_json_response(['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32700, 'message' => 'Invalid JSON request.']], 400);
+    }
     $isBatch = array_is_list($payload);
     $requests = $isBatch ? $payload : [$payload];
     $responses = [];
@@ -1754,6 +1774,22 @@ function handle_mcp(string $method): void
         http_response_code(202);
         exit;
     }
+    $toolNames = [];
+    foreach ($requests as $request) {
+        if (is_array($request) && ($request['method'] ?? '') === 'tools/call') $toolNames[] = substr((string) ($request['params']['name'] ?? ''), 0, 100);
+    }
+    error_log(json_encode([
+        'timestamp' => now_iso(),
+        'service' => 'nitross-mcp',
+        'requestId' => $requestId,
+        'route' => '/mcp',
+        'methods' => array_values(array_unique(array_map(fn($request) => substr((string) ($request['method'] ?? ''), 0, 80), array_filter($requests, 'is_array')))),
+        'tools' => array_values(array_unique($toolNames)),
+        'status' => 200,
+        'durationMs' => (int) round((microtime(true) - $startedAt) * 1000),
+        'authIdentity' => $identity,
+        'hcdnRequestId' => substr((string) ($_SERVER['HTTP_X_HCDN_REQUEST_ID'] ?? ''), 0, 100),
+    ], JSON_UNESCAPED_SLASHES));
     mcp_json_response($isBatch ? $responses : $responses[0]);
 }
 

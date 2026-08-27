@@ -62,6 +62,27 @@ function app_origin(): string
     return rtrim(env_value('APP_ORIGIN', 'http://127.0.0.1:8080') ?? '', '/');
 }
 
+function mcp_origin(): string
+{
+    return rtrim(env_value('MCP_ORIGIN', app_origin()) ?? app_origin(), '/');
+}
+
+function mcp_version(): string
+{
+    return '1.4.0';
+}
+
+function request_host(): string
+{
+    return strtolower(preg_replace('/:\d+$/', '', trim((string) ($_SERVER['HTTP_HOST'] ?? ''))) ?? '');
+}
+
+function is_mcp_host_request(): bool
+{
+    $mcpHost = strtolower((string) parse_url(mcp_origin(), PHP_URL_HOST));
+    return $mcpHost !== '' && request_host() !== '' && hash_equals($mcpHost, request_host());
+}
+
 function private_storage_root(): string
 {
     $configured = trim((string) env_value('PRIVATE_STORAGE_PATH', ''));
@@ -124,6 +145,9 @@ function validate_sensitive_storage_configuration(): void
     }
     if (!str_starts_with(strtolower(app_origin()), 'https://')) {
         throw new RuntimeException('APP_ORIGIN must use HTTPS in production.');
+    }
+    if (!str_starts_with(strtolower(mcp_origin()), 'https://')) {
+        throw new RuntimeException('MCP_ORIGIN must use HTTPS in production.');
     }
     if (path_is_within(database_path(), project_root()) || path_is_within(private_storage_root(), project_root())) {
         throw new RuntimeException('Production database and private storage must be located outside the application repository.');
