@@ -1,5 +1,5 @@
 const CACHE = "inkriver-v46-bundle";
-const CORE = ["/", "/index.html", "/dist/app.min.js?v=20260825-bundle-1", "/dist/styles.min.css?v=20260825-bundle-1", "/manifest.webmanifest", "/src/icon.svg"];
+const CORE = ["/", "/index.html", "/dist/app.min.js?v=20260828-multi-deploy-1", "/dist/styles.min.css?v=20260828-multi-deploy-1", "/manifest.webmanifest", "/src/icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));
