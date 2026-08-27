@@ -157,6 +157,8 @@ The dedicated MCP host exposes unauthenticated `GET /health` and `GET /version` 
 
 When the dedicated MCP deployment uses a separate checkout but must keep uploaded media visible on the website, set `PUBLIC_UPLOADS_PATH` to the website checkout's public upload directory. Source code, `.env`, database, and private storage remain outside both public document roots.
 
+To deploy the website and dedicated MCP checkout together from the administrator GitHub updater, set `MCP_DEPLOYMENT_REPO_PATH` in the website environment to the absolute MCP checkout path. The updater checks that both work trees are clean, fetches and fast-forwards both from the selected branch, runs migrations in each checkout, and rolls both code checkouts back to their previous commits if any step fails.
+
 Supported MCP methods:
 
 - `initialize`

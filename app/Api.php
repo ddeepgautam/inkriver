@@ -3761,6 +3761,26 @@ function deployment_repo_root(): string
     return dirname(__DIR__);
 }
 
+function deployment_mcp_repo_root(): string
+{
+    return trim((string) (env_value('MCP_DEPLOYMENT_REPO_PATH', '') ?? ''));
+}
+
+function deployment_targets(): array
+{
+    $websiteRoot = deployment_repo_root();
+    $targets = [['id' => 'website', 'label' => 'Website', 'repoPath' => $websiteRoot]];
+    $mcpRoot = deployment_mcp_repo_root();
+    if ($mcpRoot !== '') {
+        $websiteComparable = realpath($websiteRoot) ?: rtrim($websiteRoot, '/\\');
+        $mcpComparable = realpath($mcpRoot) ?: rtrim($mcpRoot, '/\\');
+        if ($mcpComparable !== $websiteComparable) {
+            $targets[] = ['id' => 'mcp', 'label' => 'MCP', 'repoPath' => $mcpRoot];
+        }
+    }
+    return $targets;
+}
+
 function deployment_git_binary(): string
 {
     return provider_config_value('GIT_BINARY', 'deployment', 'git_binary', 'git') ?: 'git';
@@ -3771,7 +3791,7 @@ function deployment_php_binary(): string
     return provider_config_value('PHP_BINARY', 'deployment', 'php_binary', PHP_BINARY) ?: PHP_BINARY;
 }
 
-function deployment_command(array $command, int $timeoutSeconds = 120): array
+function deployment_command(array $command, int $timeoutSeconds = 120, ?string $workingDirectory = null): array
 {
     if (!deployment_shell_available()) {
         return ['ok' => false, 'code' => 127, 'stdout' => '', 'stderr' => 'proc_open is disabled on this server.'];
@@ -3782,7 +3802,7 @@ function deployment_command(array $command, int $timeoutSeconds = 120): array
         1 => ['pipe', 'w'],
         2 => ['pipe', 'w'],
     ];
-    $process = proc_open($cmd, $descriptor, $pipes, deployment_repo_root());
+    $process = proc_open($cmd, $descriptor, $pipes, $workingDirectory ?: deployment_repo_root());
     if (!is_resource($process)) return ['ok' => false, 'code' => 127, 'stdout' => '', 'stderr' => 'Unable to start process.'];
     fclose($pipes[0]);
     stream_set_blocking($pipes[1], false);
@@ -3820,9 +3840,9 @@ function deployment_command(array $command, int $timeoutSeconds = 120): array
     return ['ok' => $code === 0, 'code' => $code, 'stdout' => trim($stdout), 'stderr' => trim($stderr)];
 }
 
-function deployment_git(array $args, int $timeoutSeconds = 120): array
+function deployment_git(array $args, int $timeoutSeconds = 120, ?string $repoRoot = null): array
 {
-    return deployment_command(array_merge([deployment_git_binary()], $args), $timeoutSeconds);
+    return deployment_command(array_merge([deployment_git_binary()], $args), $timeoutSeconds, $repoRoot);
 }
 
 function deployment_parse_changed_files(string $raw): array
@@ -3860,13 +3880,15 @@ function deployment_recent_updates(int $limit = 10): array
     }
 }
 
-function deployment_current_status(bool $fetchRemote = false, string $branch = ''): array
+function deployment_target_status(array $target, bool $fetchRemote = false, string $branch = ''): array
 {
     $shellAvailable = deployment_shell_available();
     $status = [
-        'enabled' => $shellAvailable,
+        'id' => (string) ($target['id'] ?? 'website'),
+        'label' => (string) ($target['label'] ?? 'Website'),
+        'enabled' => $shellAvailable && is_dir((string) ($target['repoPath'] ?? '')),
         'shellAvailable' => $shellAvailable,
-        'repoPath' => deployment_repo_root(),
+        'repoPath' => (string) ($target['repoPath'] ?? ''),
         'branch' => '',
         'remote' => '',
         'currentCommit' => '',
@@ -3874,36 +3896,81 @@ function deployment_current_status(bool $fetchRemote = false, string $branch = '
         'dirty' => false,
         'dirtyFiles' => [],
         'changedFiles' => [],
-        'recent' => deployment_recent_updates(),
     ];
-    if (!$status['enabled']) return $status;
-    $inside = deployment_git(['rev-parse', '--is-inside-work-tree'], 15);
-    if (!$inside['ok'] || trim($inside['stdout']) !== 'true') {
-        $status['enabled'] = false;
-        $status['error'] = $inside['stderr'] ?: 'This folder is not a Git work tree.';
+    if (!$shellAvailable) {
+        $status['error'] = 'proc_open is disabled on this server.';
         return $status;
     }
-    $currentBranch = deployment_git(['rev-parse', '--abbrev-ref', 'HEAD'], 15);
+    if (!$status['enabled']) {
+        $status['error'] = $status['label'] . ' checkout directory is unavailable.';
+        return $status;
+    }
+    $repoRoot = $status['repoPath'];
+    $inside = deployment_git(['rev-parse', '--is-inside-work-tree'], 15, $repoRoot);
+    if (!$inside['ok'] || trim($inside['stdout']) !== 'true') {
+        $status['enabled'] = false;
+        $status['error'] = $inside['stderr'] ?: $status['label'] . ' folder is not a Git work tree.';
+        return $status;
+    }
+    $currentBranch = deployment_git(['rev-parse', '--abbrev-ref', 'HEAD'], 15, $repoRoot);
     $status['branch'] = $branch !== '' ? $branch : (($currentBranch['ok'] && $currentBranch['stdout'] !== 'HEAD') ? $currentBranch['stdout'] : 'main');
-    $remote = deployment_git(['config', '--get', 'remote.origin.url'], 15);
-    $commit = deployment_git(['rev-parse', 'HEAD'], 15);
-    $dirty = deployment_git(['status', '--porcelain'], 20);
+    $remote = deployment_git(['config', '--get', 'remote.origin.url'], 15, $repoRoot);
+    $commit = deployment_git(['rev-parse', 'HEAD'], 15, $repoRoot);
+    $dirty = deployment_git(['status', '--porcelain'], 20, $repoRoot);
     $status['remote'] = $remote['ok'] ? $remote['stdout'] : '';
     $status['currentCommit'] = $commit['ok'] ? $commit['stdout'] : '';
     $status['dirtyFiles'] = $dirty['ok'] && $dirty['stdout'] !== '' ? preg_split('/\r?\n/', trim($dirty['stdout'])) : [];
     $status['dirty'] = count($status['dirtyFiles']) > 0;
     if ($fetchRemote) {
-        $fetch = deployment_git(['fetch', 'origin', $status['branch']], 180);
+        $fetch = deployment_git(['fetch', 'origin', $status['branch']], 180, $repoRoot);
         $status['fetchLog'] = trim(($fetch['stdout'] ? $fetch['stdout'] . "\n" : '') . $fetch['stderr']);
         if (!$fetch['ok']) {
-            $status['error'] = $fetch['stderr'] ?: 'Git fetch failed.';
+            $status['error'] = $fetch['stderr'] ?: $status['label'] . ' Git fetch failed.';
             return $status;
         }
-        $remoteCommit = deployment_git(['rev-parse', 'origin/' . $status['branch']], 30);
-        $diff = deployment_git(['diff', '--name-status', 'HEAD', 'origin/' . $status['branch']], 60);
+        $remoteCommit = deployment_git(['rev-parse', 'origin/' . $status['branch']], 30, $repoRoot);
+        $diff = deployment_git(['diff', '--name-status', 'HEAD', 'origin/' . $status['branch']], 60, $repoRoot);
         $status['remoteCommit'] = $remoteCommit['ok'] ? $remoteCommit['stdout'] : '';
         $status['changedFiles'] = $diff['ok'] ? deployment_parse_changed_files($diff['stdout']) : [];
     }
+    return $status;
+}
+
+function deployment_current_status(bool $fetchRemote = false, string $branch = ''): array
+{
+    $targetStatuses = array_map(
+        fn(array $target): array => deployment_target_status($target, $fetchRemote, $branch),
+        deployment_targets()
+    );
+    $website = $targetStatuses[0] ?? [
+        'enabled' => false,
+        'shellAvailable' => deployment_shell_available(),
+        'repoPath' => deployment_repo_root(),
+        'branch' => $branch ?: 'main',
+        'remote' => '',
+        'currentCommit' => '',
+        'remoteCommit' => '',
+        'dirty' => false,
+        'dirtyFiles' => [],
+        'changedFiles' => [],
+    ];
+    $status = $website;
+    $status['targets'] = $targetStatuses;
+    $status['recent'] = deployment_recent_updates();
+    $status['enabled'] = count($targetStatuses) > 0;
+    $status['dirty'] = false;
+    $status['dirtyFiles'] = [];
+    $errors = [];
+    foreach ($targetStatuses as $target) {
+        if (empty($target['enabled'])) $status['enabled'] = false;
+        if (!empty($target['dirty'])) $status['dirty'] = true;
+        foreach ($target['dirtyFiles'] ?? [] as $file) {
+            $status['dirtyFiles'][] = ($target['label'] ?? 'Checkout') . ': ' . $file;
+        }
+        if (!empty($target['error'])) $errors[] = ($target['label'] ?? 'Checkout') . ': ' . $target['error'];
+    }
+    if ($errors) $status['error'] = implode("\n", $errors);
+    else unset($status['error']);
     return $status;
 }
 
@@ -3946,6 +4013,11 @@ function deployment_run_update(array $session, array $body): array
     }
     $branch = preg_replace('/[^A-Za-z0-9._\/-]/', '', (string) ($status['branch'] ?: 'main')) ?: 'main';
     $before = (string) ($status['currentCommit'] ?? '');
+    $targets = $status['targets'] ?? [];
+    $beforeByTarget = [];
+    foreach ($targets as $target) {
+        $beforeByTarget[(string) $target['id']] = (string) ($target['currentCommit'] ?? '');
+    }
     $id = uuid_value('DEP-');
     $now = now_iso();
     Database::pdo()->prepare("INSERT INTO deployment_updates (id, action, status, branch, before_commit, after_commit, changed_files_json, log, error, triggered_by, created_at, updated_at) VALUES (?, 'pull', 'running', ?, ?, '', '[]', '', '', ?, ?, ?)")
@@ -3955,16 +4027,27 @@ function deployment_run_update(array $session, array $body): array
     $changedFiles = [];
     $dbBackup = '';
     try {
-        $fetch = deployment_git(['fetch', 'origin', $branch], 180);
-        $log[] = '$ git fetch origin ' . $branch;
-        $log[] = trim(($fetch['stdout'] ? $fetch['stdout'] . "\n" : '') . $fetch['stderr']);
-        if (!$fetch['ok']) throw new RuntimeException($fetch['stderr'] ?: 'Git fetch failed.');
+        $targetsToUpdate = [];
+        foreach ($targets as $target) {
+            $label = (string) ($target['label'] ?? 'Checkout');
+            $repoRoot = (string) ($target['repoPath'] ?? '');
+            $fetch = deployment_git(['fetch', 'origin', $branch], 180, $repoRoot);
+            $log[] = '[' . $label . '] $ git fetch origin ' . $branch;
+            $log[] = trim(($fetch['stdout'] ? $fetch['stdout'] . "\n" : '') . $fetch['stderr']);
+            if (!$fetch['ok']) throw new RuntimeException($label . ' fetch failed: ' . ($fetch['stderr'] ?: 'Git fetch failed.'));
 
-        $diff = deployment_git(['diff', '--name-status', 'HEAD', 'origin/' . $branch], 60);
-        $changedFiles = $diff['ok'] ? deployment_parse_changed_files($diff['stdout']) : [];
+            $remote = deployment_git(['rev-parse', 'origin/' . $branch], 30, $repoRoot);
+            if (!$remote['ok']) throw new RuntimeException($label . ' remote commit could not be resolved.');
+            $diff = deployment_git(['diff', '--name-status', 'HEAD', 'origin/' . $branch], 60, $repoRoot);
+            $targetChangedFiles = $diff['ok'] ? deployment_parse_changed_files($diff['stdout']) : [];
+            if (($target['id'] ?? '') === 'website' || !$changedFiles) $changedFiles = $targetChangedFiles;
+            if ((string) ($target['currentCommit'] ?? '') !== (string) $remote['stdout']) {
+                $targetsToUpdate[] = $target;
+            }
+        }
         deployment_write_update($id, ['changedFiles' => $changedFiles, 'log' => trim(implode("\n", array_filter($log))), 'updatedAt' => now_iso()]);
-        if (!$changedFiles) {
-            $after = (deployment_git(['rev-parse', 'HEAD'], 15)['stdout'] ?? $before) ?: $before;
+        if (!$targetsToUpdate) {
+            $after = (deployment_git(['rev-parse', 'HEAD'], 15, deployment_repo_root())['stdout'] ?? $before) ?: $before;
             deployment_write_update($id, ['status' => 'success', 'afterCommit' => $after, 'changedFiles' => [], 'log' => trim(implode("\n", array_filter($log))) . "\nNo remote changes found.", 'updatedAt' => now_iso()]);
             return ['ok' => true, 'deployment' => deployment_current_status(false, $branch), 'update' => deployment_recent_updates(1)[0] ?? null];
         }
@@ -3976,30 +4059,42 @@ function deployment_run_update(array $session, array $body): array
             $log[] = 'Database backup created in private storage: ' . basename($dbBackup);
         }
 
-        $pull = deployment_git(['pull', '--ff-only', 'origin', $branch], 240);
-        $log[] = '$ git pull --ff-only origin ' . $branch;
-        $log[] = trim(($pull['stdout'] ? $pull['stdout'] . "\n" : '') . $pull['stderr']);
-        if (!$pull['ok']) throw new RuntimeException($pull['stderr'] ?: 'Git pull failed.');
+        foreach ($targetsToUpdate as $target) {
+            $label = (string) ($target['label'] ?? 'Checkout');
+            $repoRoot = (string) ($target['repoPath'] ?? '');
+            $pull = deployment_git(['pull', '--ff-only', 'origin', $branch], 240, $repoRoot);
+            $log[] = '[' . $label . '] $ git pull --ff-only origin ' . $branch;
+            $log[] = trim(($pull['stdout'] ? $pull['stdout'] . "\n" : '') . $pull['stderr']);
+            if (!$pull['ok']) throw new RuntimeException($label . ' pull failed: ' . ($pull['stderr'] ?: 'Git pull failed.'));
+        }
 
-        $migration = deployment_command([deployment_php_binary(), '-r', "require 'app/Database.php'; Database::pdo(); echo \"Migrations complete\\n\";"], 120);
-        $log[] = '$ php -r migrations';
-        $log[] = trim(($migration['stdout'] ? $migration['stdout'] . "\n" : '') . $migration['stderr']);
-        if (!$migration['ok']) throw new RuntimeException($migration['stderr'] ?: 'Database migrations failed.');
+        foreach ($targetsToUpdate as $target) {
+            $label = (string) ($target['label'] ?? 'Checkout');
+            $repoRoot = (string) ($target['repoPath'] ?? '');
+            $migration = deployment_command([deployment_php_binary(), '-r', "require 'app/Database.php'; Database::pdo(); echo \"Migrations complete\\n\";"], 120, $repoRoot);
+            $log[] = '[' . $label . '] $ php -r migrations';
+            $log[] = trim(($migration['stdout'] ? $migration['stdout'] . "\n" : '') . $migration['stderr']);
+            if (!$migration['ok']) throw new RuntimeException($label . ' database migrations failed: ' . ($migration['stderr'] ?: 'Database migrations failed.'));
+        }
 
-        $after = deployment_git(['rev-parse', 'HEAD'], 15);
+        $after = deployment_git(['rev-parse', 'HEAD'], 15, deployment_repo_root());
         $afterCommit = $after['ok'] ? $after['stdout'] : '';
         deployment_write_update($id, ['status' => 'success', 'afterCommit' => $afterCommit, 'changedFiles' => $changedFiles, 'log' => trim(implode("\n", array_filter($log))), 'updatedAt' => now_iso()]);
         audit_log($session['user']['id'], 'admin.deployment_update', 'deployment_update', $id, ['branch' => $branch, 'before' => $before, 'after' => $afterCommit]);
         return ['ok' => true, 'deployment' => deployment_current_status(false, $branch), 'update' => deployment_recent_updates(1)[0] ?? null];
     } catch (Throwable $error) {
-        $rollbackLog = '';
-        if ($before !== '') {
-            $rollback = deployment_git(['reset', '--hard', $before], 120);
-            $rollbackLog = trim(($rollback['stdout'] ? $rollback['stdout'] . "\n" : '') . $rollback['stderr']);
-            if ($rollback['ok'] && $dbBackup && is_file($dbBackup)) @copy($dbBackup, database_path());
+        $rollbackLogs = [];
+        foreach (array_reverse($targets) as $target) {
+            $targetId = (string) ($target['id'] ?? '');
+            $targetBefore = $beforeByTarget[$targetId] ?? '';
+            if ($targetBefore === '') continue;
+            $rollback = deployment_git(['reset', '--hard', $targetBefore], 120, (string) ($target['repoPath'] ?? ''));
+            $rollbackOutput = trim(($rollback['stdout'] ? $rollback['stdout'] . "\n" : '') . $rollback['stderr']);
+            $rollbackLogs[] = '[' . ($target['label'] ?? 'Checkout') . "] rollback:\n" . $rollbackOutput;
         }
+        if ($dbBackup && is_file($dbBackup)) @copy($dbBackup, database_path());
         $log[] = 'Update failed: ' . $error->getMessage();
-        if ($rollbackLog !== '') $log[] = "Rollback:\n" . $rollbackLog;
+        if ($rollbackLogs) $log[] = implode("\n", $rollbackLogs);
         deployment_write_update($id, ['status' => 'rolled_back', 'changedFiles' => $changedFiles, 'log' => trim(implode("\n", array_filter($log))), 'error' => $error->getMessage(), 'updatedAt' => now_iso()]);
         audit_log($session['user']['id'], 'admin.deployment_update_failed', 'deployment_update', $id, ['branch' => $branch, 'error' => $error->getMessage()]);
         throw new RuntimeException('Update failed and rollback was attempted: ' . $error->getMessage());

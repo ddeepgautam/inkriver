@@ -5933,6 +5933,7 @@ function productionSuiteTemplate() {
   const deploymentBranch = forms.deployment.branch || deployment.branch || "main";
   const deploymentFiles = deployment.changedFiles || [];
   const deploymentRecent = deployment.recent || [];
+  const deploymentTargets = deployment.targets || [];
   return adminShellTemplate("Production suite", "Operate newsletters, cron jobs, imports, invoices, feature flags, abandoned checkout recovery, deployment updates, and exports from one production control room.", `
     <section class="production-grid">
       <article class="work-panel production-panel wide-panel">
@@ -5959,6 +5960,9 @@ function productionSuiteTemplate() {
         </div>
         ${deployment.error ? `<div class="form-message error">${escapeHtml(deployment.error)}</div>` : ""}
         ${deployment.dirty ? `<div class="form-message error">Server has local changes. The updater will not pull until the working tree is clean.</div>` : ""}
+        <div class="compact-list">
+          ${deploymentTargets.map((target) => `<article><span><strong>${escapeHtml(target.label || target.id || "Checkout")}</strong><small>${escapeHtml((target.currentCommit || "").slice(0, 12) || "Unknown")} local · ${escapeHtml((target.remoteCommit || "").slice(0, 12) || "remote not checked")}</small><small>${target.dirty ? "Local changes detected" : target.enabled ? "Ready" : escapeHtml(target.error || "Unavailable")}</small></span><b class="status-pill">${target.enabled && !target.dirty ? "ready" : "blocked"}</b></article>`).join("")}
+        </div>
         <label><span>Deploy branch</span><input data-production-form="deployment.branch" value="${escapeHtml(deploymentBranch)}" placeholder="main" /></label>
         <div class="settings-actions"><button class="secondary-button" data-action="check-github-updates">Check remote changes</button><button class="primary-button" data-action="run-github-update" ${!deployment.enabled || deployment.dirty ? "disabled" : ""}>Update from GitHub</button></div>
         <div class="compact-list">
@@ -9111,7 +9115,7 @@ document.addEventListener("click", async (event) => {
   }
 
   if (action === "run-github-update") {
-    if (!window.confirm("Update this server from GitHub, run migrations, and roll back code if the update fails?")) return;
+    if (!window.confirm("Update the website and MCP checkouts from GitHub, run migrations, and roll back code if the update fails?")) return;
     try {
       const payload = await apiRequest("/api/admin/deployment/update", {
         method: "POST",
