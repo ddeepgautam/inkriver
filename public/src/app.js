@@ -2659,6 +2659,7 @@ function publicProfileLinkUrl(value, network = "") {
   const bases = {
     x: "https://x.com/",
     linkedin: "https://www.linkedin.com/in/",
+    facebook: "https://www.facebook.com/",
     instagram: "https://www.instagram.com/",
     youtube: "https://www.youtube.com/@",
     github: "https://github.com/",
@@ -3726,6 +3727,18 @@ function businessClaimActions(profile, type) {
   </div>`;
 }
 
+function businessProfileLinks(profile, company) {
+  const links = [
+    !company && { label: "Website", url: publicProfileLinkUrl(profile.website) },
+    { label: "LinkedIn", url: publicProfileLinkUrl(profile.linkedin_url, "linkedin") },
+    { label: "X", url: publicProfileLinkUrl(profile.x_url, "x") },
+    company && { label: "Facebook", url: publicProfileLinkUrl(profile.facebook_url, "facebook") },
+  ].filter((link) => link?.url);
+  if (!links.length) return "";
+  const name = company ? profile.name : profile.full_name;
+  return `<nav class="business-profile-links" aria-label="${escapeHtml(name)} links">${links.map((link) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">${icon("link", 14)}${escapeHtml(link.label)}</a>`).join("")}</nav>`;
+}
+
 function businessProfilePageTemplate() {
   if (state.businessProfileLoading) return `<main class="business-profile-page"><div class="empty-state">Loading profile…</div></main>`;
   const profile = state.businessProfile;
@@ -3739,7 +3752,7 @@ function businessProfilePageTemplate() {
       <button class="back-link" data-route="/business-network">${icon("link", 14)}Back to Business Network</button>
       <section class="business-profile-hero">
         ${businessAvatar(profile, type, "large")}
-        <div class="business-profile-identity"><div class="business-badges">${company && profile.industry ? `<i>${escapeHtml(profile.industry)}</i>` : `<i>Founder profile</i>`}${profile.verified ? `<i class="verified-badge">${icon("check", 12)}Verified</i>` : ""}</div><h1>${escapeHtml(name)}</h1><p>${escapeHtml(company ? profile.tagline || profile.description : profile.headline || profile.biography)}</p>${businessClaimActions(profile, type)}</div>
+        <div class="business-profile-identity"><div class="business-badges">${company && profile.industry ? `<i>${escapeHtml(profile.industry)}</i>` : `<i>Founder profile</i>`}${profile.verified ? `<i class="verified-badge">${icon("check", 12)}Verified</i>` : ""}</div><h1>${escapeHtml(name)}</h1><p>${escapeHtml(company ? profile.tagline || profile.description : profile.headline || profile.biography)}</p>${businessProfileLinks(profile, company)}${businessClaimActions(profile, type)}</div>
         ${company && profile.website ? `<a class="primary-button" href="${escapeHtml(profile.website)}" target="_blank" rel="noopener noreferrer">Visit website ${icon("link", 14)}</a>` : ""}
       </section>
       <section class="business-profile-layout">
@@ -3849,7 +3862,7 @@ function businessEditorTemplate(type) {
       ${company ? businessFormField("vision", "Vision", "textarea") : ""}
     </div></section>
     ${company ? `<section class="business-form-section"><div class="business-form-section-head"><div><span>Business intelligence</span><h3>Scale, stage, and market</h3></div></div><div class="business-form-grid">${businessFormField("business_model", "Business model")}${businessFormField("operating_status", "Operating status")}${businessFormField("funding_stage", "Funding stage")}${businessFormField("funding_total", "Total funding")}${businessFormField("employee_range", "Team size")}${businessFormField("revenue_range", "Revenue range")}${businessFormField("products", "Products (comma separated)")}${businessFormField("technologies", "Technologies")}${businessFormField("markets", "Markets")}${businessFormField("keywords", "Keywords")}${businessFormField("milestones", "Milestones")}</div></section>` : `<section class="business-form-section"><div class="business-form-section-head"><div><span>Background</span><h3>Expertise and achievements</h3></div></div><div class="business-form-grid">${businessFormField("expertise", "Expertise (comma separated)")}${businessFormField("education", "Education")}${businessFormField("achievements", "Achievements")}${businessFormField("languages", "Languages")}</div></section>`}
-    <section class="business-form-section"><div class="business-form-section-head"><div><span>Location & links</span><h3>Where to find ${company ? "the business" : "this founder"}</h3></div></div><div class="business-form-grid">${company ? businessFormField("headquarters", "Headquarters") : ""}${businessFormField("city", "City")}${businessFormField("state_region", "State / region")}${businessFormField("country", "Country")}${businessFormField("website", "Website", "url")}${businessFormField("linkedin_url", "LinkedIn URL", "url")}${businessFormField("x_url", "X / Twitter URL", "url")}</div></section>
+    <section class="business-form-section"><div class="business-form-section-head"><div><span>Location & links</span><h3>Where to find ${company ? "the business" : "this founder"}</h3></div></div><div class="business-form-grid">${company ? businessFormField("headquarters", "Headquarters") : ""}${businessFormField("city", "City")}${businessFormField("state_region", "State / region")}${businessFormField("country", "Country")}${businessFormField("website", "Website", "url")}${businessFormField("linkedin_url", "LinkedIn URL", "url")}${businessFormField("x_url", "X / Twitter URL", "url")}${company ? businessFormField("facebook_url", "Facebook URL", "url") : ""}</div></section>
     ${businessLinkedProfilesEditor(type)}
     <section class="business-form-section private-section"><div class="business-form-section-head"><div><span>${icon("lock", 14)}Private contact data</span><h3>Subscriber-only contact details</h3></div><p>These fields are never shown to public visitors.</p></div><div class="business-form-grid">${company ? businessFormField("contact_name", "Contact person") + businessFormField("contact_role", "Contact role") : ""}${businessFormField("contact_email", "Contact email", "email")}${businessFormField("contact_phone", "Contact number", "tel")}${company ? businessFormField("contact_address", "Contact address", "textarea") : ""}</div></section>
     <div class="business-form-actions"><span>${escapeHtml(state.businessMessage || (staffEditor ? "You can update this profile later." : "Your profile will stay private until an admin or moderator approves it."))}</span><button type="button" class="secondary-button" data-action="close-business-editor">Cancel</button><button class="primary-button" type="submit" ${state.businessSaving ? "disabled" : ""}>${icon("check", 15)}${state.businessSaving ? (staffEditor ? "Saving…" : "Submitting…") : staffEditor ? `Save ${company ? "company" : "founder"} profile` : "Submit for approval"}</button></div>

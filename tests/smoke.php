@@ -328,22 +328,30 @@ $founder = business_save_profile('person', [
     'full_name' => 'Smoke Founder',
     'headline' => 'Founder and builder',
     'image_url' => '/uploads/avatars/test-founder.png',
+    'website' => 'https://founder.smoke.example',
+    'linkedin_url' => 'https://www.linkedin.com/in/smoke-founder',
+    'x_url' => 'https://x.com/smoke_founder',
     'expertise' => ['Product', 'Operations'],
     'contact_email' => 'founder@example.com',
 ], $adminSession);
 assert_true(($founder['slug'] ?? '') === 'smoke-founder', 'founder profile slug is generated');
 assert_true(($founder['image_url'] ?? '') === '/uploads/avatars/test-founder.png', 'founder profile image is stored');
+assert_true(($founder['linkedin_url'] ?? '') === 'https://www.linkedin.com/in/smoke-founder' && ($founder['x_url'] ?? '') === 'https://x.com/smoke_founder', 'founder social profile links are stored and returned');
 
 $company = business_save_profile('company', [
     'name' => 'Smoke Ventures',
     'logo_url' => '/uploads/avatars/test-company.png',
     'industry' => 'Technology',
     'tagline' => 'A test business profile',
+    'linkedin_url' => 'https://www.linkedin.com/company/smoke-ventures',
+    'x_url' => 'https://x.com/smoke_ventures',
+    'facebook_url' => 'https://www.facebook.com/smoke.ventures',
     'contact_email' => 'hello@smoke.example',
     'people' => [['personId' => $founder['id'], 'roleTitle' => 'Founder & CEO', 'isFounder' => true]],
 ], $adminSession);
 assert_true(count($company['people'] ?? []) === 1, 'company links to an existing founder profile');
 assert_true(($company['logo_url'] ?? '') === '/uploads/avatars/test-company.png', 'company profile logo is stored');
+assert_true(($company['linkedin_url'] ?? '') === 'https://www.linkedin.com/company/smoke-ventures' && ($company['x_url'] ?? '') === 'https://x.com/smoke_ventures' && ($company['facebook_url'] ?? '') === 'https://www.facebook.com/smoke.ventures', 'company social profile links are stored and returned');
 $subscriberCompany = business_get_profile('company', (string) $company['id'], $fakePaidSession);
 assert_true(!empty($subscriberCompany['contactLocked']) && ($subscriberCompany['contact_email'] ?? '') === '', 'ordinary profile reads never leak contact fields even to a contact-enabled subscriber');
 for ($index = 1; $index <= 24; $index++) {
