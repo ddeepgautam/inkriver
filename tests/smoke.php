@@ -7,6 +7,7 @@ if (is_file($db)) unlink($db);
 putenv('DATABASE_PATH=' . $db);
 putenv('APP_ENV=production');
 putenv('APP_ORIGIN=https://inkriver.test');
+putenv('MCP_ORIGIN=https://inkriver.test');
 putenv('APP_SECRET=smoke-test-secret-that-is-at-least-32-characters');
 
 require_once $root . '/app/Api.php';
@@ -416,7 +417,7 @@ putenv('MCP_ORIGIN=https://mcp.inkriver.test');
 $dedicatedResourceList = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 81, 'method' => 'resources/list', 'params' => new stdClass()]);
 $dedicatedResourceUris = array_column($dedicatedResourceList['result']['resources'] ?? [], 'uri');
 assert_true(count($dedicatedResourceUris) === 2 && !array_filter($dedicatedResourceUris, fn($uri) => !str_starts_with($uri, 'https://mcp.inkriver.test/mcp/resources/')), 'MCP resources use the dedicated MCP origin when configured');
-putenv('MCP_ORIGIN');
+putenv('MCP_ORIGIN=https://inkriver.test');
 $legacyBusinessResource = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 9, 'method' => 'resources/read', 'params' => ['uri' => 'inkriver://business-network/schema']]);
 assert_true(str_contains((string) ($legacyBusinessResource['result']['contents'][0]['text'] ?? ''), 'company'), 'legacy InkRiver MCP resource identifiers remain readable after the domain rename');
 $companySchema = business_mcp_call_tool('get_company_profile_schema', [], $adminSession);
