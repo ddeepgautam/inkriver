@@ -14,7 +14,7 @@
         Require all granted
     </Directory>
 
-    LimitRequestBody 2097152
+    LimitRequestBody 12582912
     Header always unset X-Powered-By
     Header always set X-Robots-Tag "noindex, nofollow"
 

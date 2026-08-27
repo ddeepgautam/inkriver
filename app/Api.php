@@ -1753,7 +1753,7 @@ function handle_mcp(string $method): void
     $limit = max(10, min(1000, (int) (env_value('MCP_RATE_LIMIT_PER_MINUTE', '120') ?? '120')));
     enforce_auth_rate_limit('mcp-request', $identity, $limit, 60);
     record_auth_rate_limit_failure('mcp-request', $identity, $limit, 60, 60);
-    $maxBytes = max(65536, min(16777216, (int) (env_value('MCP_REQUEST_MAX_BYTES', '2097152') ?? '2097152')));
+    $maxBytes = max(65536, min(16777216, (int) (env_value('MCP_REQUEST_MAX_BYTES', '12582912') ?? '12582912')));
     $declaredBytes = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
     if ($declaredBytes > $maxBytes) mcp_json_response(['error' => 'REQUEST_TOO_LARGE', 'message' => 'MCP request body is too large.'], 413);
     $raw = file_get_contents('php://input', false, null, 0, $maxBytes + 1) ?: '';
