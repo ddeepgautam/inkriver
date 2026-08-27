@@ -3739,6 +3739,15 @@ function businessProfileLinks(profile, company) {
   return `<nav class="business-profile-links" aria-label="${escapeHtml(name)} links">${links.map((link) => `<a href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">${icon("link", 14)}${escapeHtml(link.label)}</a>`).join("")}</nav>`;
 }
 
+function businessFounderNarrative(profile) {
+  const sections = [
+    profile.biography && { label: "About", title: "Biography", body: profile.biography },
+    profile.founder_story && { label: "Founder story", title: "The journey so far", body: profile.founder_story },
+  ].filter(Boolean);
+  if (!sections.length) return `<section class="business-story-block"><span>Biography</span><h2>About the founder</h2><p>This founder has not shared their biography yet.</p></section>`;
+  return sections.map((section) => `<section class="business-story-block"><span>${section.label}</span><h2>${section.title}</h2><p>${escapeHtml(section.body)}</p></section>`).join("");
+}
+
 function businessProfilePageTemplate() {
   if (state.businessProfileLoading) return `<main class="business-profile-page"><div class="empty-state">Loading profile…</div></main>`;
   const profile = state.businessProfile;
@@ -3760,7 +3769,7 @@ function businessProfilePageTemplate() {
           ${company ? `
             ${profile.description ? `<section class="business-story-block"><span>About</span><h2>Company overview</h2><p>${escapeHtml(profile.description)}</p></section>` : ""}
             ${(profile.mission || profile.vision) ? `<section class="business-split-story"><article><span>Mission</span><p>${escapeHtml(profile.mission || "Not provided")}</p></article><article><span>Vision</span><p>${escapeHtml(profile.vision || "Not provided")}</p></article></section>` : ""}
-          ` : `<section class="business-story-block"><span>Founder story</span><h2>The journey so far</h2><p>${escapeHtml(profile.founder_story || profile.biography || "This founder has not shared their story yet.")}</p></section>`}
+          ` : businessFounderNarrative(profile)}
           <section class="business-linked-section"><div class="section-heading"><div><span>${company ? "Leadership" : "Portfolio"}</span><h2>${company ? "Founders & key people" : "Companies built and led"}</h2></div></div><div class="business-linked-grid">${links.length ? links.map((link) => {
             const linked = company ? { ...link, full_name: link.full_name, image_url: link.image_url } : { ...link, name: link.name, logo_url: link.logo_url };
             const linkedType = company ? "person" : "company";

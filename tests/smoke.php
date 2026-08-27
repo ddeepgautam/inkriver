@@ -327,6 +327,8 @@ assert_true(count(array_filter(document_value('stories', []), fn($story) => ($st
 $founder = business_save_profile('person', [
     'full_name' => 'Smoke Founder',
     'headline' => 'Founder and builder',
+    'biography' => 'A concise founder biography for the public profile.',
+    'founder_story' => 'The longer story behind the founder journey.',
     'image_url' => '/uploads/avatars/test-founder.png',
     'website' => 'https://founder.smoke.example',
     'linkedin_url' => 'https://www.linkedin.com/in/smoke-founder',
@@ -336,6 +338,7 @@ $founder = business_save_profile('person', [
 ], $adminSession);
 assert_true(($founder['slug'] ?? '') === 'smoke-founder', 'founder profile slug is generated');
 assert_true(($founder['image_url'] ?? '') === '/uploads/avatars/test-founder.png', 'founder profile image is stored');
+assert_true(($founder['biography'] ?? '') === 'A concise founder biography for the public profile.' && ($founder['founder_story'] ?? '') === 'The longer story behind the founder journey.', 'founder biography and founder story are stored and returned separately');
 assert_true(($founder['linkedin_url'] ?? '') === 'https://www.linkedin.com/in/smoke-founder' && ($founder['x_url'] ?? '') === 'https://x.com/smoke_founder', 'founder social profile links are stored and returned');
 
 $company = business_save_profile('company', [
