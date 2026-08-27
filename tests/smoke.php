@@ -61,6 +61,10 @@ $safePreferences = public_provider_preferences();
 assert_true(isset($safePreferences['navigationMenus']) && !isset($safePreferences['internalSecret']), 'public navigation preferences are exposed through an explicit allowlist');
 
 assert_true(public_root() === $root . DIRECTORY_SEPARATOR . 'public', 'public document root is isolated from application source');
+$sharedUploads = $root . DIRECTORY_SEPARATOR . 'tests' . DIRECTORY_SEPARATOR . 'shared-uploads';
+putenv('PUBLIC_UPLOADS_PATH=' . $sharedUploads);
+assert_true(public_path('uploads/example.png') === $sharedUploads . DIRECTORY_SEPARATOR . 'example.png', 'dedicated deployments can share only the public upload store');
+putenv('PUBLIC_UPLOADS_PATH');
 $publicTraversalRejected = false;
 try {
     public_path('../app/config.php');

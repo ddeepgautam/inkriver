@@ -22,7 +22,15 @@ function public_path(string $relative = ''): string
         if ($segment === '..') throw new InvalidArgumentException('Public paths cannot traverse outside the document root.');
         $safeSegments[] = $segment;
     }
-    return $safeSegments ? public_root() . DIRECTORY_SEPARATOR . implode(DIRECTORY_SEPARATOR, $safeSegments) : public_root();
+    $base = public_root();
+    if (($safeSegments[0] ?? '') === 'uploads') {
+        $configuredUploads = trim((string) env_value('PUBLIC_UPLOADS_PATH', ''));
+        if ($configuredUploads !== '') {
+            $base = rtrim($configuredUploads, "\\/ ");
+            array_shift($safeSegments);
+        }
+    }
+    return $safeSegments ? $base . DIRECTORY_SEPARATOR . implode(DIRECTORY_SEPARATOR, $safeSegments) : $base;
 }
 
 function configured_document_root(): string
