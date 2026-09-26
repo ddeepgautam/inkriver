@@ -1945,6 +1945,7 @@ const state = {
   blogForm: emptyBlogForm(),
   blogMessage: "",
   adminBlogQuery: "",
+  adminBlogStatus: "all",
   adminBlogPage: 1,
   draftNotes: [],
   draftNoteBody: "",
@@ -4113,8 +4114,16 @@ function notFoundTemplate() {
   </main>`;
 }
 
+function selectedStoryForCurrentRoute() {
+  const publicStory = state.stories.find((story) => story.status === "published" && state.path === `/stories/${story.slug}`);
+  if (publicStory) return publicStory;
+  if (state.user?.role !== "admin" || !state.path.startsWith("/admin/blogs/preview/")) return null;
+  const slug = decodeURIComponent(state.path.slice("/admin/blogs/preview/".length));
+  return state.stories.find((story) => story.slug === slug) || null;
+}
+
 function appTemplate() {
-  const selectedStory = state.stories.find((story) => story.status === "published" && state.path.includes(`/stories/${story.slug}`));
+  const selectedStory = selectedStoryForCurrentRoute();
   const selectedCategory = state.categories.find((category) => state.path === `/category/${category.slug}`);
   const selectedProfile = cleanProfileRouteSlug(state.path) ? profileForSlug(cleanProfileRouteSlug(state.path)) : null;
   const selectedList = state.path.startsWith("/lists/") ? publicCuratedLists().find((list) => list.id === state.path.split("/").pop()) : null;
@@ -4766,6 +4775,7 @@ function earnPanelTemplate() {
 
 function storyPageTemplate(story) {
   const displayStory = translatedStory(story);
+  const isAdminPreview = state.path.startsWith("/admin/blogs/preview/");
   const locked = Boolean(story.accessLocked ?? (story.premium && !state.isMember));
   const saved = state.saved.has(story.slug);
   const shares = shareUrls(displayStory);
@@ -4775,6 +4785,7 @@ function storyPageTemplate(story) {
   const liked = state.likedStories.has(story.slug);
   return `
     <main class="article-shell">
+      ${isAdminPreview ? `<aside class="article-preview-banner" role="status"><span>${icon("eye", 17)}Previewing ${escapeHtml(story.status)} article</span><button class="secondary-button" data-route="/admin/blogs">Back to blog management</button></aside>` : ""}
       ${state.preferences.focusMode ? `<button class="focus-exit-floating" data-reader-mode="focus" aria-label="Exit focus mode">${icon("close", 16)}<span>Exit focus</span></button>` : ""}
       <article class="article-page">
         <div class="article-progress-track"><span id="articleProgressBar" style="width:${history?.progress || 0}%"></span></div>
@@ -6604,7 +6615,7 @@ function blogListTemplate() {
   const scheduledCount = state.stories.filter((story) => story.status === "scheduled").length;
   const draftCount = state.stories.filter((story) => !["published", "review", "approved", "scheduled"].includes(story.status)).length;
   const query = state.adminBlogQuery.trim().toLowerCase();
-  const matchingStories = state.stories.filter((story) => !query || `${story.title} ${story.slug} ${story.author} ${story.topic} ${story.status}`.toLowerCase().includes(query));
+  const matchingStories = filteredAdminStories(query);
   const perPage = 20;
   const totalPages = Math.max(1, Math.ceil(matchingStories.length / perPage));
   state.adminBlogPage = Math.max(1, Math.min(totalPages, state.adminBlogPage));
@@ -6621,6 +6632,7 @@ function blogListTemplate() {
       ${state.blogMessage ? `<div class="payment-message">${escapeHtml(state.blogMessage)}</div>` : ""}
       <form class="admin-blog-search" id="adminBlogSearchForm">
         <label><span>Search blogs</span><div>${icon("search", 16)}<input id="adminBlogSearch" value="${escapeHtml(state.adminBlogQuery)}" placeholder="Search title, slug, author, topic, or status" /></div></label>
+        <label><span>Publication status</span><select id="adminBlogStatus"><option value="all" ${state.adminBlogStatus === "all" ? "selected" : ""}>All articles</option><option value="published" ${state.adminBlogStatus === "published" ? "selected" : ""}>Published</option><option value="unpublished" ${state.adminBlogStatus === "unpublished" ? "selected" : ""}>Unpublished</option></select></label>
         <button class="primary-button" type="submit">${icon("search", 15)}Search</button>
         <button class="secondary-button" type="button" data-action="clear-admin-blog-search">Reset</button>
       </form>
@@ -6633,8 +6645,20 @@ function blogListTemplate() {
   `;
 }
 
+function filteredAdminStories(query = state.adminBlogQuery.trim().toLowerCase()) {
+  return state.stories.filter((story) => {
+    const matchesStatus = state.adminBlogStatus === "all"
+      || (state.adminBlogStatus === "published" ? story.status === "published" : story.status !== "published");
+    const matchesQuery = !query || `${story.title} ${story.slug} ${story.author} ${story.topic} ${story.status}`.toLowerCase().includes(query);
+    return matchesStatus && matchesQuery;
+  });
+}
+
 function blogAdminRowTemplate(story) {
   const imageUrl = safeImageUrl(story.imageUrl);
+  const viewUrl = story.status === "published"
+    ? `/stories/${encodeURIComponent(story.slug)}`
+    : `/admin/blogs/preview/${encodeURIComponent(story.slug)}`;
   const workflow = {
     draft: [["review", "Submit review"], ["published", "Publish"]],
     review: [["approved", "Approve"], ["draft", "Return draft"]],
@@ -6655,6 +6679,7 @@ function blogAdminRowTemplate(story) {
       <span class="status-pill ${story.status === "draft" ? "draft" : ""}">${escapeHtml(story.status)}${story.scheduledAt ? `<small>${escapeHtml(story.scheduledAt)}</small>` : ""}</span>
       <div class="blog-admin-actions">
         <button class="secondary-button" data-edit-blog="${story.id}">Edit</button>
+        <a class="secondary-button" href="${escapeHtml(viewUrl)}" target="_blank" rel="noopener noreferrer" aria-label="View ${escapeHtml(story.title)} in a new tab">View</a>
         <button class="secondary-button" data-action="view-story-revisions" data-story-slug="${escapeHtml(story.slug)}">Revisions</button>
         ${(workflow[story.status] || workflow.draft).map(([status, label]) => `<button class="secondary-button" data-blog-status="${story.id}" data-next-status="${status}">${label}</button>`).join("")}
         <button class="secondary-button danger-button" data-delete-blog="${story.id}">Delete</button>
@@ -7494,19 +7519,20 @@ function setMetaTag(selector, attributes) {
 }
 
 function applyDocumentSeo() {
-  const story = state.stories.find((item) => item.status === "published" && state.path.includes(`/stories/${item.slug}`));
+  const story = selectedStoryForCurrentRoute();
+  const storyPreview = state.path.startsWith("/admin/blogs/preview/");
   const category = state.categories.find((item) => state.path === `/category/${item.slug}`);
   const resource = state.path.startsWith("/resources/") ? state.resources.find((item) => state.path === `/resources/${item.slug}`) : null;
   const marketplace = state.path === "/resources";
   const notFound = Boolean(document.querySelector(".not-found-page")) || (state.path.startsWith("/resources/") && !resource);
   const seo = story?.seo || {};
-  const title = notFound ? `Page not found · ${siteName()}` : story ? (seo.seoTitle || story.title) : resource ? `${resource.name} · ${siteName()} Resources` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
+  const title = notFound ? `Page not found · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? `${resource.name} · ${siteName()} Resources` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
   const description = notFound ? `The requested page could not be found on ${siteName()}.` : story ? (seo.metaDescription || story.dek) : resource ? resource.shortDescription : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
   document.title = title;
   setMetaTag('meta[name="description"]', { name: "description", content: description });
   setMetaTag('meta[name="robots"]', {
     name: "robots",
-    content: notFound ? "noindex,follow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : "index,follow",
+    content: notFound ? "noindex,follow" : storyPreview ? "noindex,nofollow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : "index,follow",
   });
   setMetaTag('meta[property="og:title"]', { property: "og:title", content: story ? (seo.socialTitle || title) : title });
   setMetaTag('meta[property="og:description"]', { property: "og:description", content: story ? (seo.socialDescription || description) : description });
@@ -7521,7 +7547,7 @@ function applyDocumentSeo() {
   }
   canonical.href = story && seo.canonicalUrl ? seo.canonicalUrl : window.location.href.split("?")[0];
   document.getElementById("inkriver-schema")?.remove();
-  if (state.siteSeo.enableSchema) {
+  if (state.siteSeo.enableSchema && !storyPreview) {
     const schema = document.createElement("script");
     schema.id = "inkriver-schema";
     schema.type = "application/ld+json";
@@ -7639,6 +7665,11 @@ function bindInputs() {
   [["resourceCategoryFilter", "category"], ["resourceTypeFilter", "type"], ["resourcePriceFilter", "price"], ["resourceSort", "sort"]].forEach(([id, key]) => document.getElementById(id)?.addEventListener("change", (event) => { state.resourceFilters[key] = event.target.value; render(); }));
   document.getElementById("adminBlogSearch")?.addEventListener("input", (event) => {
     state.adminBlogQuery = event.target.value;
+  });
+  document.getElementById("adminBlogStatus")?.addEventListener("change", (event) => {
+    state.adminBlogStatus = event.target.value;
+    state.adminBlogPage = 1;
+    render();
   });
   document.getElementById("adminBlogSearchForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -9633,8 +9664,7 @@ document.addEventListener("click", async (event) => {
   }
   if (adminBlogPage) {
     const page = Number(adminBlogPage);
-    const query = state.adminBlogQuery.trim().toLowerCase();
-    const total = state.stories.filter((story) => !query || `${story.title} ${story.slug} ${story.author} ${story.topic} ${story.status}`.toLowerCase().includes(query)).length;
+    const total = filteredAdminStories().length;
     const totalPages = Math.max(1, Math.ceil(total / 20));
     if (Number.isInteger(page) && page >= 1 && page <= totalPages && page !== state.adminBlogPage) {
       state.adminBlogPage = page;
@@ -10543,6 +10573,7 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "clear-admin-blog-search") {
     state.adminBlogQuery = "";
+    state.adminBlogStatus = "all";
     state.adminBlogPage = 1;
     render();
   }
