@@ -39,7 +39,9 @@ function business_profile_config(string $type): array
                 'funding_total', 'employee_range', 'revenue_range', 'headquarters', 'city',
                 'state_region', 'country', 'website', 'linkedin_url', 'x_url', 'facebook_url',
                 'logo_url', 'cover_url', 'contact_name', 'contact_role', 'contact_email',
-                'contact_phone', 'contact_address', 'status', 'verified',
+                'contact_phone', 'contact_address', 'seo_title', 'meta_description',
+                'canonical_url', 'robots_index', 'social_title', 'social_description',
+                'social_image_url', 'status', 'verified',
             ],
         ];
     }
@@ -53,7 +55,9 @@ function business_profile_config(string $type): array
             'fields' => [
                 'full_name', 'headline', 'biography', 'founder_story', 'location', 'city',
                 'state_region', 'country', 'website', 'linkedin_url', 'x_url', 'image_url',
-                'contact_email', 'contact_phone', 'status', 'verified',
+                'contact_email', 'contact_phone', 'seo_title', 'meta_description',
+                'canonical_url', 'robots_index', 'social_title', 'social_description',
+                'social_image_url', 'status', 'verified',
             ],
         ];
     }
@@ -87,6 +91,7 @@ function business_decode_row(array $row, string $type, ?array $session = null): 
         unset($row[$column]);
     }
     $row['verified'] = (bool) ($row['verified'] ?? false);
+    $row['robots_index'] = !array_key_exists('robots_index', $row) || (bool) $row['robots_index'];
     $row['claimed'] = !empty($row['claimed_owner_user_id']);
     $row['canManage'] = business_profile_can_manage($row, $session);
     // Contact fields are never disclosed by listing/detail reads. Paid access is
@@ -181,7 +186,7 @@ function business_save_profile(string $type, array $payload, array $session, ?st
     foreach ($config['fields'] as $field) {
         if (array_key_exists($field, $payload)) $values[$field] = is_bool($payload[$field]) ? (int) $payload[$field] : trim((string) $payload[$field]);
         elseif ($existing) $values[$field] = $existing[$field] ?? '';
-        else $values[$field] = in_array($field, ['verified'], true) ? 0 : '';
+        else $values[$field] = $field === 'robots_index' ? 1 : (in_array($field, ['verified'], true) ? 0 : '');
     }
     $values[$nameKey] = $name;
     if (!$isStaff) {
@@ -788,7 +793,7 @@ function business_mcp_field_map(): array
             'fields' => array_merge(
                 ['id', 'slug', 'name', 'legal_name', 'tagline', 'description', 'mission', 'vision', 'founded_on', 'industry'],
                 array_keys(BUSINESS_COMPANY_JSON_FIELDS),
-                ['company_type', 'business_model', 'operating_status', 'funding_stage', 'funding_total', 'employee_range', 'revenue_range', 'headquarters', 'city', 'state_region', 'country', 'website', 'linkedin_url', 'x_url', 'facebook_url', 'logo_url', 'cover_url', 'contact_name', 'contact_role', 'contact_email', 'contact_phone', 'contact_address', 'status', 'verified', 'people']
+                ['company_type', 'business_model', 'operating_status', 'funding_stage', 'funding_total', 'employee_range', 'revenue_range', 'headquarters', 'city', 'state_region', 'country', 'website', 'linkedin_url', 'x_url', 'facebook_url', 'logo_url', 'cover_url', 'contact_name', 'contact_role', 'contact_email', 'contact_phone', 'contact_address', 'seo_title', 'meta_description', 'canonical_url', 'robots_index', 'social_title', 'social_description', 'social_image_url', 'status', 'verified', 'people']
             ),
             'relationshipShape' => ['personId', 'roleTitle', 'isFounder', 'isCurrent', 'startedOn', 'endedOn'],
         ],
@@ -797,7 +802,7 @@ function business_mcp_field_map(): array
             'fields' => array_merge(
                 ['id', 'slug', 'full_name', 'headline', 'biography', 'founder_story', 'location', 'city', 'state_region', 'country', 'website', 'linkedin_url', 'x_url', 'image_url'],
                 array_keys(BUSINESS_PERSON_JSON_FIELDS),
-                ['contact_email', 'contact_phone', 'status', 'verified', 'companies']
+                ['contact_email', 'contact_phone', 'seo_title', 'meta_description', 'canonical_url', 'robots_index', 'social_title', 'social_description', 'social_image_url', 'status', 'verified', 'companies']
             ),
             'relationshipShape' => ['companyId', 'roleTitle', 'isFounder', 'isCurrent', 'startedOn', 'endedOn'],
         ],
@@ -850,13 +855,13 @@ function business_mcp_tool_definitions(): array
     foreach (business_mcp_field_map()['company']['fields'] as $field) {
         $companyProperties[$field] = in_array($field, array_merge(array_keys(BUSINESS_COMPANY_JSON_FIELDS), ['people']), true)
             ? ['type' => 'array', 'items' => in_array($field, ['people'], true) ? ['type' => 'object', 'additionalProperties' => true] : ['type' => 'string']]
-            : ['type' => in_array($field, ['verified'], true) ? 'boolean' : 'string'];
+            : ['type' => in_array($field, ['verified', 'robots_index'], true) ? 'boolean' : 'string'];
     }
     $personProperties = [];
     foreach (business_mcp_field_map()['person']['fields'] as $field) {
         $personProperties[$field] = in_array($field, array_merge(array_keys(BUSINESS_PERSON_JSON_FIELDS), ['companies']), true)
             ? ['type' => 'array', 'items' => in_array($field, ['companies'], true) ? ['type' => 'object', 'additionalProperties' => true] : ['type' => 'string']]
-            : ['type' => in_array($field, ['verified'], true) ? 'boolean' : 'string'];
+            : ['type' => in_array($field, ['verified', 'robots_index'], true) ? 'boolean' : 'string'];
     }
     $emptyInput = ['type' => 'object', 'properties' => new stdClass()];
     $listProperties = [

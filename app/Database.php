@@ -5,7 +5,7 @@ require_once __DIR__ . '/config.php';
 
 final class Database
 {
-    private const SCHEMA_VERSION = 20260825;
+    private const SCHEMA_VERSION = 20261004;
     private static ?PDO $pdo = null;
 
     public static function pdo(): PDO
@@ -63,10 +63,26 @@ final class Database
         self::ensureColumn('subscriptions', 'cancelled_at', 'TEXT');
         self::ensureColumn('subscriptions', 'grace_ends_at', 'TEXT');
         self::ensureColumn('resources', 'subscription_eligible', 'INTEGER NOT NULL DEFAULT 0');
+        self::ensureColumn('resources', 'seo_title', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('resources', 'meta_description', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('resources', 'canonical_url', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('resources', 'robots_index', 'INTEGER NOT NULL DEFAULT 1');
+        self::ensureColumn('resources', 'social_title', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('resources', 'social_description', "TEXT NOT NULL DEFAULT ''");
+        self::ensureColumn('resources', 'social_image_url', "TEXT NOT NULL DEFAULT ''");
         self::ensureColumn('business_profile_claims', 'proof_file_name', "TEXT NOT NULL DEFAULT ''");
         self::ensureColumn('business_profile_claims', 'proof_file_path', "TEXT NOT NULL DEFAULT ''");
         self::ensureColumn('business_profile_claims', 'proof_file_mime', "TEXT NOT NULL DEFAULT ''");
         self::ensureColumn('business_profile_claims', 'proof_file_size', 'INTEGER NOT NULL DEFAULT 0');
+        foreach (['business_companies', 'business_people'] as $profileTable) {
+            self::ensureColumn($profileTable, 'seo_title', "TEXT NOT NULL DEFAULT ''");
+            self::ensureColumn($profileTable, 'meta_description', "TEXT NOT NULL DEFAULT ''");
+            self::ensureColumn($profileTable, 'canonical_url', "TEXT NOT NULL DEFAULT ''");
+            self::ensureColumn($profileTable, 'robots_index', 'INTEGER NOT NULL DEFAULT 1');
+            self::ensureColumn($profileTable, 'social_title', "TEXT NOT NULL DEFAULT ''");
+            self::ensureColumn($profileTable, 'social_description', "TEXT NOT NULL DEFAULT ''");
+            self::ensureColumn($profileTable, 'social_image_url', "TEXT NOT NULL DEFAULT ''");
+        }
         self::$pdo->exec('PRAGMA user_version = ' . self::SCHEMA_VERSION);
     }
 

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/app/Api.php';
+require_once dirname(__DIR__) . '/app/Seo.php';
 
 if (is_production()) {
     ini_set('display_errors', '0');
@@ -10,6 +11,21 @@ if (is_production()) {
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+if ($redirect = seo_canonical_redirect($path)) {
+    header('Location: ' . $redirect, true, 308);
+    exit;
+}
+
+if ($method === 'GET' && $path === '/index.html') {
+    header('Location: ' . rtrim(app_origin(), '/') . '/', true, 301);
+    exit;
+}
+
+if ($method === 'GET' && preg_match('#^/publications/inkriver/?$#i', $path)) {
+    header('Location: ' . rtrim(app_origin(), '/') . '/', true, 301);
+    exit;
+}
 
 if ($method === 'GET' && rtrim($path, '/') === '/health') {
     json_response(['status' => 'ok', 'service' => 'nitross-mcp'], 200, ['X-Robots-Tag' => 'noindex, nofollow']);
@@ -38,17 +54,22 @@ if (is_mcp_host_request()) {
     exit;
 }
 
-if ($method === 'GET' && $path === '/sitemap.xml') {
-    $artifact = seo_artifact_content('sitemap.xml');
-    foreach (security_headers() + ['Content-Type' => $artifact['mimeType'] ?? 'application/xml; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
-    echo $artifact['content'] ?? sitemap_xml();
+if ($method === 'GET' && in_array($path, ['/sitemap.xml', '/sitemap_index.xml'], true)) {
+    foreach (security_headers() + ['Content-Type' => 'application/xml; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
+    echo seo_sitemap_index();
+    exit;
+}
+
+if ($method === 'GET' && preg_match('#^/sitemaps/(pages|articles|categories|founders|companies|resources)\.xml$#', $path, $match)) {
+    foreach (security_headers() + ['Content-Type' => 'application/xml; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
+    echo seo_sitemap_urlset($match[1]);
     exit;
 }
 
 if ($method === 'GET' && $path === '/robots.txt') {
     $artifact = seo_artifact_content('robots.txt');
     foreach (security_headers() + ['Content-Type' => $artifact['mimeType'] ?? 'text/plain; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
-    echo $artifact['content'] ?? "User-agent: *\nAllow: /\nSitemap: " . rtrim(app_origin(), '/') . "/sitemap.xml\n";
+    echo seo_robots_txt($artifact['content'] ?? null);
     exit;
 }
 
@@ -56,9 +77,9 @@ if ($method === 'GET' && $path === '/manifest.webmanifest') {
     $name = configured_site_name();
     foreach (security_headers() + ['Content-Type' => 'application/manifest+json; charset=utf-8', 'Cache-Control' => 'no-cache'] as $key => $value) header($key . ': ' . $value);
     echo json_encode([
-        'name' => $name . ' Publishing',
+        'name' => $name,
         'short_name' => $name,
-        'description' => 'Read, publish, subscribe, and manage an independent editorial platform.',
+        'description' => 'Learn entrepreneurship, explore startup insights, and use practical resources to build and grow a business.',
         'start_url' => '/',
         'display' => 'standalone',
         'background_color' => '#ffffff',
@@ -114,6 +135,8 @@ if ($sensitivePath) {
     exit;
 }
 
+$page = seo_resolve_page($path);
+http_response_code((int) $page['status']);
 foreach (security_headers() + ['Content-Type' => 'text/html; charset=utf-8', 'Cache-Control' => 'no-cache', 'Vary' => 'Cookie'] as $key => $value) {
     header($key . ': ' . $value);
 }
@@ -123,13 +146,4 @@ if ($html === false) {
     echo 'Application shell unavailable.';
     exit;
 }
-$siteSeo = document_value('site-seo-public', document_value('site-seo', []));
-$siteSeo = is_array($siteSeo) ? $siteSeo : [];
-$siteName = configured_site_name();
-$pageTitle = trim((string) ($siteSeo['homepageSeoTitle'] ?? '')) ?: $siteName . ' - Publishing, Memberships, and Business Network';
-$pageDescription = trim((string) ($siteSeo['homepageMetaDescription'] ?? '')) ?: $siteName . ' combines independent publishing, memberships, and a trusted business network.';
-$escapedTitle = htmlspecialchars($pageTitle, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-$escapedDescription = htmlspecialchars($pageDescription, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-$html = preg_replace_callback('/<title>.*?<\/title>/s', fn() => '<title>' . $escapedTitle . '</title>', $html, 1) ?: $html;
-$html = preg_replace_callback('/(<meta\s+name="description"\s+content=")[^"]*("\s*\/?>)/s', fn($match) => $match[1] . $escapedDescription . $match[2], $html, 1) ?: $html;
-echo $html;
+echo seo_render_document($html, $page);

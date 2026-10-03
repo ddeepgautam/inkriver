@@ -1,6 +1,11 @@
 <VirtualHost *:443>
     ServerName your-domain.example
+    ServerAlias www.your-domain.example
     DocumentRoot "/var/www/inkriver/public"
+
+    RewriteEngine On
+    RewriteCond %{HTTP_HOST} ^www\.your-domain\.example$ [NC]
+    RewriteRule ^ https://your-domain.example%{REQUEST_URI} [R=308,L,NE]
 
     <Directory "/var/www/inkriver">
         Options -Indexes
@@ -16,4 +21,11 @@
 
     # Configure your TLS certificate, logs, PHP handler, and trusted proxy
     # settings here. Redirect the port 80 virtual host to HTTPS.
+</VirtualHost>
+
+<VirtualHost *:80>
+    ServerName your-domain.example
+    ServerAlias www.your-domain.example
+    RewriteEngine On
+    RewriteRule ^ https://your-domain.example%{REQUEST_URI} [R=308,L,NE]
 </VirtualHost>

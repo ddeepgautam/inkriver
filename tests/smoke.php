@@ -11,6 +11,7 @@ putenv('MCP_ORIGIN=https://inkriver.test');
 putenv('APP_SECRET=smoke-test-secret-that-is-at-least-32-characters');
 
 require_once $root . '/app/Api.php';
+require_once $root . '/app/Seo.php';
 
 function assert_true(bool $condition, string $message): void
 {
@@ -475,5 +476,19 @@ $mcpImage = business_mcp_call_tool('upload_profile_image', [
 assert_true(($mcpImage['assignToField'] ?? '') === 'image_url' && !empty($mcpImage['asset']['url']), 'MCP uploads founder image and maps it to image_url');
 $mcpImagePath = $root . DIRECTORY_SEPARATOR . 'public' . str_replace('/', DIRECTORY_SEPARATOR, (string) $mcpImage['asset']['url']);
 if (is_file($mcpImagePath)) unlink($mcpImagePath);
+
+$companyColumns = array_column($pdo->query('PRAGMA table_info(business_companies)')->fetchAll(), 'name');
+$founderColumns = array_column($pdo->query('PRAGMA table_info(business_people)')->fetchAll(), 'name');
+$resourceColumns = array_column($pdo->query('PRAGMA table_info(resources)')->fetchAll(), 'name');
+$seoColumns = ['seo_title', 'meta_description', 'canonical_url', 'robots_index', 'social_title', 'social_description', 'social_image_url'];
+assert_true(!array_diff($seoColumns, $companyColumns) && !array_diff($seoColumns, $founderColumns) && !array_diff($seoColumns, $resourceColumns), 'company, founder, and resource records expose dedicated SEO fields');
+
+$seoArticle = seo_resolve_page('/stories/a-story-worth-liking');
+$seoMissing = seo_resolve_page('/this-page-definitely-does-not-exist-xyz-123');
+$seoHtml = seo_render_document((string) file_get_contents($root . '/public/index.html'), $seoArticle);
+assert_true(($seoArticle['status'] ?? 0) === 200 && str_contains($seoHtml, '<h1>A Story Worth Liking</h1>') && str_contains($seoHtml, 'rel="canonical"'), 'published articles render crawlable first-response HTML with a canonical URL');
+assert_true(($seoMissing['status'] ?? 0) === 404 && str_contains((string) $seoMissing['robots'], 'noindex'), 'unknown application routes return a real noindex 404');
+assert_true(str_contains(seo_sitemap_index(), '/sitemaps/articles.xml') && str_contains(seo_sitemap_urlset('articles'), '/stories/a-story-worth-liking'), 'sitemap index exposes a filtered article sitemap');
+assert_true(str_contains(seo_robots_txt("User-agent: *\nAllow: /\nSitemap: https://old.example/sitemap.xml"), 'Sitemap: https://inkriver.test/sitemap.xml') && !str_contains(seo_robots_txt(''), 'old.example'), 'robots output is stable and always points to the canonical sitemap');
 
 echo "Smoke tests passed\n";

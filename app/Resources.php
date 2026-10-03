@@ -59,6 +59,10 @@ function public_resource(array $row, ?array $session = null, bool $admin = false
         'owned' => (bool) $owned, 'entitlementStatus' => $entitlement['status'] ?? null,
         'acquiredAt' => $entitlement['acquired_at'] ?? null, 'acquisitionType' => $entitlement['acquisition_type'] ?? ($subscriptionAccess ? 'subscription' : null),
         'subscriptionEligible' => (bool) ($row['subscription_eligible'] ?? false),
+        'seoTitle' => $row['seo_title'] ?? '', 'metaDescription' => $row['meta_description'] ?? '',
+        'canonicalUrl' => $row['canonical_url'] ?? '', 'robotsIndex' => !array_key_exists('robots_index', $row) || (bool) $row['robots_index'],
+        'socialTitle' => $row['social_title'] ?? '', 'socialDescription' => $row['social_description'] ?? '',
+        'socialImageUrl' => resource_public_url((string) ($row['social_image_url'] ?? '')),
         'createdAt' => $row['created_at'], 'updatedAt' => $row['updated_at'], 'publishedAt' => $row['published_at'],
     ];
     if ($admin) {
@@ -145,6 +149,10 @@ function resource_clean_fields(array $body, ?array $existing = null): array
         'accessDisabled' => $existing['access_disabled'], 'singleUseLinks' => $existing['single_use_links'],
         'downloadLimitPerHour' => $existing['download_limit_per_hour'],
         'subscriptionEligible' => $existing['subscription_eligible'] ?? 0,
+        'seoTitle' => $existing['seo_title'] ?? '', 'metaDescription' => $existing['meta_description'] ?? '',
+        'canonicalUrl' => $existing['canonical_url'] ?? '', 'robotsIndex' => $existing['robots_index'] ?? 1,
+        'socialTitle' => $existing['social_title'] ?? '', 'socialDescription' => $existing['social_description'] ?? '',
+        'socialImageUrl' => $existing['social_image_url'] ?? '',
     ];
     $get = fn(string $key, mixed $fallback = '') => array_key_exists($key, $body) ? $body[$key] : ($existing[$key] ?? $fallback);
     $name = trim((string) $get('name'));
@@ -184,6 +192,13 @@ function resource_clean_fields(array $body, ?array $existing = null): array
         'single_use_links' => filter_var($get('singleUseLinks', false), FILTER_VALIDATE_BOOL) ? 1 : 0,
         'download_limit_per_hour' => max(1, min(500, (int) $get('downloadLimitPerHour', 20))),
         'subscription_eligible' => filter_var($get('subscriptionEligible', false), FILTER_VALIDATE_BOOL) ? 1 : 0,
+        'seo_title' => substr(trim((string) $get('seoTitle')), 0, 180),
+        'meta_description' => substr(trim((string) $get('metaDescription')), 0, 320),
+        'canonical_url' => (($canonical = substr(trim((string) $get('canonicalUrl')), 0, 2000)) && preg_match('#^https?://#i', $canonical)) ? $canonical : '',
+        'robots_index' => filter_var($get('robotsIndex', true), FILTER_VALIDATE_BOOL) ? 1 : 0,
+        'social_title' => substr(trim((string) $get('socialTitle')), 0, 180),
+        'social_description' => substr(trim((string) $get('socialDescription')), 0, 320),
+        'social_image_url' => resource_public_url((string) $get('socialImageUrl')),
     ];
 }
 

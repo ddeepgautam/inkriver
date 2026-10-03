@@ -1,12 +1,23 @@
-let configuredPlatformName = "InkRiver";
+let configuredPlatformName = "Nitross";
 
 const defaultCategories = [
-  { id: "category-ai", name: "AI", slug: "ai", description: "Artificial intelligence, tools, workflows, and practical adoption.", color: "blue", seoTitle: "AI Articles and Insights", metaDescription: "Explore practical AI workflows, tools, research, and publishing insights." },
-  { id: "category-startups", name: "Startups", slug: "startups", description: "Company building, independent publishing, and sustainable growth.", color: "rose", seoTitle: "Startup Ideas and Growth", metaDescription: "Read startup strategy, growth, company-building, and founder insights." },
-  { id: "category-marketing", name: "Marketing", slug: "marketing", description: "Editorial strategy, audience growth, positioning, and distribution.", color: "mint", seoTitle: "Marketing Strategy and Editorial Growth", metaDescription: "Discover marketing strategy, audience growth, positioning, and editorial distribution." },
+  { id: "category-entrepreneurship", name: "Entrepreneurship", slug: "entrepreneurship", description: "Practical guidance for starting, building, and growing a business.", color: "mint", seoTitle: "Entrepreneurship Guides and Business Insights", metaDescription: "Learn how to validate ideas, build durable companies, and grow as an entrepreneur." },
+  { id: "category-ai", name: "AI & Automation", slug: "ai", description: "Artificial intelligence, automation, tools, workflows, and practical business adoption.", color: "blue", seoTitle: "AI and Automation for Business", metaDescription: "Explore practical AI tools, automation workflows, governance, and startup applications." },
+  { id: "category-startups", name: "Startups", slug: "startups", description: "Startup strategy, company building, product decisions, and sustainable growth.", color: "rose", seoTitle: "Startup Strategy, Ideas and Growth", metaDescription: "Read startup strategy, growth, company-building, and founder insights." },
+  { id: "category-marketing", name: "Marketing", slug: "marketing", description: "Positioning, customer acquisition, brand strategy, and business growth.", color: "mint", seoTitle: "Marketing Strategy and Business Growth", metaDescription: "Discover practical marketing, positioning, customer acquisition, and distribution strategies." },
+  { id: "category-sales", name: "Sales", slug: "sales", description: "Sales systems, compensation, pipeline management, and revenue operations.", color: "blue", seoTitle: "Sales Strategy and Revenue Operations", metaDescription: "Build better sales systems, compensation plans, pipelines, and revenue operations." },
+  { id: "category-finance", name: "Finance", slug: "finance", description: "Cash flow, profitability, financial planning, and business economics.", color: "blue", seoTitle: "Startup and Business Finance", metaDescription: "Understand startup finance, cash flow, profitability, planning, and financial operations." },
+  { id: "category-funding", name: "Funding", slug: "funding", description: "Equity, debt, fundraising strategy, investor readiness, and capital structure.", color: "rose", seoTitle: "Startup Funding and Capital", metaDescription: "Explore equity, debt, fundraising strategy, investor readiness, and startup capital." },
+  { id: "category-operations", name: "Operations", slug: "operations", description: "Processes, teams, metrics, and operating systems for growing companies.", color: "amber", seoTitle: "Business Operations and Systems", metaDescription: "Improve business processes, team operations, metrics, and systems for sustainable growth." },
+  { id: "category-compliance", name: "Compliance", slug: "compliance", description: "Regulation, tax, governance, contracts, and compliance for Indian businesses.", color: "amber", seoTitle: "Business Compliance in India", metaDescription: "Navigate regulation, tax, governance, contracts, and compliance for Indian businesses." },
+  { id: "category-ecommerce", name: "Ecommerce", slug: "ecommerce", description: "Online retail, marketplaces, conversion, fulfilment, and ecommerce operations.", color: "mint", seoTitle: "Ecommerce Strategy and Operations", metaDescription: "Grow an ecommerce business through better marketplaces, conversion, fulfilment, and operations." },
+  { id: "category-exports", name: "Exports", slug: "exports", description: "Export markets, trade finance, logistics, insurance, and cross-border compliance.", color: "blue", seoTitle: "Export Business Guides for India", metaDescription: "Learn export markets, trade finance, logistics, insurance, and cross-border compliance." },
+  { id: "category-business-ideas", name: "Business Ideas", slug: "business-ideas", description: "Opportunity research, validation, business models, and execution playbooks.", color: "rose", seoTitle: "Business Ideas and Validation Guides", metaDescription: "Find and validate practical business ideas with market research and execution playbooks." },
+  { id: "category-technology", name: "Technology", slug: "technology", description: "Software, infrastructure, product technology, and digital transformation.", color: "amber", seoTitle: "Business Technology and Software", metaDescription: "Explore software, infrastructure, product technology, and digital transformation." },
+  { id: "category-case-studies", name: "Case Studies", slug: "case-studies", description: "Detailed lessons from founders, companies, markets, and business decisions.", color: "mint", seoTitle: "Business and Startup Case Studies", metaDescription: "Learn from detailed founder, company, market, and business decision case studies." },
   { id: "category-design", name: "Design", slug: "design", description: "Product design, user experience, systems, and creative operations.", color: "amber", seoTitle: "Design and User Experience", metaDescription: "Explore product design, user experience, systems thinking, and creative operations." },
-  { id: "category-india", name: "India", slug: "india", description: "Ideas, businesses, culture, and digital publishing across India.", color: "mint", seoTitle: "India Stories and Ideas", metaDescription: "Read stories about Indian business, culture, technology, and publishing." },
-  { id: "category-money", name: "Money", slug: "money", description: "Personal finance, creator economics, business models, and revenue.", color: "blue", seoTitle: "Money and Creator Economics", metaDescription: "Learn about personal finance, creator economics, business models, and revenue." },
+  { id: "category-india", name: "India", slug: "india", description: "Indian entrepreneurship, businesses, markets, policy, and technology.", color: "mint", seoTitle: "Indian Business and Entrepreneurship", metaDescription: "Read insights about Indian entrepreneurship, business, markets, policy, and technology." },
+  { id: "category-money", name: "Money", slug: "money", description: "Personal finance, business models, investing, and sustainable revenue.", color: "blue", seoTitle: "Money, Business Models and Revenue", metaDescription: "Learn about personal finance, business models, investing, and sustainable revenue." },
   { id: "category-culture", name: "Culture", slug: "culture", description: "Media, communities, habits, and the ideas shaping modern life.", color: "rose", seoTitle: "Culture, Media, and Communities", metaDescription: "Explore media, communities, habits, and ideas shaping modern culture." },
 ];
 
@@ -659,13 +670,13 @@ function defaultPostSeo(story = {}) {
 }
 
 const defaultSiteSeo = {
-  siteTitle: "InkRiver",
-  tagline: "Ideas worth returning to.",
+  siteTitle: "Nitross",
+  tagline: "Learn. Build. Grow.",
   titleSeparator: "-",
-  homepageSeoTitle: "InkRiver - Publishing, Memberships, and Writer Earnings",
-  homepageMetaDescription: "Read thoughtful stories, support writers, and join a modern publishing community.",
+  homepageSeoTitle: "Nitross | Entrepreneurship, Startups, AI and Business Growth",
+  homepageMetaDescription: "Learn entrepreneurship, discover startup insights, explore founder and company profiles, and use practical resources to build and grow your business.",
   representationType: "organization",
-  organizationName: "InkRiver",
+  organizationName: "Nitross",
   alternateName: "",
   organizationLogo: "",
   personName: "",
@@ -694,7 +705,7 @@ const defaultSiteSeo = {
   bingVerification: "",
   pinterestVerification: "",
   yandexVerification: "",
-  robotsTxt: "User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml",
+  robotsTxt: "User-agent: *\nAllow: /\nDisallow: /admin/\nDisallow: /dashboard/\nDisallow: /api/\n\nSitemap: https://nitross.com/sitemap.xml",
   rssBefore: "",
   rssAfter: "This article first appeared on %%BLOGLINK%%. Read the original: %%POSTLINK%%.",
   defaultPageSchema: "WebPage",
@@ -804,7 +815,7 @@ function publishedStories() {
 }
 
 function siteName() {
-  configuredPlatformName = String(state.siteSeo?.siteTitle || configuredPlatformName || "InkRiver").trim() || "InkRiver";
+  configuredPlatformName = String(state.siteSeo?.siteTitle || configuredPlatformName || "Nitross").trim() || "Nitross";
   return configuredPlatformName;
 }
 
@@ -1333,7 +1344,7 @@ async function hydratePlatformState() {
   if (Array.isArray(payload.translationLanguages)) state.translationLanguages = payload.translationLanguages;
   if (documents["site-seo-public"]) state.siteSeo = { ...state.siteSeo, ...documents["site-seo-public"] };
   if (documents["site-seo"]) state.siteSeo = { ...state.siteSeo, ...documents["site-seo"] };
-  configuredPlatformName = String(state.siteSeo.siteTitle || configuredPlatformName).trim() || "InkRiver";
+  configuredPlatformName = String(state.siteSeo.siteTitle || configuredPlatformName).trim() || "Nitross";
   if (documents["creator-tools"]) {
     state.creatorTools = { ...state.creatorTools, ...documents["creator-tools"] };
     state.creatorTools.segments = (state.creatorTools.segments || []).map((segment) => ({ ...segment, size: 0 }));
@@ -3497,11 +3508,13 @@ function emptyBusinessForm(type = "company") {
       website: "", linkedin_url: "", x_url: "", facebook_url: "", logo_url: "", cover_url: "",
       products: "", technologies: "", markets: "", keywords: "", milestones: "",
       contact_name: "", contact_role: "", contact_email: "", contact_phone: "", contact_address: "",
+      seo_title: "", meta_description: "", canonical_url: "", robots_index: true, social_title: "", social_description: "", social_image_url: "",
       status: "published", verified: false, links: [],
     };
   }
   return {
     full_name: "", slug: "", headline: "", biography: "", founder_story: "", location: "",
+    seo_title: "", meta_description: "", canonical_url: "", robots_index: true, social_title: "", social_description: "", social_image_url: "",
     city: "", state_region: "", country: "India", website: "", linkedin_url: "", x_url: "",
     image_url: "", expertise: "", education: "", achievements: "", languages: "",
     contact_email: "", contact_phone: "", status: "published", verified: false, links: [],
@@ -3873,6 +3886,7 @@ function businessEditorTemplate(type) {
     </div></section>
     ${company ? `<section class="business-form-section"><div class="business-form-section-head"><div><span>Business intelligence</span><h3>Scale, stage, and market</h3></div></div><div class="business-form-grid">${businessFormField("business_model", "Business model")}${businessFormField("operating_status", "Operating status")}${businessFormField("funding_stage", "Funding stage")}${businessFormField("funding_total", "Total funding")}${businessFormField("employee_range", "Team size")}${businessFormField("revenue_range", "Revenue range")}${businessFormField("products", "Products (comma separated)")}${businessFormField("technologies", "Technologies")}${businessFormField("markets", "Markets")}${businessFormField("keywords", "Keywords")}${businessFormField("milestones", "Milestones")}</div></section>` : `<section class="business-form-section"><div class="business-form-section-head"><div><span>Background</span><h3>Expertise and achievements</h3></div></div><div class="business-form-grid">${businessFormField("expertise", "Expertise (comma separated)")}${businessFormField("education", "Education")}${businessFormField("achievements", "Achievements")}${businessFormField("languages", "Languages")}</div></section>`}
     <section class="business-form-section"><div class="business-form-section-head"><div><span>Location & links</span><h3>Where to find ${company ? "the business" : "this founder"}</h3></div></div><div class="business-form-grid">${company ? businessFormField("headquarters", "Headquarters") : ""}${businessFormField("city", "City")}${businessFormField("state_region", "State / region")}${businessFormField("country", "Country")}${businessFormField("website", "Website", "url")}${businessFormField("linkedin_url", "LinkedIn URL", "url")}${businessFormField("x_url", "X / Twitter URL", "url")}${company ? businessFormField("facebook_url", "Facebook URL", "url") : ""}</div></section>
+    <section class="business-form-section"><div class="business-form-section-head"><div><span>Search & social</span><h3>Profile discovery</h3></div><p>Leave fields blank to use automatic profile metadata.</p></div><div class="business-form-grid">${businessFormField("seo_title", "SEO title")}${businessFormField("meta_description", "Meta description", "textarea")}${businessFormField("canonical_url", "Canonical URL", "url")}${businessFormField("social_title", "Social title")}${businessFormField("social_description", "Social description", "textarea")}${businessFormField("social_image_url", "Social image URL", "url")}</div><label class="toggle-row"><input type="checkbox" data-business-checkbox="robots_index" ${state.businessForm.robots_index !== false ? "checked" : ""} /><span>Allow search engines to index this profile</span></label></section>
     ${businessLinkedProfilesEditor(type)}
     <section class="business-form-section private-section"><div class="business-form-section-head"><div><span>${icon("lock", 14)}Private contact data</span><h3>Subscriber-only contact details</h3></div><p>These fields are never shown to public visitors.</p></div><div class="business-form-grid">${company ? businessFormField("contact_name", "Contact person") + businessFormField("contact_role", "Contact role") : ""}${businessFormField("contact_email", "Contact email", "email")}${businessFormField("contact_phone", "Contact number", "tel")}${company ? businessFormField("contact_address", "Contact address", "textarea") : ""}</div></section>
     <div class="business-form-actions"><span>${escapeHtml(state.businessMessage || (staffEditor ? "You can update this profile later." : "Your profile will stay private until an admin or moderator approves it."))}</span><button type="button" class="secondary-button" data-action="close-business-editor">Cancel</button><button class="primary-button" type="submit" ${state.businessSaving ? "disabled" : ""}>${icon("check", 15)}${state.businessSaving ? (staffEditor ? "Saving…" : "Submitting…") : staffEditor ? `Save ${company ? "company" : "founder"} profile` : "Submit for approval"}</button></div>
@@ -4255,7 +4269,7 @@ function notificationItemsTemplate(limit = 5) {
 }
 
 function emptyResourceEditor() {
-  return { id: "", slug: "", name: "", shortDescription: "", description: "", category: "General", type: "file", accessKind: "download", thumbnailUrl: "", previewImagesText: "", tagsText: "", includesText: "", instructions: "", audience: "", version: "1.0", priceType: "free", regularPrice: 0, discountedPrice: "", currency: "INR", externalUrl: "", sampleUrl: "", status: "draft", accessDisabled: false, singleUseLinks: false, downloadLimitPerHour: 20, releaseNotes: "" };
+  return { id: "", slug: "", name: "", shortDescription: "", description: "", category: "General", type: "file", accessKind: "download", thumbnailUrl: "", previewImagesText: "", tagsText: "", includesText: "", instructions: "", audience: "", version: "1.0", priceType: "free", regularPrice: 0, discountedPrice: "", currency: "INR", externalUrl: "", sampleUrl: "", status: "draft", accessDisabled: false, singleUseLinks: false, downloadLimitPerHour: 20, releaseNotes: "", seoTitle: "", metaDescription: "", canonicalUrl: "", robotsIndex: true, socialTitle: "", socialDescription: "", socialImageUrl: "" };
 }
 
 async function loadResources() {
@@ -7523,30 +7537,47 @@ function applyDocumentSeo() {
   const storyPreview = state.path.startsWith("/admin/blogs/preview/");
   const category = state.categories.find((item) => state.path === `/category/${item.slug}`);
   const resource = state.path.startsWith("/resources/") ? state.resources.find((item) => state.path === `/resources/${item.slug}`) : null;
+  const businessProfile = state.path.startsWith("/companies/") || state.path.startsWith("/founders/") ? state.businessProfile : null;
+  const companyProfile = Boolean(businessProfile && state.path.startsWith("/companies/"));
+  const businessName = businessProfile ? (companyProfile ? businessProfile.name : businessProfile.full_name) : "";
+  const publication = state.path.startsWith("/publications/") ? state.publications.find((item) => state.path === `/publications/${item.slug}`) : null;
+  const writerProfile = cleanProfileRouteSlug(state.path) ? profileForSlug(cleanProfileRouteSlug(state.path)) : null;
   const marketplace = state.path === "/resources";
-  const notFound = Boolean(document.querySelector(".not-found-page")) || (state.path.startsWith("/resources/") && !resource);
+  const notFound = Boolean(document.querySelector(".not-found-page")) || (state.path.startsWith("/resources/") && !resource) || ((state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) && !businessProfile && !state.businessProfileLoading);
   const seo = story?.seo || {};
-  const title = notFound ? `Page not found · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? `${resource.name} · ${siteName()} Resources` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
-  const description = notFound ? `The requested page could not be found on ${siteName()}.` : story ? (seo.metaDescription || story.dek) : resource ? resource.shortDescription : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
+  const businessDefaultTitle = businessProfile ? (companyProfile ? `${businessName}: Founders, Company Profile, Products & Business Overview | ${siteName()}` : `${businessName}: Founder Profile, Companies & Biography | ${siteName()}`) : "";
+  const businessDefaultDescription = businessProfile ? (companyProfile ? businessProfile.description || businessProfile.tagline : businessProfile.biography || businessProfile.headline) : "";
+  const title = notFound ? `Page not found · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? (resource.seoTitle || `${resource.name} · ${siteName()} Resources`) : businessProfile ? (businessProfile.seo_title || businessDefaultTitle) : publication ? `${publication.name} | ${siteName()}` : writerProfile ? `${writerProfile.name}: Writer Profile | ${siteName()}` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
+  const description = notFound ? `The requested page could not be found on ${siteName()}.` : story ? (seo.metaDescription || story.dek) : resource ? (resource.metaDescription || resource.shortDescription) : businessProfile ? (businessProfile.meta_description || businessDefaultDescription) : publication ? publication.description : writerProfile ? writerProfile.bio : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
   document.title = title;
   setMetaTag('meta[name="description"]', { name: "description", content: description });
+  [["google-site-verification", state.siteSeo.googleVerification], ["msvalidate.01", state.siteSeo.bingVerification], ["p:domain_verify", state.siteSeo.pinterestVerification], ["yandex-verification", state.siteSeo.yandexVerification]].forEach(([name, content]) => {
+    if (content) setMetaTag(`meta[name="${name}"]`, { name, content });
+  });
   setMetaTag('meta[name="robots"]', {
     name: "robots",
-    content: notFound ? "noindex,follow" : storyPreview ? "noindex,nofollow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : "index,follow",
+    content: notFound ? "noindex,follow" : storyPreview ? "noindex,nofollow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : businessProfile && businessProfile.robots_index === false ? "noindex,follow" : resource && resource.robotsIndex === false ? "noindex,follow" : "index,follow",
   });
-  setMetaTag('meta[property="og:title"]', { property: "og:title", content: story ? (seo.socialTitle || title) : title });
-  setMetaTag('meta[property="og:description"]', { property: "og:description", content: story ? (seo.socialDescription || description) : description });
-  setMetaTag('meta[property="og:type"]', { property: "og:type", content: story ? "article" : resource ? "product" : "website" });
-  const socialImage = story ? (seo.socialImage || story.imageUrl) : resource?.thumbnailUrl || state.siteSeo.defaultSocialImage;
-  if (socialImage) setMetaTag('meta[property="og:image"]', { property: "og:image", content: socialImage });
+  setMetaTag('meta[property="og:title"]', { property: "og:title", content: story ? (seo.socialTitle || title) : resource ? (resource.socialTitle || title) : businessProfile ? (businessProfile.social_title || title) : title });
+  setMetaTag('meta[property="og:description"]', { property: "og:description", content: story ? (seo.socialDescription || description) : resource ? (resource.socialDescription || description) : businessProfile ? (businessProfile.social_description || description) : description });
+  setMetaTag('meta[property="og:type"]', { property: "og:type", content: story ? "article" : resource ? "product" : companyProfile ? "business.business" : "website" });
+  setMetaTag('meta[name="twitter:title"]', { name: "twitter:title", content: story ? (seo.socialTitle || title) : resource ? (resource.socialTitle || title) : businessProfile ? (businessProfile.social_title || title) : title });
+  setMetaTag('meta[name="twitter:description"]', { name: "twitter:description", content: story ? (seo.socialDescription || description) : resource ? (resource.socialDescription || description) : businessProfile ? (businessProfile.social_description || description) : description });
+  const socialImage = story ? (seo.socialImage || story.imageUrl) : resource ? (resource.socialImageUrl || resource.thumbnailUrl) : businessProfile ? (businessProfile.social_image_url || (companyProfile ? businessProfile.logo_url : businessProfile.image_url)) : state.siteSeo.defaultSocialImage;
+  if (socialImage) {
+    setMetaTag('meta[property="og:image"]', { property: "og:image", content: socialImage });
+    setMetaTag('meta[name="twitter:image"]', { name: "twitter:image", content: socialImage });
+  }
   let canonical = document.head.querySelector('link[rel="canonical"]');
   if (!canonical) {
     canonical = document.createElement("link");
     canonical.rel = "canonical";
     document.head.appendChild(canonical);
   }
-  canonical.href = story && seo.canonicalUrl ? seo.canonicalUrl : window.location.href.split("?")[0];
+  canonical.href = story && seo.canonicalUrl ? seo.canonicalUrl : resource?.canonicalUrl || businessProfile?.canonical_url || window.location.href.split("?")[0];
+  setMetaTag('meta[property="og:url"]', { property: "og:url", content: canonical.href });
   document.getElementById("inkriver-schema")?.remove();
+  document.getElementById("nitross-server-schema")?.remove();
   if (state.siteSeo.enableSchema && !storyPreview) {
     const schema = document.createElement("script");
     schema.id = "inkriver-schema";
@@ -7563,6 +7594,11 @@ function applyDocumentSeo() {
       "@context": "https://schema.org", "@type": "Product", name: resource.name, description,
       image: resource.thumbnailUrl || undefined, category: resource.category, sku: resource.id,
       offers: { "@type": "Offer", priceCurrency: resource.currency, price: Number(resource.price || 0) / 100, availability: "https://schema.org/InStock", url: `${window.location.origin}/resources/${resource.slug}` },
+    } : businessProfile ? {
+      "@context": "https://schema.org", "@type": "ProfilePage", mainEntity: {
+        "@type": companyProfile ? "Organization" : "Person", name: businessName, description,
+        image: socialImage || undefined, url: canonical.href,
+      },
     } : category ? {
       "@context": "https://schema.org",
       "@type": "CollectionPage",
@@ -7720,6 +7756,11 @@ function bindInputs() {
     field.addEventListener("change", (event) => {
       update(event);
       if (["logo_url", "image_url"].includes(event.target.dataset.businessField)) render();
+    });
+  });
+  document.querySelectorAll("[data-business-checkbox]").forEach((field) => {
+    field.addEventListener("change", (event) => {
+      state.businessForm[event.target.dataset.businessCheckbox] = event.target.checked;
     });
   });
   document.getElementById("businessProfileImageFile")?.addEventListener("change", (event) => {

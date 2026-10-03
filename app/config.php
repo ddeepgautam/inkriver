@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const APP_NAME = 'InkRiver';
+const APP_NAME = 'Nitross';
 
 function project_root(): string
 {

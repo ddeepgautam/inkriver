@@ -140,11 +140,63 @@ function document_value(string $key, mixed $fallback): mixed
     return $row ? parse_json_field($row['value_json'], $fallback) : $fallback;
 }
 
+function public_categories(): array
+{
+    $stored = document_value('categories', []);
+    $stored = is_array($stored) ? array_values(array_filter($stored, 'is_array')) : [];
+    $modern = [
+        ['id' => 'category-entrepreneurship', 'name' => 'Entrepreneurship', 'slug' => 'entrepreneurship', 'description' => 'Practical guidance for starting, building, and growing a business.', 'color' => 'mint', 'seoTitle' => 'Entrepreneurship Guides and Business Insights', 'metaDescription' => 'Learn how to validate ideas, build durable companies, and grow as an entrepreneur.'],
+        ['id' => 'category-sales', 'name' => 'Sales', 'slug' => 'sales', 'description' => 'Sales systems, compensation, pipeline management, and revenue operations.', 'color' => 'blue', 'seoTitle' => 'Sales Strategy and Revenue Operations', 'metaDescription' => 'Build better sales systems, compensation plans, pipelines, and revenue operations.'],
+        ['id' => 'category-finance', 'name' => 'Finance', 'slug' => 'finance', 'description' => 'Cash flow, profitability, financial planning, and business economics.', 'color' => 'blue', 'seoTitle' => 'Startup and Business Finance', 'metaDescription' => 'Understand startup finance, cash flow, profitability, planning, and financial operations.'],
+        ['id' => 'category-funding', 'name' => 'Funding', 'slug' => 'funding', 'description' => 'Equity, debt, fundraising strategy, investor readiness, and capital structure.', 'color' => 'rose', 'seoTitle' => 'Startup Funding and Capital', 'metaDescription' => 'Explore equity, debt, fundraising strategy, investor readiness, and startup capital.'],
+        ['id' => 'category-operations', 'name' => 'Operations', 'slug' => 'operations', 'description' => 'Processes, teams, metrics, and operating systems for growing companies.', 'color' => 'amber', 'seoTitle' => 'Business Operations and Systems', 'metaDescription' => 'Improve business processes, team operations, metrics, and systems for sustainable growth.'],
+        ['id' => 'category-compliance', 'name' => 'Compliance', 'slug' => 'compliance', 'description' => 'Regulation, tax, governance, contracts, and compliance for Indian businesses.', 'color' => 'amber', 'seoTitle' => 'Business Compliance in India', 'metaDescription' => 'Navigate regulation, tax, governance, contracts, and compliance for Indian businesses.'],
+        ['id' => 'category-ecommerce', 'name' => 'Ecommerce', 'slug' => 'ecommerce', 'description' => 'Online retail, marketplaces, conversion, fulfilment, and ecommerce operations.', 'color' => 'mint', 'seoTitle' => 'Ecommerce Strategy and Operations', 'metaDescription' => 'Grow an ecommerce business through better marketplaces, conversion, fulfilment, and operations.'],
+        ['id' => 'category-exports', 'name' => 'Exports', 'slug' => 'exports', 'description' => 'Export markets, trade finance, logistics, insurance, and cross-border compliance.', 'color' => 'blue', 'seoTitle' => 'Export Business Guides for India', 'metaDescription' => 'Learn export markets, trade finance, logistics, insurance, and cross-border compliance.'],
+        ['id' => 'category-business-ideas', 'name' => 'Business Ideas', 'slug' => 'business-ideas', 'description' => 'Opportunity research, validation, business models, and execution playbooks.', 'color' => 'rose', 'seoTitle' => 'Business Ideas and Validation Guides', 'metaDescription' => 'Find and validate practical business ideas with market research and execution playbooks.'],
+        ['id' => 'category-technology', 'name' => 'Technology', 'slug' => 'technology', 'description' => 'Software, infrastructure, product technology, and digital transformation.', 'color' => 'amber', 'seoTitle' => 'Business Technology and Software', 'metaDescription' => 'Explore software, infrastructure, product technology, and digital transformation.'],
+        ['id' => 'category-case-studies', 'name' => 'Case Studies', 'slug' => 'case-studies', 'description' => 'Detailed lessons from founders, companies, markets, and business decisions.', 'color' => 'mint', 'seoTitle' => 'Business and Startup Case Studies', 'metaDescription' => 'Learn from detailed founder, company, market, and business decision case studies.'],
+    ];
+    $legacyCopy = [
+        'ai' => ['description' => 'Artificial intelligence, automation, tools, workflows, and practical business adoption.', 'seoTitle' => 'AI and Automation for Business', 'metaDescription' => 'Explore practical AI tools, automation workflows, governance, and startup applications.'],
+        'startups' => ['description' => 'Startup strategy, company building, product decisions, and sustainable growth.', 'seoTitle' => 'Startup Strategy, Ideas and Growth', 'metaDescription' => 'Read startup strategy, growth, company-building, and founder insights.'],
+        'marketing' => ['description' => 'Positioning, customer acquisition, brand strategy, and business growth.', 'seoTitle' => 'Marketing Strategy and Business Growth', 'metaDescription' => 'Discover practical marketing, positioning, customer acquisition, and distribution strategies.'],
+        'india' => ['description' => 'Indian entrepreneurship, businesses, markets, policy, and technology.', 'seoTitle' => 'Indian Business and Entrepreneurship', 'metaDescription' => 'Read insights about Indian entrepreneurship, business, markets, policy, and technology.'],
+        'money' => ['description' => 'Personal finance, business models, investing, and sustainable revenue.', 'seoTitle' => 'Money, Business Models and Revenue', 'metaDescription' => 'Learn about personal finance, business models, investing, and sustainable revenue.'],
+    ];
+    $bySlug = [];
+    foreach ($stored as $category) {
+        $slug = (string) ($category['slug'] ?? '');
+        if ($slug === '') continue;
+        if (isset($legacyCopy[$slug])) $category = array_merge($category, $legacyCopy[$slug]);
+        $bySlug[$slug] = $category;
+    }
+    foreach ($modern as $category) $bySlug[$category['slug']] ??= $category;
+    return array_values($bySlug);
+}
+
+function public_site_seo(): array
+{
+    $settings = document_value('site-seo-public', document_value('site-seo', []));
+    $settings = is_array($settings) ? $settings : [];
+    $siteName = trim((string) ($settings['siteTitle'] ?? ''));
+    if ($siteName === '' || strcasecmp($siteName, 'InkRiver') === 0) $siteName = 'Nitross';
+    $title = trim((string) ($settings['homepageSeoTitle'] ?? ''));
+    if ($title === '' || strcasecmp($title, $siteName) === 0 || preg_match('/publishing|writer earnings/i', $title)) {
+        $title = $siteName . ' | Entrepreneurship, Startups, AI and Business Growth';
+    }
+    $description = trim((string) ($settings['homepageMetaDescription'] ?? ''));
+    if ($description === '' || preg_match('/publishing community|support writers|independent publishing/i', $description)) {
+        $description = 'Learn entrepreneurship, discover startup insights, explore founder and company profiles, and use practical resources to build and grow your business.';
+    }
+    return array_merge($settings, ['siteTitle' => $siteName, 'homepageSeoTitle' => $title, 'homepageMetaDescription' => $description]);
+}
+
 function configured_site_name(): string
 {
-    $seo = document_value('site-seo-public', document_value('site-seo', []));
+    $seo = public_site_seo();
     $name = is_array($seo) ? trim((string) ($seo['siteTitle'] ?? '')) : '';
-    return $name !== '' ? substr($name, 0, 120) : 'InkRiver';
+    return $name !== '' ? substr($name, 0, 120) : 'Nitross';
 }
 
 function story_base_like_count(string $slug): int
@@ -1669,7 +1721,7 @@ function mcp_call_tool(string $name, array $arguments): array
     $businessResult = business_mcp_call_tool($name, $arguments, $session);
     if ($businessResult !== null) return mcp_tool_result($businessResult);
     if ($name === 'get_blog_editor_schema') return mcp_tool_result(mcp_blog_editor_schema());
-    if ($name === 'list_categories') return mcp_tool_result(['categories' => document_value('categories', [])]);
+    if ($name === 'list_categories') return mcp_tool_result(['categories' => public_categories()]);
     if ($name === 'list_publications') return mcp_tool_result(['publications' => current_publication_rows()]);
     if ($name === 'list_blogs') {
         $status = trim((string) ($arguments['status'] ?? ''));
@@ -1801,7 +1853,7 @@ function sitemap_xml(): string
         if (($story['status'] ?? '') !== 'published') continue;
         $urls[] = ['loc' => $origin . '/stories/' . rawurlencode((string) $story['slug']), 'lastmod' => (string) ($story['updatedAt'] ?? $story['publishedAt'] ?? now_iso())];
     }
-    foreach (document_value('categories', []) as $category) {
+    foreach (public_categories() as $category) {
         $urls[] = ['loc' => $origin . '/category/' . rawurlencode((string) $category['slug']), 'lastmod' => (string) ($category['updatedAt'] ?? now_iso())];
     }
     foreach (current_publication_rows() as $publication) {
@@ -4817,6 +4869,8 @@ function handle_api(string $path, string $method): void
             $row = $stmt->fetch();
             if ($row) $documents[$key] = parse_json_field($row['value_json'], null);
         }
+        $documents['categories'] = public_categories();
+        $documents['site-seo-public'] = public_site_seo();
         $plansForEntitlements = is_array($documents['plans'] ?? null) ? $documents['plans'] : array_values(trusted_payment_plans());
         entitlement_sync_plans($plansForEntitlements);
         $lockedStorySlugs = [];
