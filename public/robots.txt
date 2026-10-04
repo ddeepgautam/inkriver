@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+
+Disallow: /admin/
+Disallow: /dashboard/
+Disallow: /me
+Disallow: /notifications
+Disallow: /api/
+Disallow: /oauth/
+Disallow: /write
+Disallow: /publication-invites/
+
+Sitemap: https://nitross.com/sitemap.xml

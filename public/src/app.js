@@ -1,4 +1,5 @@
 let configuredPlatformName = "Nitross";
+const initialServerPath = window.location.pathname;
 
 const defaultCategories = [
   { id: "category-entrepreneurship", name: "Entrepreneurship", slug: "entrepreneurship", description: "Practical guidance for starting, building, and growing a business.", color: "mint", seoTitle: "Entrepreneurship Guides and Business Insights", metaDescription: "Learn how to validate ideas, build durable companies, and grow as an entrepreneur." },
@@ -358,7 +359,7 @@ const defaultNavigationMenus = {
 function availableNavigationDestinations() {
   return [
     ...navigationDestinations,
-    ...state.categories.map((category) => [`Category: ${category.name}`, `/category/${category.slug}`]),
+    ...state.categories.map((category) => [`Topic: ${category.name}`, `/topics/${category.slug}`]),
     ...state.publications.filter((publication) => publication.status === "active").map((publication) => [`Publication: ${publication.name}`, `/publications/${publication.slug}`]),
   ];
 }
@@ -556,6 +557,12 @@ function persistCategories() {
 
 function categoryNames() {
   return state.categories.map((category) => category.name);
+}
+
+function topicRoute(topic) {
+  const normalized = slugifyCategory(topic);
+  const category = state.categories.find((item) => item.name.toLowerCase() === String(topic || "").toLowerCase() || item.slug === normalized || (normalized === "ai-automation" && item.slug === "ai"));
+  return `/topics/${category?.slug || normalized}`;
 }
 
 function emptyCategoryForm() {
@@ -3426,8 +3433,8 @@ function setRoute(to) {
     state.activeTopic = "For you";
     state.homePage = 1;
   }
-  if (to.startsWith("/category/")) {
-    const category = state.categories.find((item) => `/category/${item.slug}` === to);
+  if (to.startsWith("/topics/")) {
+    const category = state.categories.find((item) => `/topics/${item.slug}` === to);
     if (category) state.activeTopic = category.name;
     state.homePage = 1;
   }
@@ -4138,7 +4145,7 @@ function selectedStoryForCurrentRoute() {
 
 function appTemplate() {
   const selectedStory = selectedStoryForCurrentRoute();
-  const selectedCategory = state.categories.find((category) => state.path === `/category/${category.slug}`);
+  const selectedCategory = state.categories.find((category) => state.path === `/topics/${category.slug}`);
   const selectedProfile = cleanProfileRouteSlug(state.path) ? profileForSlug(cleanProfileRouteSlug(state.path)) : null;
   const selectedList = state.path.startsWith("/lists/") ? publicCuratedLists().find((list) => list.id === state.path.split("/").pop()) : null;
   const selectedPublication = state.path.startsWith("/publications/") ? state.publications.find((publication) => publication.slug === decodeURIComponent(state.path.split("/").pop() || "")) : null;
@@ -4632,13 +4639,13 @@ function homeTemplate(selectedCategory = null) {
           <div class="feed-topline">
             <div>
               <h1>${selectedCategory ? escapeHtml(selectedCategory.name) : "Ideas worth returning to."}</h1>
-              ${selectedCategory?.description ? `<p class="category-intro">${escapeHtml(selectedCategory.description)}</p>` : ""}
+              ${selectedCategory?.longDescription ? `<p class="category-intro">${escapeHtml(selectedCategory.longDescription)}</p>` : selectedCategory?.description ? `<p class="category-intro">${escapeHtml(selectedCategory.description)}</p>` : ""}
             </div>
             <button class="primary-button" data-route="/become-author">${icon("pen")}Start writing</button>
           </div>
           <div class="topic-strip" aria-label="Topic filters">
             <button class="topic-chip ${activeTopic === "For you" ? "active" : ""}" data-route="/">For you</button>
-            ${state.categories.map((category) => `<button class="topic-chip ${activeTopic === category.name ? "active" : ""}" data-route="/category/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</button>`).join("")}
+            ${state.categories.map((category) => `<button class="topic-chip ${activeTopic === category.name ? "active" : ""}" data-route="/topics/${escapeHtml(category.slug)}">${escapeHtml(category.name)}</button>`).join("")}
           </div>
           ${selectedCategory ? `<div class="category-follow-row"><span>${escapeHtml(selectedCategory.description)}</span><button class="secondary-button ${isFollowing("topics", selectedCategory.name) ? "active" : ""}" data-follow-type="topics" data-follow-value="${escapeHtml(selectedCategory.name)}">${followLabel("topics", selectedCategory.name)} topic</button></div>` : ""}
           ${!selectedCategory ? personalizedFeedStatusTemplate() : ""}
@@ -4807,7 +4814,7 @@ function storyPageTemplate(story) {
         ${translationStatusTemplate(story)}
         <details class="reader-toc"><summary>${icon("filter", 14)}Table of contents</summary><nav><a href="#article-start">Introduction</a><a href="#article-body">Article</a>${story.interactiveBlocks?.length ? `<a href="#article-interactive">Reader questions</a>` : ""}<a href="#comments">Discussion</a></nav></details>
         <button class="back-link" data-route="/">Back to feed</button>
-        <div class="article-kicker" id="article-start">${escapeHtml(story.topic)}</div>
+        <button class="article-kicker" id="article-start" data-route="${escapeHtml(topicRoute(story.topic))}">${escapeHtml(story.topic)}</button>
         <h1>${escapeHtml(displayStory.title)}</h1>
         <p class="article-dek">${escapeHtml(displayStory.dek)}</p>
         <div class="article-author-row">
@@ -5538,7 +5545,7 @@ function followingManagerTemplate() {
       <div class="following-columns">
         <div><h3>Writers</h3>${writers.map((profile) => followManagerRow("writers", profile.name, profile.expertise[0], `/${slugifyName(profile.name)}`)).join("")}</div>
         <div><h3>Publications</h3>${publications.map((publication) => followManagerRow("publications", publication, "Publication", "")).join("")}</div>
-        <div><h3>Topics</h3>${state.categories.map((category) => followManagerRow("topics", category.name, category.description, `/category/${category.slug}`)).join("")}</div>
+        <div><h3>Topics</h3>${state.categories.map((category) => followManagerRow("topics", category.name, category.description, `/topics/${category.slug}`)).join("")}</div>
         <div><h3>Tags</h3><div class="follow-tag-cloud">${tags.map((tag) => `<button class="${isFollowing("tags", tag) ? "active" : ""}" data-follow-type="tags" data-follow-value="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>`).join("")}</div></div>
         <div class="following-lists"><h3>Curated lists</h3>${publicCuratedLists().map((list) => followManagerRow("lists", list.id, `${list.name} · ${list.slugs.length} stories`, `/lists/${list.id}`, list.name)).join("")}</div>
       </div>
@@ -7535,7 +7542,7 @@ function setMetaTag(selector, attributes) {
 function applyDocumentSeo() {
   const story = selectedStoryForCurrentRoute();
   const storyPreview = state.path.startsWith("/admin/blogs/preview/");
-  const category = state.categories.find((item) => state.path === `/category/${item.slug}`);
+  const category = state.categories.find((item) => state.path === `/topics/${item.slug}`);
   const resource = state.path.startsWith("/resources/") ? state.resources.find((item) => state.path === `/resources/${item.slug}`) : null;
   const businessProfile = state.path.startsWith("/companies/") || state.path.startsWith("/founders/") ? state.businessProfile : null;
   const companyProfile = Boolean(businessProfile && state.path.startsWith("/companies/"));
@@ -7577,8 +7584,10 @@ function applyDocumentSeo() {
   canonical.href = story && seo.canonicalUrl ? seo.canonicalUrl : resource?.canonicalUrl || businessProfile?.canonical_url || window.location.href.split("?")[0];
   setMetaTag('meta[property="og:url"]', { property: "og:url", content: canonical.href });
   document.getElementById("inkriver-schema")?.remove();
-  document.getElementById("nitross-server-schema")?.remove();
-  if (state.siteSeo.enableSchema && !storyPreview) {
+  const serverSchema = document.getElementById("nitross-server-schema");
+  const preserveServerSchema = Boolean(serverSchema && state.path === initialServerPath);
+  if (!preserveServerSchema) serverSchema?.remove();
+  if (state.siteSeo.enableSchema && !storyPreview && !preserveServerSchema) {
     const schema = document.createElement("script");
     schema.id = "inkriver-schema";
     schema.type = "application/ld+json";
@@ -7604,7 +7613,7 @@ function applyDocumentSeo() {
       "@type": "CollectionPage",
       name: category.name,
       description,
-      url: `${window.location.origin}/category/${category.slug}`,
+      url: `${window.location.origin}/topics/${category.slug}`,
     } : {
       "@context": "https://schema.org",
       "@type": state.siteSeo.representationType === "person" ? "Person" : "Organization",
@@ -7644,7 +7653,7 @@ async function runAiTool(tool) {
 
 function render() {
   document.documentElement.dataset.theme = state.theme;
-  document.documentElement.lang = state.preferences.locale.split("-")[0];
+  document.documentElement.lang = state.preferences.locale || "en-IN";
   document.documentElement.dir = state.preferences.locale.startsWith("ar") ? "rtl" : "ltr";
   document.documentElement.style.setProperty("--reader-scale", `${state.preferences.textScale / 100}`);
   document.body.classList.toggle("focus-reading", state.preferences.focusMode && state.path.startsWith("/stories/"));

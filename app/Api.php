@@ -146,6 +146,9 @@ function public_categories(): array
     $stored = is_array($stored) ? array_values(array_filter($stored, 'is_array')) : [];
     $modern = [
         ['id' => 'category-entrepreneurship', 'name' => 'Entrepreneurship', 'slug' => 'entrepreneurship', 'description' => 'Practical guidance for starting, building, and growing a business.', 'color' => 'mint', 'seoTitle' => 'Entrepreneurship Guides and Business Insights', 'metaDescription' => 'Learn how to validate ideas, build durable companies, and grow as an entrepreneur.'],
+        ['id' => 'category-ai', 'name' => 'AI & Automation', 'slug' => 'ai', 'description' => 'Artificial intelligence, automation, tools, workflows, and practical business adoption.', 'color' => 'blue', 'seoTitle' => 'AI and Automation for Business', 'metaDescription' => 'Explore practical AI tools, automation workflows, governance, and startup applications.'],
+        ['id' => 'category-startups', 'name' => 'Startups', 'slug' => 'startups', 'description' => 'Startup strategy, company building, product decisions, and sustainable growth.', 'color' => 'rose', 'seoTitle' => 'Startup Strategy, Ideas and Growth', 'metaDescription' => 'Read startup strategy, growth, company-building, and founder insights.'],
+        ['id' => 'category-marketing', 'name' => 'Marketing', 'slug' => 'marketing', 'description' => 'Positioning, customer acquisition, brand strategy, and business growth.', 'color' => 'mint', 'seoTitle' => 'Marketing Strategy and Business Growth', 'metaDescription' => 'Discover practical marketing, positioning, customer acquisition, and distribution strategies.'],
         ['id' => 'category-sales', 'name' => 'Sales', 'slug' => 'sales', 'description' => 'Sales systems, compensation, pipeline management, and revenue operations.', 'color' => 'blue', 'seoTitle' => 'Sales Strategy and Revenue Operations', 'metaDescription' => 'Build better sales systems, compensation plans, pipelines, and revenue operations.'],
         ['id' => 'category-finance', 'name' => 'Finance', 'slug' => 'finance', 'description' => 'Cash flow, profitability, financial planning, and business economics.', 'color' => 'blue', 'seoTitle' => 'Startup and Business Finance', 'metaDescription' => 'Understand startup finance, cash flow, profitability, planning, and financial operations.'],
         ['id' => 'category-funding', 'name' => 'Funding', 'slug' => 'funding', 'description' => 'Equity, debt, fundraising strategy, investor readiness, and capital structure.', 'color' => 'rose', 'seoTitle' => 'Startup Funding and Capital', 'metaDescription' => 'Explore equity, debt, fundraising strategy, investor readiness, and startup capital.'],
@@ -172,6 +175,39 @@ function public_categories(): array
         $bySlug[$slug] = $category;
     }
     foreach ($modern as $category) $bySlug[$category['slug']] ??= $category;
+    foreach ((array) document_value('stories', []) as $story) {
+        if (!is_array($story) || ($story['status'] ?? '') !== 'published') continue;
+        $topic = trim((string) ($story['topic'] ?? ''));
+        $slug = business_slug($topic);
+        if ($topic === '' || $slug === '' || isset($bySlug[$slug])) continue;
+        $bySlug[$slug] = [
+            'id' => 'category-' . $slug,
+            'name' => $topic,
+            'slug' => $slug,
+            'description' => 'Practical ' . $topic . ' guidance, examples, and resources for founders and growing businesses.',
+            'color' => 'mint',
+            'seoTitle' => $topic . ' Guides and Business Insights',
+            'metaDescription' => 'Explore practical ' . $topic . ' guides, examples, company insights, and resources for entrepreneurs.',
+        ];
+    }
+    foreach ($bySlug as $slug => $category) {
+        $name = (string) ($category['name'] ?? 'Business');
+        $description = (string) ($category['description'] ?? 'Practical business guidance for founders and growing teams.');
+        $focus = [
+            'ai' => 'selecting useful AI systems, automating repeatable work, evaluating costs, protecting sensitive data, and deploying tools with sensible human oversight',
+            'startups' => 'validating markets, shaping products, finding repeatable distribution, hiring early teams, and building durable operating habits',
+            'marketing' => 'positioning offers, understanding customers, choosing acquisition channels, measuring campaigns, and building a brand that compounds',
+            'finance' => 'forecasting cash flow, understanding unit economics, controlling costs, improving profitability, and making capital decisions with clearer evidence',
+            'sales' => 'designing pipelines, setting targets, structuring incentives, qualifying opportunities, and turning customer conversations into predictable revenue',
+            'operations' => 'documenting processes, choosing metrics, improving delivery, coordinating teams, and building systems that remain dependable as demand grows',
+            'business-ideas' => 'finding underserved needs, testing demand, comparing business models, estimating economics, and moving from research to a credible first offer',
+        ][$slug] ?? 'understanding the opportunity, comparing practical options, managing risk, measuring outcomes, and turning informed decisions into repeatable execution';
+        $category['longDescription'] = $description . ' This Nitross topic hub brings together detailed explainers, operating guides, company examples, founder perspectives, and practical resources focused on ' . $focus . '. '
+            . 'For entrepreneurs and operating teams in India, ' . $name . ' decisions rarely sit in isolation. They affect capital, compliance, customers, technology, hiring, and the day-to-day systems that keep a company moving. The material collected here is designed to help readers understand those connections instead of treating each question as a disconnected tactic. '
+            . 'Use these guides to assess the current situation, identify the next useful decision, compare realistic approaches, and avoid common execution mistakes. Each page prioritizes clear definitions, Indian business context where relevant, concrete examples, and actions that a founder or team can apply. '
+            . 'Nitross also connects ' . $name . ' articles with relevant founders, companies, related topics, and downloadable resources. Follow those links to move from an initial question to deeper research, real business profiles, and tools that support implementation.';
+        $bySlug[$slug] = $category;
+    }
     return array_values($bySlug);
 }
 
@@ -1854,7 +1890,7 @@ function sitemap_xml(): string
         $urls[] = ['loc' => $origin . '/stories/' . rawurlencode((string) $story['slug']), 'lastmod' => (string) ($story['updatedAt'] ?? $story['publishedAt'] ?? now_iso())];
     }
     foreach (public_categories() as $category) {
-        $urls[] = ['loc' => $origin . '/category/' . rawurlencode((string) $category['slug']), 'lastmod' => (string) ($category['updatedAt'] ?? now_iso())];
+        $urls[] = ['loc' => $origin . '/topics/' . rawurlencode((string) $category['slug']), 'lastmod' => (string) ($category['updatedAt'] ?? now_iso())];
     }
     foreach (current_publication_rows() as $publication) {
         if (($publication['status'] ?? '') === 'active') {

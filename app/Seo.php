@@ -234,7 +234,7 @@ function seo_resolve_page(string $path): array
     $origin = rtrim(app_origin(), '/');
 
     if ($path === '/') {
-        $categoryLinks = implode('', array_map(fn($category) => '<li><a href="/category/' . rawurlencode((string) $category['slug']) . '">' . seo_escape((string) $category['name']) . '</a></li>', $categories));
+        $categoryLinks = implode('', array_map(fn($category) => '<li><a href="/topics/' . rawurlencode((string) $category['slug']) . '">' . seo_escape((string) $category['name']) . '</a></li>', $categories));
         $page['body'] = '<main><header><h1>Learn entrepreneurship. Build and grow your business.</h1><p>' . seo_escape($page['description']) . '</p></header>'
             . ($categoryLinks ? '<nav aria-label="Topics"><h2>Business topics</h2><ul>' . $categoryLinks . '</ul></nav>' : '')
             . seo_internal_links($stories, 20) . '<p><a href="/business-network">Explore founders and companies</a> · <a href="/resources">Browse business resources</a></p></main>';
@@ -265,17 +265,22 @@ function seo_resolve_page(string $path): array
         $bodyText = seo_text(($story['contentHtml'] ?? '') ?: implode("\n\n", (array) ($story['body'] ?? [])));
         if (!empty($story['premium'])) $bodyText = seo_text($story['dek'] ?? $bodyText, 500);
         $related = seo_related_stories($stories, array_merge([$topic], (array) ($story['tags'] ?? [])), (string) $story['slug']);
-        $page['body'] = '<main><article><nav aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/category/' . rawurlencode($topicSlug) . '">' . seo_escape($topic) . '</a></nav><h1>' . seo_escape((string) $story['title']) . '</h1><p>' . seo_escape((string) ($story['dek'] ?? '')) . '</p><p>By ' . seo_escape((string) ($story['author'] ?? $siteName)) . '</p>' . ($bodyText ? '<div><p>' . nl2br(seo_escape($bodyText)) . '</p></div>' : '') . '</article>' . seo_internal_links($related) . seo_story_entity_links($story) . '</main>';
+        $page['body'] = '<main><article><nav aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/topics/' . rawurlencode($topicSlug) . '">' . seo_escape($topic) . '</a></nav><h1>' . seo_escape((string) $story['title']) . '</h1><p>' . seo_escape((string) ($story['dek'] ?? '')) . '</p><p>By ' . seo_escape((string) ($story['author'] ?? $siteName)) . '</p>' . ($bodyText ? '<div><p>' . nl2br(seo_escape($bodyText)) . '</p></div>' : '') . '</article>' . seo_internal_links($related) . seo_story_entity_links($story) . '</main>';
+        $authorId = $origin . '/#author-' . rawurlencode(business_slug((string) ($story['author'] ?? $siteName)));
+        $publisherId = $origin . '/#organization';
         $page['schema'] = [
-            ['@type' => (string) ($seo['schemaArticleType'] ?? 'Article'), 'headline' => (string) $story['title'], 'description' => $page['description'], 'image' => $page['image'] ?: null, 'datePublished' => $story['publishedAt'] ?? null, 'dateModified' => $story['updatedAt'] ?? $story['publishedAt'] ?? null, 'author' => ['@type' => 'Person', 'name' => (string) ($story['author'] ?? $siteName)], 'publisher' => ['@type' => 'Organization', 'name' => $siteName], 'mainEntityOfPage' => $page['canonical']],
-            seo_breadcrumbs([['Home', '/'], [$topic, '/category/' . $topicSlug], [(string) $story['title'], '/stories/' . $story['slug']]]),
+            ['@type' => (string) ($seo['schemaArticleType'] ?? 'BlogPosting'), 'headline' => (string) $story['title'], 'description' => $page['description'], 'image' => $page['image'] ?: null, 'datePublished' => $story['publishedAt'] ?? null, 'dateModified' => $story['updatedAt'] ?? $story['publishedAt'] ?? null, 'author' => ['@id' => $authorId], 'publisher' => ['@id' => $publisherId], 'mainEntityOfPage' => $page['canonical'], 'articleSection' => $topic, 'keywords' => implode(', ', (array) ($story['tags'] ?? []))],
+            ['@type' => 'Person', '@id' => $authorId, 'name' => (string) ($story['author'] ?? $siteName)],
+            ['@type' => 'Organization', '@id' => $publisherId, 'name' => $siteName, 'url' => $origin . '/', 'logo' => seo_absolute_url((string) (seo_site_settings()['organizationLogo'] ?? '')) ?: null],
+            seo_breadcrumbs([['Home', '/'], [$topic, '/topics/' . $topicSlug], [(string) $story['title'], '/stories/' . $story['slug']]]),
         ];
         return $page;
     }
 
-    if (preg_match('#^/category/([^/]+)$#', $path, $match)) {
+    if (preg_match('#^/topics/([^/]+)$#', $path, $match)) {
         $category = seo_category_by_slug($match[1]);
         if (!$category) return seo_not_found_page($path, $siteName);
+        $page['canonical'] = $origin . '/topics/' . rawurlencode((string) $category['slug']);
         $page['title'] = trim((string) ($category['seoTitle'] ?? '')) ?: (string) $category['name'] . ' Insights | ' . $siteName;
         $page['description'] = trim((string) ($category['metaDescription'] ?? '')) ?: (string) ($category['description'] ?? '');
         $matching = array_values(array_filter($stories, function ($story) use ($category) {
@@ -284,8 +289,9 @@ function seo_resolve_page(string $path): array
                 || $topicSlug === (string) $category['slug']
                 || ($topicSlug === 'ai-automation' && (string) $category['slug'] === 'ai');
         }));
-        $page['body'] = '<main><nav aria-label="Breadcrumb"><a href="/">Home</a> / Topics</nav><h1>' . seo_escape((string) $category['name']) . '</h1><p>' . seo_escape($page['description']) . '</p>' . seo_internal_links($matching, 50) . '</main>';
-        $page['schema'] = [['@type' => 'CollectionPage', 'name' => (string) $category['name'], 'description' => $page['description'], 'url' => $page['canonical']], seo_breadcrumbs([['Home', '/'], [(string) $category['name'], $path]])];
+        $intro = (string) ($category['longDescription'] ?? $category['description'] ?? '');
+        $page['body'] = '<main><nav aria-label="Breadcrumb"><a href="/">Home</a> / Topics</nav><h1>' . seo_escape((string) $category['name']) . '</h1><div><p>' . seo_escape($intro) . '</p></div>' . seo_internal_links($matching, 50) . seo_story_entity_links(['topic' => (string) $category['name'], 'tags' => [(string) $category['slug']]]) . '</main>';
+        $page['schema'] = [['@type' => 'CollectionPage', 'name' => (string) $category['name'], 'description' => $page['description'], 'url' => $page['canonical'], 'about' => ['@type' => 'Thing', 'name' => (string) $category['name']], 'mainEntity' => ['@type' => 'ItemList', 'itemListElement' => array_map(fn($index, $story) => ['@type' => 'ListItem', 'position' => $index + 1, 'url' => $origin . '/stories/' . rawurlencode((string) $story['slug']), 'name' => (string) $story['title']], array_keys($matching), $matching)]], seo_breadcrumbs([['Home', '/'], [(string) $category['name'], '/topics/' . $category['slug']]])];
         return $page;
     }
 
@@ -313,10 +319,33 @@ function seo_resolve_page(string $path): array
         $profileTerms = $isCompany ? array_merge([(string) ($profile['industry'] ?? '')], (array) ($profile['industries'] ?? []), (array) ($profile['keywords'] ?? []), (array) ($profile['technologies'] ?? [])) : (array) ($profile['expertise'] ?? []);
         $profileStories = seo_related_stories($stories, $profileTerms);
         $page['body'] = '<main><nav aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/business-network">Business Network</a></nav><article><h1>' . seo_escape($name) . '</h1><p>' . seo_escape(seo_text($copy)) . '</p>' . ($linkedHtml ? '<h2>' . ($isCompany ? 'Founders and team' : 'Companies') . '</h2><ul>' . $linkedHtml . '</ul>' : '') . '</article>' . seo_internal_links($profileStories) . '</main>';
-        $entity = ['@type' => $isCompany ? 'Organization' : 'Person', 'name' => $name, 'description' => $page['description'], 'image' => $page['image'] ?: null, 'url' => $page['canonical']];
-        if ($isCompany && !empty($profile['website'])) $entity['sameAs'] = array_values(array_filter([$profile['website'], $profile['linkedin_url'] ?? '', $profile['x_url'] ?? '', $profile['facebook_url'] ?? '']));
-        if (!$isCompany) $entity['sameAs'] = array_values(array_filter([$profile['website'] ?? '', $profile['linkedin_url'] ?? '', $profile['x_url'] ?? '']));
-        $page['schema'] = [['@type' => 'ProfilePage', 'mainEntity' => $entity], seo_breadcrumbs([['Home', '/'], ['Business Network', '/business-network'], [$name, $path]])];
+        $entityId = $page['canonical'] . '#profile';
+        $entity = ['@type' => $isCompany ? 'Organization' : 'Person', '@id' => $entityId, 'name' => $name, 'description' => $page['description'], 'image' => $page['image'] ?: null, 'url' => $page['canonical']];
+        $sameAs = $isCompany
+            ? array_values(array_filter([$profile['website'] ?? '', $profile['linkedin_url'] ?? '', $profile['x_url'] ?? '', $profile['facebook_url'] ?? '']))
+            : array_values(array_filter([$profile['website'] ?? '', $profile['linkedin_url'] ?? '', $profile['x_url'] ?? '']));
+        if ($sameAs) $entity['sameAs'] = $sameAs;
+        $address = array_filter([
+            '@type' => 'PostalAddress',
+            'addressLocality' => (string) ($profile['city'] ?? ''),
+            'addressRegion' => (string) ($profile['state_region'] ?? ''),
+            'addressCountry' => (string) ($profile['country'] ?? ''),
+        ]);
+        if (count($address) > 1) $entity['address'] = $address;
+        if ($isCompany) {
+            if (!empty($profile['legal_name'])) $entity['legalName'] = (string) $profile['legal_name'];
+            if (!empty($profile['industry'])) $entity['industry'] = (string) $profile['industry'];
+            if (!empty($profile['founded_on'])) $entity['foundingDate'] = (string) $profile['founded_on'];
+            if ($linked) $entity['founder'] = array_values(array_map(fn($person) => ['@type' => 'Person', 'name' => (string) ($person['full_name'] ?? ''), 'url' => $origin . '/founders/' . rawurlencode((string) ($person['slug'] ?? ''))], array_filter($linked, fn($person) => !empty($person['is_founder']))));
+            if (!empty($profile['products'])) $entity['makesOffer'] = array_map(fn($product) => ['@type' => 'Offer', 'itemOffered' => ['@type' => 'Product', 'name' => (string) $product]], (array) $profile['products']);
+            $knowledge = array_values(array_filter(array_merge((array) ($profile['technologies'] ?? []), (array) ($profile['markets'] ?? []), (array) ($profile['keywords'] ?? []))));
+            if ($knowledge) $entity['knowsAbout'] = $knowledge;
+        } else {
+            if (!empty($profile['headline'])) $entity['jobTitle'] = (string) $profile['headline'];
+            if (!empty($profile['expertise'])) $entity['knowsAbout'] = array_values((array) $profile['expertise']);
+            if ($linked) $entity['worksFor'] = array_values(array_map(fn($company) => ['@type' => 'Organization', 'name' => (string) ($company['name'] ?? ''), 'url' => $origin . '/companies/' . rawurlencode((string) ($company['slug'] ?? ''))], $linked));
+        }
+        $page['schema'] = [['@type' => 'ProfilePage', '@id' => $page['canonical'], 'mainEntity' => ['@id' => $entityId]], $entity, seo_breadcrumbs([['Home', '/'], ['Business Network', '/business-network'], [$name, $path]])];
         return $page;
     }
 
@@ -495,7 +524,7 @@ function seo_sitemap_entries(string $type): array
             $add('/stories/' . rawurlencode((string) $story['slug']), (string) ($story['updatedAt'] ?? $story['publishedAt'] ?? ''));
         }
     } elseif ($type === 'categories') {
-        foreach (seo_categories() as $category) $add('/category/' . rawurlencode((string) $category['slug']), (string) ($category['updatedAt'] ?? ''));
+        foreach (seo_categories() as $category) $add('/topics/' . rawurlencode((string) $category['slug']), (string) ($category['updatedAt'] ?? ''));
     } elseif ($type === 'companies' || $type === 'founders') {
         try {
             foreach (business_list_profiles($type === 'companies' ? 'company' : 'person', ['status' => 'published']) as $profile) {
@@ -534,4 +563,20 @@ function seo_sitemap_index(): string
         $xml .= '  <sitemap><loc>' . htmlspecialchars($origin . '/sitemaps/' . $type . '.xml', ENT_XML1) . '</loc></sitemap>' . "\n";
     }
     return $xml . "</sitemapindex>\n";
+}
+
+function seo_sitemap_all(): string
+{
+    $seen = [];
+    $entries = [];
+    foreach (['pages', 'articles', 'categories', 'founders', 'companies', 'resources'] as $type) {
+        foreach (seo_sitemap_entries($type) as $entry) {
+            if (isset($seen[$entry['loc']])) continue;
+            $seen[$entry['loc']] = true;
+            $entries[] = $entry;
+        }
+    }
+    $xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n";
+    foreach ($entries as $entry) $xml .= '  <url><loc>' . htmlspecialchars($entry['loc'], ENT_XML1) . '</loc><lastmod>' . htmlspecialchars($entry['lastmod'], ENT_XML1) . "</lastmod></url>\n";
+    return $xml . "</urlset>\n";
 }

@@ -485,10 +485,16 @@ assert_true(!array_diff($seoColumns, $companyColumns) && !array_diff($seoColumns
 
 $seoArticle = seo_resolve_page('/stories/a-story-worth-liking');
 $seoMissing = seo_resolve_page('/this-page-definitely-does-not-exist-xyz-123');
+$seoTopic = seo_resolve_page('/topics/ai');
+$seoCompany = seo_resolve_page('/companies/smoke-ventures');
 $seoHtml = seo_render_document((string) file_get_contents($root . '/public/index.html'), $seoArticle);
 assert_true(($seoArticle['status'] ?? 0) === 200 && str_contains($seoHtml, '<h1>A Story Worth Liking</h1>') && str_contains($seoHtml, 'rel="canonical"'), 'published articles render crawlable first-response HTML with a canonical URL');
 assert_true(($seoMissing['status'] ?? 0) === 404 && str_contains((string) $seoMissing['robots'], 'noindex'), 'unknown application routes return a real noindex 404');
 assert_true(str_contains(seo_sitemap_index(), '/sitemaps/articles.xml') && str_contains(seo_sitemap_urlset('articles'), '/stories/a-story-worth-liking'), 'sitemap index exposes a filtered article sitemap');
+assert_true(str_contains(seo_sitemap_all(), '<urlset') && str_contains(seo_sitemap_all(), '/companies/smoke-ventures') && str_contains(seo_sitemap_all(), '/topics/ai'), 'primary sitemap is a directly usable URL set covering profiles and topic hubs');
+assert_true(($seoTopic['status'] ?? 0) === 200 && str_word_count(strip_tags((string) $seoTopic['body'])) >= 150 && str_contains((string) $seoTopic['canonical'], '/topics/ai'), 'topic hubs provide substantial crawlable introductions and canonical topic URLs');
+assert_true(count($seoArticle['schema'] ?? []) >= 4 && count($seoCompany['schema'] ?? []) >= 3, 'article and company pages expose entity, publisher or profile, and breadcrumb schema nodes');
+assert_true(str_contains($seoHtml, '<html lang="en-IN">'), 'server-rendered documents declare Indian English');
 assert_true(str_contains(seo_robots_txt("User-agent: *\nAllow: /\nSitemap: https://old.example/sitemap.xml"), 'Sitemap: https://inkriver.test/sitemap.xml') && !str_contains(seo_robots_txt(''), 'old.example'), 'robots output is stable and always points to the canonical sitemap');
 
 echo "Smoke tests passed\n";

@@ -22,8 +22,19 @@ if ($method === 'GET' && $path === '/index.html') {
     exit;
 }
 
+if ($method === 'GET' && $path !== '/' && str_ends_with($path, '/')) {
+    $query = (string) ($_SERVER['QUERY_STRING'] ?? '');
+    header('Location: ' . rtrim(app_origin(), '/') . rtrim($path, '/') . ($query !== '' ? '?' . $query : ''), true, 301);
+    exit;
+}
+
 if ($method === 'GET' && preg_match('#^/publications/inkriver/?$#i', $path)) {
     header('Location: ' . rtrim(app_origin(), '/') . '/', true, 301);
+    exit;
+}
+
+if ($method === 'GET' && preg_match('#^/category/([^/]+)/?$#i', $path, $legacyTopic)) {
+    header('Location: ' . rtrim(app_origin(), '/') . '/topics/' . rawurlencode(rawurldecode($legacyTopic[1])), true, 301);
     exit;
 }
 
@@ -54,7 +65,13 @@ if (is_mcp_host_request()) {
     exit;
 }
 
-if ($method === 'GET' && in_array($path, ['/sitemap.xml', '/sitemap_index.xml'], true)) {
+if ($method === 'GET' && $path === '/sitemap.xml') {
+    foreach (security_headers() + ['Content-Type' => 'application/xml; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
+    echo seo_sitemap_all();
+    exit;
+}
+
+if ($method === 'GET' && $path === '/sitemap_index.xml') {
     foreach (security_headers() + ['Content-Type' => 'application/xml; charset=utf-8', 'Cache-Control' => 'public, max-age=900'] as $key => $value) header($key . ': ' . $value);
     echo seo_sitemap_index();
     exit;
@@ -137,7 +154,7 @@ if ($sensitivePath) {
 
 $page = seo_resolve_page($path);
 http_response_code((int) $page['status']);
-foreach (security_headers() + ['Content-Type' => 'text/html; charset=utf-8', 'Cache-Control' => 'no-cache', 'Vary' => 'Cookie'] as $key => $value) {
+foreach (security_headers() + ['Content-Type' => 'text/html; charset=utf-8', 'Content-Language' => 'en-IN', 'Cache-Control' => 'no-cache', 'Vary' => 'Cookie'] as $key => $value) {
     header($key . ': ' . $value);
 }
 $html = file_get_contents(__DIR__ . '/index.html');

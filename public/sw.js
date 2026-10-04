@@ -1,5 +1,5 @@
-const CACHE = "inkriver-v48-founder-biography";
-const CORE = ["/", "/index.html", "/dist/app.min.js?v=20260828-founder-biography-1", "/dist/styles.min.css?v=20260828-founder-biography-1", "/manifest.webmanifest", "/src/icon.svg"];
+const CACHE = "nitross-v49-seo-topics";
+const CORE = ["/", "/index.html", "/dist/app.min.js?v=20261004-seo-topics-1", "/dist/styles.min.css?v=20261004-seo-topics-1", "/manifest.webmanifest", "/src/icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));
