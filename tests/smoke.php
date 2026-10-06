@@ -444,6 +444,10 @@ assert_true(!array_diff($requiredBusinessTools, $mcpToolNames), 'MCP advertises 
 $toolsListResponse = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 7, 'method' => 'tools/list', 'params' => new stdClass()]);
 $advertisedToolNames = array_column($toolsListResponse['result']['tools'] ?? [], 'name');
 assert_true(!array_diff($requiredBusinessTools, $advertisedToolNames), 'MCP tools/list includes dedicated business profile actions');
+$legacyInitialize = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 71, 'method' => 'initialize', 'params' => ['protocolVersion' => '2025-06-18', 'capabilities' => new stdClass(), 'clientInfo' => ['name' => 'smoke', 'version' => '1.0']]]);
+assert_true(($legacyInitialize['result']['protocolVersion'] ?? '') === '2025-06-18', 'MCP initialization negotiates a protocol version supported by the client');
+$currentInitialize = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 72, 'method' => 'initialize', 'params' => ['protocolVersion' => '2025-11-25', 'capabilities' => new stdClass(), 'clientInfo' => ['name' => 'smoke', 'version' => '1.0']]]);
+assert_true(($currentInitialize['result']['protocolVersion'] ?? '') === '2025-11-25', 'MCP initialization retains the current protocol version when requested');
 $resourceListResponse = mcp_handle_request(['jsonrpc' => '2.0', 'id' => 8, 'method' => 'resources/list', 'params' => new stdClass()]);
 $resourceUris = array_column($resourceListResponse['result']['resources'] ?? [], 'uri');
 assert_true(count($resourceUris) === 2 && !array_filter($resourceUris, fn($uri) => !str_starts_with($uri, 'https://inkriver.test/mcp/resources/')), 'MCP resources use the configured canonical domain');

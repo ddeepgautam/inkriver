@@ -1427,6 +1427,13 @@ function mcp_tool_result(mixed $value): array
     ];
 }
 
+function mcp_protocol_version(array $request): string
+{
+    $requested = (string) ($request['params']['protocolVersion'] ?? '');
+    $supported = ['2025-11-25', '2025-06-18', '2025-03-26'];
+    return in_array($requested, $supported, true) ? $requested : $supported[0];
+}
+
 function mcp_blog_editor_schema(): array
 {
     return [
@@ -1787,7 +1794,7 @@ function mcp_handle_request(array $request): ?array
     try {
         $result = match ($method) {
             'initialize' => [
-                'protocolVersion' => '2025-11-25',
+                'protocolVersion' => mcp_protocol_version($request),
                 'capabilities' => ['tools' => ['listChanged' => false], 'resources' => ['listChanged' => false]],
                 'serverInfo' => ['name' => configured_site_name() . ' MCP', 'title' => configured_site_name() . ' Publishing and Business Network MCP', 'version' => mcp_version()],
                 'instructions' => 'Founder and company profiles are separate from article authors. Use get_company_profile_schema or get_founder_profile_schema, check existing records with list_company_profiles or list_founder_profiles, upload logos/headshots with upload_profile_image, then call create_or_update_company_profile or create_or_update_founder_profile. Use link_founder_to_company to add a relationship without replacing other links.',
@@ -1822,7 +1829,19 @@ function handle_mcp(string $method): void
     if ($requestId === '' || !preg_match('/^[A-Za-z0-9._:-]{1,100}$/', $requestId)) $requestId = uuid_value('req-');
     header('X-Request-ID: ' . $requestId);
     if ($method === 'GET') {
-        mcp_unauthorized_response('Connect with OAuth to use the ' . configured_site_name() . ' MCP endpoint.');
+        try {
+            mcp_authorize_session();
+        } catch (Throwable $error) {
+            if (str_contains($error->getMessage(), 'Only administrator')) {
+                mcp_json_response(['error' => 'FORBIDDEN', 'message' => 'Only administrator accounts can connect and use ' . configured_site_name() . ' MCP.'], 403);
+            }
+            mcp_unauthorized_response($error->getMessage());
+        }
+        mcp_json_response(
+            ['error' => 'METHOD_NOT_ALLOWED', 'message' => 'This MCP endpoint does not provide an SSE event stream. Use POST for MCP JSON-RPC calls.'],
+            405,
+            ['Allow' => 'POST'],
+        );
     }
     if ($method !== 'POST') mcp_json_response(['error' => 'METHOD_NOT_ALLOWED', 'message' => 'Use POST for MCP JSON-RPC calls.'], 405);
     $contentType = strtolower(trim((string) ($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '')));

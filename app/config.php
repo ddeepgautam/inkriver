@@ -77,7 +77,7 @@ function mcp_origin(): string
 
 function mcp_version(): string
 {
-    return '1.4.0';
+    return '1.4.1';
 }
 
 function request_host(): string
