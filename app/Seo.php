@@ -485,6 +485,10 @@ function seo_render_document(string $shell, array $page): string
 
 function seo_canonical_redirect(string $path): ?string
 {
+    // The dedicated MCP origin is intentionally distinct from APP_ORIGIN.
+    // Let its router serve MCP, OAuth metadata, health, and 404 responses
+    // instead of redirecting discovery requests to the website origin.
+    if (is_mcp_host_request()) return null;
     $canonical = parse_url(app_origin());
     $canonicalHost = strtolower((string) ($canonical['host'] ?? ''));
     $requestHost = request_host();

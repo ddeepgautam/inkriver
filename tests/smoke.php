@@ -62,6 +62,18 @@ $safePreferences = public_provider_preferences();
 assert_true(isset($safePreferences['navigationMenus']) && !isset($safePreferences['internalSecret']), 'public navigation preferences are exposed through an explicit allowlist');
 
 assert_true(public_root() === $root . DIRECTORY_SEPARATOR . 'public', 'public document root is isolated from application source');
+$previousHttpHost = $_SERVER['HTTP_HOST'] ?? null;
+putenv('MCP_ORIGIN=https://mcp.inkriver.test');
+$_SERVER['HTTP_HOST'] = 'mcp.inkriver.test';
+assert_true(seo_canonical_redirect('/mcp') === null, 'dedicated MCP host bypasses website canonical redirects during action discovery');
+$_SERVER['HTTP_HOST'] = 'unexpected.inkriver.test';
+assert_true(seo_canonical_redirect('/mcp') === 'https://inkriver.test/mcp', 'unrecognized hosts still redirect to the canonical website origin');
+putenv('MCP_ORIGIN=https://inkriver.test');
+if ($previousHttpHost === null) {
+    unset($_SERVER['HTTP_HOST']);
+} else {
+    $_SERVER['HTTP_HOST'] = $previousHttpHost;
+}
 $sharedUploads = $root . DIRECTORY_SEPARATOR . 'tests' . DIRECTORY_SEPARATOR . 'shared-uploads';
 putenv('PUBLIC_UPLOADS_PATH=' . $sharedUploads);
 assert_true(public_path('uploads/example.png') === $sharedUploads . DIRECTORY_SEPARATOR . 'example.png', 'dedicated deployments can share only the public upload store');
