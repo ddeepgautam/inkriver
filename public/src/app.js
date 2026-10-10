@@ -306,6 +306,7 @@ const defaultPlans = [
     name: "Reader",
     price: 299,
     period: "month",
+    prices: { month: 299, year: 2499 },
     note: "Unlimited member stories",
     features: ["Member-only stories", "Article translations", "Listen to stories", "Personalized recommendations"],
     featureKeys: starterFeatureKeys,
@@ -313,9 +314,10 @@ const defaultPlans = [
   },
   {
     id: "annual",
-    name: "Annual Plus",
-    price: 2499,
-    period: "year",
+    name: "Plus",
+    price: 499,
+    period: "month",
+    prices: { month: 499, year: 3999 },
     note: "Best for regular readers",
     features: ["Everything in Reader", "AI article insights", "Ad-free reading", "Priority support"],
     featureKeys: annualFeatureKeys,
@@ -324,8 +326,9 @@ const defaultPlans = [
   {
     id: "patron",
     name: "Patron",
-    price: 4999,
-    period: "year",
+    price: 699,
+    period: "month",
+    prices: { month: 699, year: 4999 },
     note: "Support writers directly",
     features: ["Everything in Annual Plus", "Included premium resources", "100 contact reveals monthly", "Priority support"],
     featureKeys: patronFeatureKeys,
@@ -589,8 +592,36 @@ function safeJson(value, fallback = null) {
   }
 }
 
+function normalizePlanPricing(plan) {
+  const legacyPrice = Math.max(1, Number(plan?.price || 0));
+  const legacyPeriod = plan?.period === "year" ? "year" : "month";
+  const legacyDefaults = {
+    starter: { price: 299, period: "month", prices: { month: 299, year: 2499 } },
+    annual: { price: 2499, period: "year", prices: { month: 499, year: 3999 } },
+    patron: { price: 4999, period: "year", prices: { month: 699, year: 4999 } },
+  };
+  const legacyMatch = legacyDefaults[plan?.id];
+  const known = legacyMatch && legacyMatch.price === legacyPrice && legacyMatch.period === legacyPeriod ? legacyMatch.prices : null;
+  const configured = plan?.prices || {};
+  const month = Math.max(1, Number(configured.month || known?.month || (legacyPeriod === "year" ? Math.ceil(legacyPrice / 10) : legacyPrice)));
+  const year = Math.max(1, Number(configured.year || known?.year || (legacyPeriod === "year" ? legacyPrice : Math.round(legacyPrice * 10))));
+  return {
+    ...plan,
+    name: plan?.id === "annual" && plan?.name === "Annual Plus" ? "Plus" : plan.name,
+    price: month,
+    period: "month",
+    prices: { month, year },
+  };
+}
+
+function planOffer(plan, period = state.pricingBillingPeriod) {
+  const normalized = normalizePlanPricing(plan);
+  const billingPeriod = period === "month" ? "month" : "year";
+  return { ...normalized, price: normalized.prices[billingPeriod], period: billingPeriod };
+}
+
 function loadSubscriptionPlans() {
-  return defaultPlans;
+  return defaultPlans.map(normalizePlanPricing);
 }
 
 function persistSubscriptionPlans() {
@@ -1166,8 +1197,8 @@ function emptyPlanForm() {
   return {
     id: "",
     name: "",
-    price: 299,
-    period: "month",
+    monthlyPrice: 299,
+    annualPrice: 2499,
     note: "",
     featureKeys: [],
     paidArticleMode: "unlimited",
@@ -1239,12 +1270,15 @@ function configuredPlanFeatureKeys(plan) {
 }
 
 function planFormFromPlan(plan) {
+  const pricedPlan = normalizePlanPricing(plan);
   const capabilities = plan.capabilities || {};
   const articles = capabilities["content.paid_articles.read"] || { mode: "unlimited", limit: 20 };
   const contacts = capabilities["business.contacts.reveal"] || { mode: "quota", limit: 5 };
   const resources = capabilities["resources.included.access"] || { mode: "denied", scope: { resourceIds: [] } };
   return {
-    ...plan,
+    ...pricedPlan,
+    monthlyPrice: pricedPlan.prices.month,
+    annualPrice: pricedPlan.prices.year,
     featureKeys: configuredPlanFeatureKeys(plan),
     paidArticleMode: ["quota", "unlimited"].includes(articles.mode) ? articles.mode : "unlimited",
     paidArticleLimit: Number(articles.limit || 20),
@@ -1264,13 +1298,14 @@ function populatePlanForm(plan) {
 
 function savePlanFromForm() {
   const name = state.planForm.name.trim();
-  const price = Number(state.planForm.price);
+  const monthlyPrice = Number(state.planForm.monthlyPrice);
+  const annualPrice = Number(state.planForm.annualPrice);
   const planId = state.editingPlanId || slugifyPlanId(name);
   const selectedFeatures = new Set(state.planForm.featureKeys || []);
-  if (!name || !Number.isFinite(price) || price <= 0) {
-    state.planMessage = "Plan name and valid INR price are required.";
+  if (!name || !Number.isFinite(monthlyPrice) || monthlyPrice <= 0 || !Number.isFinite(annualPrice) || annualPrice <= 0) {
+    state.planMessage = "Plan name plus valid monthly and annual INR prices are required.";
     render();
-    window.setTimeout(() => document.getElementById(!name ? "planName" : "planPrice")?.focus(), 0);
+    window.setTimeout(() => document.getElementById(!name ? "planName" : (!Number.isFinite(monthlyPrice) || monthlyPrice <= 0 ? "planMonthlyPrice" : "planAnnualPrice"))?.focus(), 0);
     return;
   }
   if (!state.editingPlanId && state.plans.some((plan) => plan.id === planId)) {
@@ -1288,8 +1323,9 @@ function savePlanFromForm() {
   const nextPlan = {
     id: planId,
     name,
-    price,
-    period: state.planForm.period || "month",
+    price: monthlyPrice,
+    period: "month",
+    prices: { month: monthlyPrice, year: annualPrice },
     note: state.planForm.note.trim() || "Custom membership package",
     featureKeys: [...new Set(state.planForm.featureKeys || [])],
     features: state.planFeatureCatalog.filter((feature) => (state.planForm.featureKeys || []).includes(feature.key)).map((feature) => feature.name),
@@ -1420,7 +1456,7 @@ async function hydratePlatformState() {
   }
   state.likedStories = new Set(payload.likedStorySlugs || []);
   if (Array.isArray(documents.categories) && documents.categories.length) state.categories = documents.categories;
-  if (Array.isArray(documents.plans) && documents.plans.length) state.plans = documents.plans;
+  if (Array.isArray(documents.plans) && documents.plans.length) state.plans = documents.plans.map(normalizePlanPricing);
   state.translations = payload.translations || {};
   state.articleInsights = payload.articleInsights || {};
   state.entitlements = payload.entitlements || {};
@@ -2014,6 +2050,7 @@ const state = {
   siteSeo: loadSiteSeo(),
   siteSeoMessage: "",
   plans: loadSubscriptionPlans(),
+  pricingBillingPeriod: "year",
   planFeatureCatalog: defaultPlanFeatureCatalog,
   planFeatureSearch: "",
   users: [],
@@ -3024,7 +3061,7 @@ async function startGatewayPayment(plan, purchase = {}) {
         clientHints: clientLocationHints(),
         discountCode: state.checkoutDiscountCode,
         purpose: purchase.purpose || `${plan.name} membership`,
-        metadata: { planId: plan.id, ...(purchase.metadata || purchase) },
+        metadata: { planId: plan.id, period: plan.period, ...(purchase.metadata || purchase) },
       }),
     });
     if (gateway.id === "razorpay") {
@@ -4949,7 +4986,7 @@ function storyPageTemplate(story) {
             <h2>Continue reading with membership</h2>
             <p>This story is behind the member paywall. Subscribe to unlock the full library and support writers.</p>
             <div class="paywall-actions">
-              ${state.user ? `<button class="primary-button" data-story-unlock="${escapeHtml(story.slug)}">Use plan access</button>` : `<button class="primary-button" data-checkout="${state.plans[0]?.id || ""}">Unlock from ${formatMoneyFromINR(state.plans[0]?.price || 299)}</button>`}
+              ${state.user ? `<button class="primary-button" data-story-unlock="${escapeHtml(story.slug)}">Use plan access</button>` : `<button class="primary-button" data-checkout="${state.plans[0]?.id || ""}" data-billing-period="month">Unlock from ${formatMoneyFromINR(normalizePlanPricing(state.plans[0] || defaultPlans[0]).prices.month)}/month</button>`}
               <button class="secondary-button">Use friend link</button>
             </div>
           </section>
@@ -5150,32 +5187,126 @@ function shareTemplate(story, shares) {
   `;
 }
 
+function pricingPlanCapability(plan, feature) {
+  const fallback = defaultPlans.find((candidate) => candidate.id === plan.id)?.capabilities?.[feature.key];
+  const capability = plan.capabilities?.[feature.key] || fallback || {};
+  const included = configuredPlanFeatureKeys(plan).includes(feature.key);
+  if (!included || capability.mode === "denied") return { included: false, label: "Not included" };
+  if (feature.valueType === "quota") {
+    if (capability.mode === "unlimited") return { included: true, label: "Unlimited" };
+    const period = capability.period === "month" ? "month" : "billing cycle";
+    return { included: true, label: `${Number(capability.limit || 0).toLocaleString("en-IN")} / ${period}` };
+  }
+  if (feature.valueType === "scope") {
+    const kind = capability.scope?.kind;
+    return { included: true, label: kind === "all_published" ? "All resources" : kind === "all_eligible" ? "All eligible" : "Selected resources" };
+  }
+  return { included: true, label: "Included" };
+}
+
+function pricingPlanSavings(plan) {
+  const prices = normalizePlanPricing(plan).prices;
+  const saving = Math.max(0, prices.month * 12 - prices.year);
+  return { saving, percent: prices.month ? Math.round(saving / (prices.month * 12) * 100) : 0 };
+}
+
 function pricingTemplate() {
+  const billingPeriod = state.pricingBillingPeriod === "month" ? "month" : "year";
+  const categoryIcons = { Reading: "eye", Community: "users", Personalization: "spark", "Business network": "trend", Resources: "bookmark", "Creator tools": "pen", Support: "shield" };
+  const groupedFeatures = state.planFeatureCatalog.reduce((groups, feature) => ({ ...groups, [feature.category]: [...(groups[feature.category] || []), feature] }), {});
+  const faqs = [
+    ["What is included in a Nitross membership?", "Your access is determined by the exact features listed for your chosen plan. Depending on the tier, this can include member-only stories, translations, AI insights, audio listening, saved reading, business-network access, creator tools, resources, and priority support."],
+    ["What is the difference between monthly and annual billing?", "The features are the same for a plan in either billing period. Monthly billing offers flexibility, while annual billing is charged once for 12 months and includes the savings shown on each plan card."],
+    ["Can I change my plan later?", "Yes. You can review available plans from Membership & billing in your dashboard. Your current plan remains active for its paid period, and plan access is updated when a new subscription is activated."],
+    ["Will my subscription renew automatically?", "Recurring subscriptions renew according to the billing period shown at checkout unless you cancel. You can request cancellation from your dashboard; access continues until the end of the current paid period."],
+    ["Can I use my membership on multiple devices?", "Yes. Sign in with the same Nitross account on your supported devices. Saved reading, history, preferences, and plan access sync when those features are included in your plan."],
+    ["Which payment methods and currencies are supported?", `Available gateways are shown before payment. You can preview prices in ${supportedCurrencies.length} supported currencies, while INR remains the base price used to calculate the final checkout amount.`],
+    ["What happens if payment succeeds but access is not activated?", "Open a support ticket from your dashboard and include the payment reference. Nitross records payment and invoice details so the support team can investigate activation issues."],
+  ];
   return `
-    <main class="pricing-page">
-      <section class="page-heading">
-        <h1>Membership plans</h1>
-        <p>Choose the access that fits how you read, connect, and create on ${escapeHtml(siteName())}.</p>
-        ${state.paymentMessage ? `<div class="payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}
-        ${currencyControlTemplate("pricing")}
+    <main class="pricing-page pricing-experience">
+      <section class="pricing-hero">
+        <div class="pricing-hero-copy">
+          <span class="pricing-kicker">Membership for curious minds and ambitious creators</span>
+          <h1>Read deeper. Build smarter. <em>Grow with every story.</em></h1>
+          <p>Choose a Nitross plan that turns trusted ideas, practical resources, and creator tools into momentum for your work and life.</p>
+          <div class="pricing-hero-actions"><a class="primary-button" href="#membership-plans">Explore plans</a><a class="secondary-button" href="#pricing-comparison">Compare every feature</a></div>
+          <div class="pricing-proof-row"><span>${icon("shield", 16)}Secure checkout</span><span>${icon("refresh", 16)}Cancel from your dashboard</span><span>${icon("users", 16)}Built for readers and creators</span></div>
+        </div>
+        <figure class="pricing-hero-art"><img src="/src/assets/pricing-membership-hero.jpg" width="1600" height="799" alt="Readers and creators discovering business ideas through an open digital publication" fetchpriority="high" decoding="async" /></figure>
       </section>
-      <section class="pricing-grid">
-        ${state.plans.map((plan, index) => {
-          const included = configuredPlanFeatureKeys(plan).map((key) => state.planFeatureCatalog.find((feature) => feature.key === key)?.name).filter(Boolean);
-          return `
-          <article class="plan-card ${index === 1 ? "featured" : ""}">
-            <h2>${escapeHtml(plan.name)}</h2>
-            <div class="plan-price">${formatMoneyFromINR(plan.price)}<span>/${plan.period}</span></div>
-            <small class="base-price">Base price ${formatINR(plan.price)}</small>
-            <p>${escapeHtml(plan.note)}</p>
-            <ul>${included.slice(0, 7).map((feature) => `<li>${icon("check", 15)}${escapeHtml(feature)}</li>`).join("")}${included.length > 7 ? `<li class="plan-more-features">+${included.length - 7} more included features</li>` : ""}</ul>
-            <button class="full-button" data-checkout="${escapeHtml(plan.id)}">Choose ${escapeHtml(plan.name)}</button>
-          </article>
-        `; }).join("")}
+
+      <section class="pricing-value-strip" aria-label="Membership value"><div><strong>One account</strong><span>Your access follows you across Nitross</span></div><div><strong>${state.planFeatureCatalog.length} plan features</strong><span>Pay for the capabilities that matter to you</span></div><div><strong>Versioned access</strong><span>Your purchased plan terms stay recorded</span></div></section>
+
+      <section class="pricing-plans-section" id="membership-plans">
+        <div class="pricing-section-heading"><span class="eyebrow">Choose your membership</span><h2>A plan for every stage of your journey</h2><p>All prices are transparent. Switch the billing period to see exactly what you pay.</p></div>
+        <div class="pricing-toolbar">
+          <div class="billing-toggle" role="group" aria-label="Billing period">
+            <button class="${billingPeriod === "month" ? "active" : ""}" data-pricing-period="month" aria-pressed="${billingPeriod === "month"}">Monthly</button>
+            <button class="${billingPeriod === "year" ? "active" : ""}" data-pricing-period="year" aria-pressed="${billingPeriod === "year"}">Annual <span>Save up to ${Math.max(...state.plans.map((plan) => pricingPlanSavings(plan).percent))}%</span></button>
+          </div>
+          ${currencyControlTemplate("pricing")}
+        </div>
+        ${state.paymentMessage ? `<div class="payment-message pricing-payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}
+        <div class="pricing-grid pricing-plan-grid">
+          ${state.plans.map((rawPlan, index) => {
+            const plan = normalizePlanPricing(rawPlan);
+            const offer = planOffer(plan, billingPeriod);
+            const savings = pricingPlanSavings(plan);
+            const included = configuredPlanFeatureKeys(plan).map((key) => state.planFeatureCatalog.find((feature) => feature.key === key)).filter(Boolean);
+            const featured = index === 1;
+            const persona = index === 0 ? "For intentional readers" : featured ? "For readers who want more" : "For creators and power users";
+            const annualMonthly = plan.prices.year / 12;
+            return `<article class="plan-card pricing-plan-card ${featured ? "featured" : ""}">
+              ${featured ? `<div class="plan-popular-label">Most popular</div>` : ""}
+              <div class="plan-card-heading"><span>${escapeHtml(persona)}</span><h3>${escapeHtml(plan.name)}</h3><p>${escapeHtml(plan.note)}</p></div>
+              <div class="plan-price-block">
+                ${billingPeriod === "year" && savings.percent ? `<div class="plan-saving-badge">Save ${savings.percent}% · ${formatMoneyFromINR(savings.saving)} yearly</div>` : `<div class="plan-saving-placeholder">Flexible ${billingPeriod === "month" ? "monthly" : "annual"} access</div>`}
+                <div class="plan-price"><strong>${formatMoneyFromINR(billingPeriod === "year" ? annualMonthly : offer.price)}</strong><span>/month</span></div>
+                <small>${billingPeriod === "year" ? `Billed ${formatMoneyFromINR(offer.price)} once a year` : `Billed ${formatMoneyFromINR(offer.price)} every month`}</small>
+              </div>
+              <button class="full-button plan-cta" data-checkout="${escapeHtml(plan.id)}" data-billing-period="${billingPeriod}">${state.isMember ? "Choose this plan" : `Start with ${escapeHtml(plan.name)}`}</button>
+              <span class="plan-reassurance">${icon("shield", 14)}Secure payment · Access after activation</span>
+              <div class="plan-feature-list"><strong>What you get</strong><ul>${included.slice(0, 8).map((feature) => `<li><i>${icon(categoryIcons[feature.category] || "check", 15)}</i><span>${escapeHtml(feature.name)}</span></li>`).join("")}${included.length > 8 ? `<li class="plan-more-features"><i>${icon("spark", 15)}</i><span>Plus ${included.length - 8} more included features</span></li>` : ""}</ul></div>
+            </article>`;
+          }).join("")}
+        </div>
+        <p class="pricing-fine-print">Annual prices are paid upfront. Display-currency amounts use the latest configured conversion rate and may vary slightly at checkout.</p>
       </section>
-      <section class="gateway-strip">
-        ${visiblePaymentGateways().map((item) => `<div>${icon("card")}<strong>${item.name}</strong><span>${item.type}</span></div>`).join("")}
+
+      <section class="pricing-outcomes-section">
+        <div class="pricing-section-heading"><span class="eyebrow">More than premium articles</span><h2>Your membership compounds in value</h2><p>Nitross connects the full journey from discovering an idea to putting it into practice.</p></div>
+        <div class="pricing-outcome-grid">
+          <article><i>${icon("eye", 22)}</i><span>01</span><h3>Understand what matters</h3><p>Go beyond headlines with member stories, translations, audio, and concise AI-supported insights.</p></article>
+          <article><i>${icon("bookmark", 22)}</i><span>02</span><h3>Turn insight into action</h3><p>Save what matters, build a reading history, and use practical resources when your next decision arrives.</p></article>
+          <article><i>${icon("users", 22)}</i><span>03</span><h3>Connect with opportunity</h3><p>Follow experts, join useful discussions, and unlock the business-network access included in your tier.</p></article>
+          <article><i>${icon("trend", 22)}</i><span>04</span><h3>Build your own voice</h3><p>Eligible plans bring publishing, creator analytics, and earnings tools into the same focused workspace.</p></article>
+        </div>
       </section>
+
+      <section class="pricing-comparison-section" id="pricing-comparison">
+        <div class="pricing-section-heading"><span class="eyebrow">Full plan comparison</span><h2>See exactly what is included</h2><p>No vague bundles. Compare every currently configurable Nitross capability.</p></div>
+        <div class="pricing-comparison-scroll" tabindex="0" aria-label="Scrollable plan comparison">
+          <table class="pricing-comparison-table">
+            <thead><tr><th scope="col">Features</th>${state.plans.map((plan, index) => { const offer = planOffer(plan, billingPeriod); return `<th scope="col" class="${index === 1 ? "featured" : ""}"><strong>${escapeHtml(normalizePlanPricing(plan).name)}</strong><span>${formatMoneyFromINR(billingPeriod === "year" ? offer.price / 12 : offer.price)}/mo</span><button data-checkout="${escapeHtml(plan.id)}" data-billing-period="${billingPeriod}">Choose plan</button></th>`; }).join("")}</tr></thead>
+            <tbody>${Object.entries(groupedFeatures).map(([category, features]) => `<tr class="comparison-category"><th colspan="${state.plans.length + 1}">${icon(categoryIcons[category] || "spark", 16)}${escapeHtml(category)}</th></tr>${features.map((feature) => `<tr><th scope="row"><strong>${escapeHtml(feature.name)}</strong><small>${escapeHtml(feature.description)}</small></th>${state.plans.map((plan, index) => { const value = pricingPlanCapability(plan, feature); return `<td class="${index === 1 ? "featured" : ""} ${value.included ? "included" : "excluded"}">${value.included ? icon("check", 16) : `<span aria-hidden="true">—</span>`}<span>${escapeHtml(value.label)}</span></td>`; }).join("")}</tr>`).join("")}`).join("")}</tbody>
+          </table>
+        </div>
+        <p class="comparison-scroll-hint">On smaller screens, swipe the table sideways to compare every plan.</p>
+      </section>
+
+      <section class="pricing-assurance-section">
+        <div><span class="eyebrow">A confident checkout</span><h2>Clear pricing, protected access</h2><p>Your checkout uses server-verified plan prices. Every selected feature is attached to a versioned entitlement, so access is enforced consistently throughout Nitross.</p></div>
+        <div class="pricing-assurance-grid"><article>${icon("shield", 20)}<span><strong>Server-verified pricing</strong><small>The checkout does not trust a browser-supplied plan price.</small></span></article><article>${icon("card", 20)}<span><strong>Multiple payment gateways</strong><small>Use the configured option that works best for you.</small></span></article><article>${icon("refresh", 20)}<span><strong>Manage from your dashboard</strong><small>Review invoices, membership access, and cancellation status.</small></span></article></div>
+        <div class="gateway-strip">${visiblePaymentGateways().map((item) => `<div>${icon("card")}<strong>${item.name}</strong><span>${item.type}</span></div>`).join("")}</div>
+      </section>
+
+      <section class="pricing-faq-section">
+        <div class="pricing-section-heading"><span class="eyebrow">Questions, answered</span><h2>Membership FAQ</h2><p>Everything you should know before investing in a Nitross plan.</p></div>
+        <div class="pricing-faq-list">${faqs.map(([question, answer], index) => `<details ${index === 0 ? "open" : ""}><summary><span>${escapeHtml(question)}</span>${icon("chevronRight", 18)}</summary><p>${escapeHtml(answer)}</p></details>`).join("")}</div>
+      </section>
+
+      <section class="pricing-final-cta"><div><span class="eyebrow">Invest in your next idea</span><h2>Make every reading session move you forward.</h2><p>Start monthly for flexibility or choose annual billing for the strongest value.</p></div><a class="primary-button" href="#membership-plans">Choose your plan</a></section>
     </main>
   `;
 }
@@ -6589,7 +6720,7 @@ function adminPricingTemplate() {
           const keys = configuredPlanFeatureKeys(plan);
           return `<article class="pricing-plan-row" role="row">
             <span class="pricing-plan-identity"><i>${icon("card", 17)}</i><span><strong>${escapeHtml(plan.name)}</strong><small>${escapeHtml(plan.note || "Membership plan")}</small></span></span>
-            <span class="pricing-plan-price"><strong>${formatINR(plan.price)}</strong><small>per ${escapeHtml(plan.period)}</small></span>
+            <span class="pricing-plan-price"><strong>${formatINR(normalizePlanPricing(plan).prices.month)}/mo</strong><small>${formatINR(normalizePlanPricing(plan).prices.year)} annually</small></span>
             <span class="pricing-feature-summary"><strong>${keys.length}</strong><small>enabled</small><span>${keys.slice(0, 3).map((key) => `<i>${escapeHtml(state.planFeatureCatalog.find((feature) => feature.key === key)?.name || key)}</i>`).join("")}${keys.length > 3 ? `<i>+${keys.length - 3} more</i>` : ""}</span></span>
             <span><i class="status-pill active">Active</i></span>
             <span class="pricing-plan-actions"><button class="secondary-button" data-edit-plan="${escapeHtml(plan.id)}">Edit</button><button class="text-button danger" data-delete-plan="${escapeHtml(plan.id)}">Delete</button></span>
@@ -6644,8 +6775,8 @@ function adminPlanEditorTemplate() {
           <div class="plan-section-heading"><span>1</span><div><h2>Plan details</h2><p>These details appear on the public pricing and checkout pages.</p></div></div>
           <div class="plan-details-grid">
             <label><span>Plan name</span><input id="planName" value="${escapeHtml(state.planForm.name)}" placeholder="Growth" autocomplete="off" required /></label>
-            <label><span>Base price in INR</span><input id="planPrice" type="number" min="1" step="1" value="${state.planForm.price}" required /></label>
-            <label><span>Billing period</span><select id="planPeriod">${[["month", "Monthly"], ["quarter", "Quarterly"], ["year", "Yearly"]].map(([value, label]) => `<option value="${value}" ${state.planForm.period === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+            <label><span>Monthly price in INR</span><input id="planMonthlyPrice" type="number" min="1" step="1" value="${state.planForm.monthlyPrice}" required /></label>
+            <label><span>Annual price in INR</span><input id="planAnnualPrice" type="number" min="1" step="1" value="${state.planForm.annualPrice}" required /><small>Charged once per year. The pricing page calculates savings automatically.</small></label>
             <label><span>Short description</span><input id="planNote" value="${escapeHtml(state.planForm.note)}" placeholder="Best for growing teams" maxlength="300" /></label>
           </div>
         </section>
@@ -6659,7 +6790,7 @@ function adminPlanEditorTemplate() {
         </section>
       </div>
       <aside class="plan-editor-sidebar">
-        <section class="work-panel plan-preview-card"><span class="eyebrow">Live preview</span><h2>${escapeHtml(state.planForm.name || "Untitled plan")}</h2><p>${escapeHtml(state.planForm.note || "Add a short description for this plan.")}</p><div class="plan-preview-price"><strong>${formatINR(Number(state.planForm.price || 0))}</strong><span>/ ${escapeHtml(state.planForm.period || "month")}</span></div><ul>${previewFeatures.slice(0, 7).map((feature) => `<li>${icon("check", 14)}${escapeHtml(feature.name)}</li>`).join("") || `<li class="muted">Select features to preview the plan.</li>`}</ul>${previewFeatures.length > 7 ? `<small>+${previewFeatures.length - 7} more included features</small>` : ""}</section>
+        <section class="work-panel plan-preview-card"><span class="eyebrow">Live preview</span><h2 data-plan-preview-name>${escapeHtml(state.planForm.name || "Untitled plan")}</h2><p data-plan-preview-note>${escapeHtml(state.planForm.note || "Add a short description for this plan.")}</p><div class="plan-preview-price"><strong data-plan-preview-monthly>${formatINR(Number(state.planForm.monthlyPrice || 0))}</strong><span>/ month</span></div><small data-plan-preview-annual>${formatINR(Number(state.planForm.annualPrice || 0))} when billed annually</small><ul>${previewFeatures.slice(0, 7).map((feature) => `<li>${icon("check", 14)}${escapeHtml(feature.name)}</li>`).join("") || `<li class="muted">Select features to preview the plan.</li>`}</ul>${previewFeatures.length > 7 ? `<small>+${previewFeatures.length - 7} more included features</small>` : ""}</section>
         <section class="plan-save-card"><strong>${state.editingPlanId ? "Publish plan update" : "Create membership plan"}</strong><p>${state.editingPlanId ? "Current subscribers remain on their existing version." : "The plan becomes available on the pricing page after saving."}</p><button class="primary-button wide-button" type="button" data-action="save-plan">${state.editingPlanId ? "Save new version" : "Create plan"}</button><button class="secondary-button wide-button" type="button" data-route="/admin/pricing">Cancel</button></section>
       </aside>
     </form>`,
@@ -8131,8 +8262,8 @@ function bindInputs() {
   });
   const planBindings = [
     ["planName", "name"],
-    ["planPrice", "price"],
-    ["planPeriod", "period"],
+    ["planMonthlyPrice", "monthlyPrice"],
+    ["planAnnualPrice", "annualPrice"],
     ["planNote", "note"],
     ["planPaidArticleMode", "paidArticleMode"],
     ["planPaidArticleLimit", "paidArticleLimit"],
@@ -8143,11 +8274,15 @@ function bindInputs() {
   ];
   planBindings.forEach(([id, key]) => {
     document.getElementById(id)?.addEventListener("input", (event) => {
-      state.planForm[key] = ["price", "paidArticleLimit", "contactLimit"].includes(key) ? Number(event.target.value) : event.target.value;
+      state.planForm[key] = ["monthlyPrice", "annualPrice", "paidArticleLimit", "contactLimit"].includes(key) ? Number(event.target.value) : event.target.value;
+      if (key === "name") document.querySelector("[data-plan-preview-name]").textContent = state.planForm.name || "Untitled plan";
+      if (key === "note") document.querySelector("[data-plan-preview-note]").textContent = state.planForm.note || "Add a short description for this plan.";
+      if (key === "monthlyPrice") document.querySelector("[data-plan-preview-monthly]").textContent = formatINR(Number(state.planForm.monthlyPrice || 0));
+      if (key === "annualPrice") document.querySelector("[data-plan-preview-annual]").textContent = `${formatINR(Number(state.planForm.annualPrice || 0))} when billed annually`;
       if (["paidArticleMode", "contactMode", "resourceMode"].includes(key)) render();
     });
     document.getElementById(id)?.addEventListener("change", (event) => {
-      state.planForm[key] = ["price", "paidArticleLimit", "contactLimit"].includes(key) ? Number(event.target.value) : event.target.value;
+      state.planForm[key] = ["monthlyPrice", "annualPrice", "paidArticleLimit", "contactLimit"].includes(key) ? Number(event.target.value) : event.target.value;
       if (["paidArticleMode", "contactMode", "resourceMode"].includes(key)) render();
     });
   });
@@ -8538,6 +8673,7 @@ document.addEventListener("click", async (event) => {
   const clap = target.dataset.clap;
   const homePage = target.dataset.homePage;
   const adminBlogPage = target.dataset.adminBlogPage;
+  const pricingPeriod = target.dataset.pricingPeriod;
   const checkout = target.dataset.checkout;
   const paymentSubmit = target.dataset.paymentSubmit;
   const gateway = target.dataset.gateway;
@@ -9739,7 +9875,7 @@ document.addEventListener("click", async (event) => {
   if (onboardingPlan) {
     const plan = state.plans.find((item) => item.id === onboardingPlan);
     if (plan) {
-      state.checkoutPlan = plan;
+      state.checkoutPlan = planOffer(plan, "month");
       state.onboardingOpen = false;
       state.onboardingStep = "interests";
       state.paymentMessage = state.authorIntent ? "Complete a paid membership to activate author access." : "";
@@ -9888,15 +10024,21 @@ document.addEventListener("click", async (event) => {
       document.getElementById("adminBlogResults")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
     }
   }
+  if (pricingPeriod) {
+    state.pricingBillingPeriod = pricingPeriod === "month" ? "month" : "year";
+    state.checkoutDiscount = null;
+    state.checkoutDiscountCode = "";
+    render();
+  }
   if (checkout) {
-    state.checkoutPlan = state.plans.find((plan) => plan.id === checkout);
+    const plan = state.plans.find((item) => item.id === checkout);
+    state.checkoutPlan = plan ? planOffer(plan, target.closest("[data-checkout]")?.dataset.billingPeriod || state.pricingBillingPeriod) : null;
     if (!visiblePaymentGateways().some((item) => item.id === state.gateway)) state.gateway = visiblePaymentGateways()[0]?.id || "razorpay";
     state.paymentMessage = "";
     render();
   }
   if (paymentSubmit) {
-    const plan = state.plans.find((item) => item.id === paymentSubmit);
-    startGatewayPayment(plan);
+    startGatewayPayment(state.checkoutPlan || planOffer(state.plans.find((item) => item.id === paymentSubmit)));
   }
   if (socialProvider) {
     socialLogin(socialProvider);

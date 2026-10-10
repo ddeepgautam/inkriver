@@ -101,6 +101,24 @@ function entitlement_normalize_plan_capabilities(array $plan): array
     return $result;
 }
 
+function entitlement_plan_prices(array $plan): array
+{
+    $legacyDefaults = [
+        'starter' => ['price' => 299, 'period' => 'month', 'prices' => ['month' => 299, 'year' => 2499]],
+        'annual' => ['price' => 2499, 'period' => 'year', 'prices' => ['month' => 499, 'year' => 3999]],
+        'patron' => ['price' => 4999, 'period' => 'year', 'prices' => ['month' => 699, 'year' => 4999]],
+    ];
+    $planId = strtolower(trim((string) ($plan['id'] ?? '')));
+    $configured = is_array($plan['prices'] ?? null) ? $plan['prices'] : [];
+    $legacyPrice = max(1, (int) round((float) ($plan['price'] ?? 0)));
+    $legacyPeriod = ($plan['period'] ?? 'month') === 'year' ? 'year' : 'month';
+    $legacyMatch = $legacyDefaults[$planId] ?? null;
+    $known = $legacyMatch && $legacyMatch['price'] === $legacyPrice && $legacyMatch['period'] === $legacyPeriod ? $legacyMatch['prices'] : [];
+    $monthly = (int) round((float) ($configured['month'] ?? $known['month'] ?? ($legacyPeriod === 'year' ? ceil($legacyPrice / 10) : $legacyPrice)));
+    $annual = (int) round((float) ($configured['year'] ?? $known['year'] ?? ($legacyPeriod === 'year' ? $legacyPrice : $legacyPrice * 10)));
+    return ['month' => max(1, $monthly), 'year' => max(1, $annual)];
+}
+
 function entitlement_sync_plans(array $plans, ?string $actorId = null): void
 {
     entitlement_catalog_bootstrap();
@@ -111,8 +129,9 @@ function entitlement_sync_plans(array $plans, ?string $actorId = null): void
         $id = strtolower(trim((string) ($plan['id'] ?? '')));
         $name = trim((string) ($plan['name'] ?? ''));
         if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,79}$/', $id) || $name === '') continue;
-        $price = max(1, (int) round((float) ($plan['price'] ?? 0)));
-        $period = in_array(($plan['period'] ?? ''), ['month', 'quarter', 'year'], true) ? $plan['period'] : 'month';
+        $prices = entitlement_plan_prices($plan);
+        $price = $prices['month'];
+        $period = 'month';
         $note = substr(trim((string) ($plan['note'] ?? '')), 0, 300);
         $features = array_values(array_filter(array_map('strval', is_array($plan['features'] ?? null) ? $plan['features'] : [])));
         $caps = entitlement_normalize_plan_capabilities($plan);
@@ -129,6 +148,13 @@ function entitlement_sync_plans(array $plans, ?string $actorId = null): void
             $existing = [];
             foreach ($existingCaps->fetchAll() as $cap) $existing[$cap['capability_key']] = ['mode' => $cap['mode'], 'limit' => $cap['limit_value'] === null ? null : (int) $cap['limit_value'], 'period' => $cap['reset_period'], 'scope' => parse_json_field($cap['scope_json'], [])];
             $same = $existing === $caps;
+            if ($same) {
+                $priceStmt = $pdo->prepare('SELECT billing_period, price FROM subscription_plan_prices WHERE plan_version_id = ? ORDER BY billing_period');
+                $priceStmt->execute([$row['id']]);
+                $storedPrices = [];
+                foreach ($priceStmt->fetchAll() as $storedPrice) $storedPrices[$storedPrice['billing_period']] = (int) $storedPrice['price'];
+                $same = $storedPrices === $prices;
+            }
         }
         if ($same) {
             $pdo->prepare('UPDATE subscriptions SET plan_version_id = ? WHERE plan_id = ? AND plan_version_id IS NULL')->execute([$row['id'], $id]);
@@ -141,6 +167,10 @@ function entitlement_sync_plans(array $plans, ?string $actorId = null): void
         foreach ($caps as $key => $cap) {
             $pdo->prepare('INSERT INTO plan_capabilities (plan_version_id, capability_key, mode, limit_value, reset_period, scope_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(plan_version_id, capability_key) DO UPDATE SET mode = excluded.mode, limit_value = excluded.limit_value, reset_period = excluded.reset_period, scope_json = excluded.scope_json, updated_at = excluded.updated_at')
                 ->execute([$versionId, $key, $cap['mode'], $cap['limit'], $cap['period'], json_encode($cap['scope'], JSON_UNESCAPED_SLASHES), $now, $now]);
+        }
+        foreach ($prices as $billingPeriod => $billingPrice) {
+            $pdo->prepare('INSERT INTO subscription_plan_prices (plan_version_id, billing_period, price, currency, created_at, updated_at) VALUES (?, ?, ?, \'INR\', ?, ?) ON CONFLICT(plan_version_id, billing_period) DO UPDATE SET price = excluded.price, currency = excluded.currency, updated_at = excluded.updated_at')
+                ->execute([$versionId, $billingPeriod, $billingPrice, $now, $now]);
         }
         $pdo->prepare('UPDATE subscriptions SET plan_version_id = ? WHERE plan_id = ? AND plan_version_id IS NULL')->execute([$versionId, $id]);
     }

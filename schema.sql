@@ -230,6 +230,16 @@
     UNIQUE(plan_id, version)
   );
 
+  CREATE TABLE IF NOT EXISTS subscription_plan_prices (
+    plan_version_id TEXT NOT NULL REFERENCES subscription_plan_versions(id) ON DELETE CASCADE,
+    billing_period TEXT NOT NULL CHECK (billing_period IN ('month', 'year')),
+    price INTEGER NOT NULL CHECK (price > 0),
+    currency TEXT NOT NULL DEFAULT 'INR',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (plan_version_id, billing_period)
+  );
+
   CREATE TABLE IF NOT EXISTS capabilities (
     key TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -1234,6 +1244,7 @@
   CREATE INDEX IF NOT EXISTS idx_story_insights_status ON story_insights(status, updated_at);
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);
   CREATE INDEX IF NOT EXISTS idx_plan_versions_plan_status ON subscription_plan_versions(plan_id, status, version DESC);
+  CREATE INDEX IF NOT EXISTS idx_plan_prices_version_period ON subscription_plan_prices(plan_version_id, billing_period);
   CREATE INDEX IF NOT EXISTS idx_usage_user_cap_period ON entitlement_usage_events(user_id, capability_key, period_start, period_end);
   CREATE INDEX IF NOT EXISTS idx_payments_user_created ON payments(user_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_resources_status_category ON resources(status, category, updated_at DESC);

@@ -2646,9 +2646,9 @@ function recommendation_feed_for_user(string $userId, int $limit = 24): array
 function trusted_payment_plans(): array
 {
     $fallback = [
-        ['id' => 'starter', 'name' => 'Reader', 'price' => 299, 'period' => 'month'],
-        ['id' => 'annual', 'name' => 'Annual Plus', 'price' => 2499, 'period' => 'year'],
-        ['id' => 'patron', 'name' => 'Patron', 'price' => 4999, 'period' => 'year'],
+        ['id' => 'starter', 'name' => 'Reader', 'price' => 299, 'period' => 'month', 'prices' => ['month' => 299, 'year' => 2499]],
+        ['id' => 'annual', 'name' => 'Plus', 'price' => 499, 'period' => 'month', 'prices' => ['month' => 499, 'year' => 3999]],
+        ['id' => 'patron', 'name' => 'Patron', 'price' => 699, 'period' => 'month', 'prices' => ['month' => 699, 'year' => 4999]],
     ];
     $configured = document_value('plans', $fallback);
     entitlement_sync_plans(is_array($configured) ? $configured : $fallback);
@@ -2657,10 +2657,10 @@ function trusted_payment_plans(): array
         if (!is_array($plan)) continue;
         $id = strtolower(trim((string) ($plan['id'] ?? '')));
         $name = trim((string) ($plan['name'] ?? ''));
-        $price = (int) round((float) ($plan['price'] ?? 0));
-        $period = strtolower(trim((string) ($plan['period'] ?? 'month')));
-        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,79}$/', $id) || $name === '' || $price < 1 || $price > 10000000) continue;
-        $plans[$id] = ['id' => $id, 'name' => substr($name, 0, 120), 'price' => $price, 'period' => in_array($period, ['month', 'quarter', 'year'], true) ? $period : 'month'];
+        $prices = entitlement_plan_prices($plan);
+        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,79}$/', $id) || $name === '' || min($prices) < 1 || max($prices) > 10000000) continue;
+        if ($id === 'annual' && $name === 'Annual Plus') $name = 'Plus';
+        $plans[$id] = ['id' => $id, 'name' => substr($name, 0, 120), 'price' => $prices['month'], 'period' => 'month', 'prices' => $prices];
     }
     return $plans ?: array_column($fallback, null, 'id');
 }
@@ -2725,10 +2725,12 @@ function authoritative_payment_checkout(array $body): array
         $plans = trusted_payment_plans();
         if ($planId === '' || !isset($plans[$planId])) json_response(['error' => 'INVALID_PLAN', 'message' => 'Choose a currently available membership plan.'], 400);
         $plan = $plans[$planId];
-        $months = $kind === 'gift' ? max(1, min(24, (int) ($requestedMetadata['months'] ?? 1))) : ($plan['period'] === 'year' ? 12 : 1);
-        $baseInr = $kind === 'gift' && $plan['period'] === 'month' ? $plan['price'] * $months : $plan['price'];
+        $requestedPeriod = strtolower(trim((string) ($requestedMetadata['period'] ?? 'month')));
+        $period = in_array($requestedPeriod, ['month', 'year'], true) ? $requestedPeriod : 'month';
+        $months = $kind === 'gift' ? max(1, min(24, (int) ($requestedMetadata['months'] ?? ($period === 'year' ? 12 : 1)))) : ($period === 'year' ? 12 : 1);
+        $baseInr = $kind === 'gift' && $period === 'month' ? $plan['prices']['month'] * $months : $plan['prices'][$period];
         $amount = max(1, (int) round($baseInr * $rates[$currency] * 100));
-        $metadata += ['planId' => $plan['id'], 'planName' => $plan['name'], 'period' => $plan['period'], 'months' => $months];
+        $metadata += ['planId' => $plan['id'], 'planName' => $plan['name'], 'period' => $period, 'months' => $months];
         $purpose = $kind === 'gift' ? $plan['name'] . ' gift membership' : $plan['name'] . ' membership';
         if ($kind === 'gift') {
             $recipientEmail = strtolower(trim((string) ($requestedMetadata['recipientEmail'] ?? '')));

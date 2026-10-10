@@ -5,7 +5,7 @@ require_once __DIR__ . '/config.php';
 
 final class Database
 {
-    private const SCHEMA_VERSION = 20261004;
+    private const SCHEMA_VERSION = 20261011;
     private static ?PDO $pdo = null;
 
     public static function pdo(): PDO

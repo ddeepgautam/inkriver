@@ -102,11 +102,17 @@ $trustedCheckout = authoritative_payment_checkout([
     'metadata' => ['planId' => 'starter', 'planName' => 'Attacker Plan', 'period' => 'year'],
 ]);
 assert_true(
-    ($trustedCheckout['payment']['amount'] ?? 0) === 29900
+    ($trustedCheckout['payment']['amount'] ?? 0) === 249900
     && ($trustedCheckout['metadata']['planName'] ?? '') === 'Reader'
-    && ($trustedCheckout['metadata']['period'] ?? '') === 'month',
-    'membership checkout ignores client-controlled amount, name, and duration'
+    && ($trustedCheckout['metadata']['period'] ?? '') === 'year',
+    'annual membership checkout uses the server-owned annual price and plan name'
 );
+$monthlyCheckout = authoritative_payment_checkout([
+    'amount' => 1,
+    'currency' => 'INR',
+    'metadata' => ['planId' => 'starter', 'planName' => 'Attacker Plan', 'period' => 'invalid'],
+]);
+assert_true(($monthlyCheckout['payment']['amount'] ?? 0) === 29900 && ($monthlyCheckout['metadata']['period'] ?? '') === 'month', 'invalid billing periods fail closed to the server-owned monthly offer');
 
 record_auth_rate_limit_failure('smoke-login', 'smoke@example.com', 5, 900, 900);
 $rateLimitKey = auth_rate_limit_key('smoke-login', 'smoke@example.com');
@@ -185,6 +191,8 @@ entitlement_sync_plans(document_value('plans', [
     ['id' => 'patron', 'name' => 'Patron', 'price' => 4999, 'period' => 'year'],
 ]));
 assert_true((int) $pdo->query('SELECT COUNT(*) FROM subscription_plan_versions')->fetchColumn() === $planVersionCount, 'synchronizing unchanged plan capabilities is idempotent and does not create phantom versions');
+$starterPrices = $pdo->query("SELECT billing_period, price FROM subscription_plan_prices WHERE plan_version_id = (SELECT id FROM subscription_plan_versions WHERE plan_id = 'starter' AND status = 'published' ORDER BY version DESC LIMIT 1) ORDER BY billing_period")->fetchAll();
+assert_true(count($starterPrices) === 2 && $starterPrices[0]['billing_period'] === 'month' && (int) $starterPrices[0]['price'] === 299 && $starterPrices[1]['billing_period'] === 'year' && (int) $starterPrices[1]['price'] === 2499, 'each plan version stores server-authoritative monthly and annual prices');
 $catalogKeys = array_column(entitlement_capability_catalog(), 'key');
 assert_true(count($catalogKeys) >= 16 && in_array(CAPABILITY_CREATOR_PUBLISHING, $catalogKeys, true) && in_array(CAPABILITY_PRIORITY_SUPPORT, $catalogKeys, true), 'the plan feature catalog covers reader, business, creator, and support capabilities');
 $selectiveCapabilities = entitlement_normalize_plan_capabilities([
