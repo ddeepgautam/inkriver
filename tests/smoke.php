@@ -185,6 +185,16 @@ entitlement_sync_plans(document_value('plans', [
     ['id' => 'patron', 'name' => 'Patron', 'price' => 4999, 'period' => 'year'],
 ]));
 assert_true((int) $pdo->query('SELECT COUNT(*) FROM subscription_plan_versions')->fetchColumn() === $planVersionCount, 'synchronizing unchanged plan capabilities is idempotent and does not create phantom versions');
+$catalogKeys = array_column(entitlement_capability_catalog(), 'key');
+assert_true(count($catalogKeys) >= 16 && in_array(CAPABILITY_CREATOR_PUBLISHING, $catalogKeys, true) && in_array(CAPABILITY_PRIORITY_SUPPORT, $catalogKeys, true), 'the plan feature catalog covers reader, business, creator, and support capabilities');
+$selectiveCapabilities = entitlement_normalize_plan_capabilities([
+    'id' => 'selective',
+    'featureKeys' => [CAPABILITY_TRANSLATIONS, CAPABILITY_BUSINESS_CONTACTS],
+    'capabilities' => [CAPABILITY_BUSINESS_CONTACTS => ['mode' => 'quota', 'limit' => 3, 'period' => 'month']],
+]);
+assert_true(($selectiveCapabilities[CAPABILITY_TRANSLATIONS]['mode'] ?? '') === 'allowed', 'a selected boolean plan feature is granted');
+assert_true(($selectiveCapabilities[CAPABILITY_AI_INSIGHTS]['mode'] ?? '') === 'denied', 'an unselected plan feature fails closed');
+assert_true(($selectiveCapabilities[CAPABILITY_BUSINESS_CONTACTS]['limit'] ?? 0) === 3, 'selected quota features preserve their configured limit');
 $starterVersion = $pdo->query("SELECT id FROM subscription_plan_versions WHERE plan_id = 'starter' AND status = 'published' ORDER BY version DESC LIMIT 1")->fetchColumn();
 $pdo->prepare("INSERT INTO subscriptions (id, user_id, plan_id, plan_version_id, provider, currency, amount, status, starts_at, ends_at, current_period_start, current_period_end, created_at, updated_at) VALUES ('SUB-STARTER-SMOKE', 'USR-FAKE-PAID', 'starter', ?, 'smoke', 'INR', 29900, 'active', ?, ?, ?, ?, ?, ?)")
     ->execute([$starterVersion, $now, gmdate('Y-m-d\TH:i:s.v\Z', time() + 30 * 86400), $now, gmdate('Y-m-d\TH:i:s.v\Z', time() + 30 * 86400), $now, $now]);

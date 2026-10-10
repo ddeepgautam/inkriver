@@ -266,6 +266,40 @@ function cleanProfileRouteSlug(path = state.path) {
   return /^[a-z0-9_-]{3,30}$/.test(slug) ? slug : "";
 }
 
+const defaultPlanFeatureCatalog = [
+  { key: "content.paid_articles.read", name: "Member-only stories", category: "Reading", valueType: "quota", description: "Read paid and member-only articles." },
+  { key: "content.translations.use", name: "Article translations", category: "Reading", valueType: "boolean", description: "Translate unlocked stories into supported languages." },
+  { key: "content.ai_insights.use", name: "AI article insights", category: "Reading", valueType: "boolean", description: "Generate concise overviews and key concepts for stories." },
+  { key: "content.interactive.use", name: "Polls, surveys, and quizzes", category: "Reading", valueType: "boolean", description: "Respond to interactive content inside stories." },
+  { key: "experience.audio_listening", name: "Listen to stories", category: "Reading", valueType: "boolean", description: "Use the built-in spoken article player." },
+  { key: "experience.ad_free", name: "Ad-free reading", category: "Reading", valueType: "boolean", description: "Hide advertising placements throughout the reading experience." },
+  { key: "community.comments.write", name: "Comments and replies", category: "Community", valueType: "boolean", description: "Post, edit, like, and reply to story discussions." },
+  { key: "community.following.use", name: "Follow writers and publications", category: "Community", valueType: "boolean", description: "Build a followed-writer and publication list." },
+  { key: "personalization.recommendations.use", name: "Personalized recommendations", category: "Personalization", valueType: "boolean", description: "Receive a feed tuned to reading activity and interests." },
+  { key: "library.reading.use", name: "Saved stories and reading history", category: "Personalization", valueType: "boolean", description: "Sync bookmarks, history, and reading progress." },
+  { key: "business.contacts.reveal", name: "Business contact reveals", category: "Business network", valueType: "quota", description: "Reveal verified contact details for business profiles." },
+  { key: "resources.included.access", name: "Included premium resources", category: "Resources", valueType: "scope", description: "Access selected or eligible paid resources without a separate purchase." },
+  { key: "creator.publishing.use", name: "Author publishing tools", category: "Creator tools", valueType: "boolean", description: "Create drafts and submit stories for editorial review." },
+  { key: "creator.analytics.view", name: "Creator analytics", category: "Creator tools", valueType: "boolean", description: "View story reach, engagement, and performance data." },
+  { key: "creator.earnings.use", name: "Earnings and payouts", category: "Creator tools", valueType: "boolean", description: "View earnings and configure payout details." },
+  { key: "support.priority", name: "Priority support", category: "Support", valueType: "boolean", description: "Mark support requests for priority member handling." },
+];
+
+function defaultPlanCapabilities(selectedKeys, contactLimit, resourceMode = "denied") {
+  const selected = new Set(selectedKeys);
+  return Object.fromEntries(defaultPlanFeatureCatalog.map((feature) => {
+    let value = { mode: selected.has(feature.key) ? "allowed" : "denied", limit: null, period: "subscription_cycle", scope: {} };
+    if (feature.key === "content.paid_articles.read") value = { ...value, mode: selected.has(feature.key) ? "unlimited" : "denied" };
+    if (feature.key === "business.contacts.reveal") value = { ...value, mode: selected.has(feature.key) ? "quota" : "denied", limit: selected.has(feature.key) ? contactLimit : null, period: "month" };
+    if (feature.key === "resources.included.access") value = { ...value, mode: selected.has(feature.key) ? "allowed" : "denied", scope: { kind: resourceMode, resourceIds: [] } };
+    return [feature.key, value];
+  }));
+}
+
+const starterFeatureKeys = ["content.paid_articles.read", "content.translations.use", "content.interactive.use", "experience.audio_listening", "community.comments.write", "community.following.use", "personalization.recommendations.use", "library.reading.use", "business.contacts.reveal", "creator.publishing.use", "creator.analytics.view", "creator.earnings.use"];
+const annualFeatureKeys = [...starterFeatureKeys, "content.ai_insights.use", "experience.ad_free", "support.priority"];
+const patronFeatureKeys = [...annualFeatureKeys, "resources.included.access"];
+
 const defaultPlans = [
   {
     id: "starter",
@@ -273,8 +307,9 @@ const defaultPlans = [
     price: 299,
     period: "month",
     note: "Unlimited member stories",
-    features: ["Full paywall access", "Ad-light reading", "Save lists", "Audio queue"],
-    capabilities: { "content.paid_articles.read": { mode: "unlimited", period: "subscription_cycle" }, "business.contacts.reveal": { mode: "quota", limit: 5, period: "month" }, "resources.included.access": { mode: "denied", scope: { kind: "selected", resourceIds: [] } } },
+    features: ["Member-only stories", "Article translations", "Listen to stories", "Personalized recommendations"],
+    featureKeys: starterFeatureKeys,
+    capabilities: defaultPlanCapabilities(starterFeatureKeys, 5),
   },
   {
     id: "annual",
@@ -282,8 +317,9 @@ const defaultPlans = [
     price: 2499,
     period: "year",
     note: "Best for regular readers",
-    features: ["Everything in Reader", "No reader ads", "Gift links", "Priority recommendations"],
-    capabilities: { "content.paid_articles.read": { mode: "unlimited", period: "subscription_cycle" }, "business.contacts.reveal": { mode: "quota", limit: 25, period: "month" }, "resources.included.access": { mode: "denied", scope: { kind: "selected", resourceIds: [] } } },
+    features: ["Everything in Reader", "AI article insights", "Ad-free reading", "Priority support"],
+    featureKeys: annualFeatureKeys,
+    capabilities: defaultPlanCapabilities(annualFeatureKeys, 25),
   },
   {
     id: "patron",
@@ -291,8 +327,9 @@ const defaultPlans = [
     price: 4999,
     period: "year",
     note: "Support writers directly",
-    features: ["Everything in Plus", "Writer bonus pool", "Publication invites", "Early editorial drops"],
-    capabilities: { "content.paid_articles.read": { mode: "unlimited", period: "subscription_cycle" }, "business.contacts.reveal": { mode: "quota", limit: 100, period: "month" }, "resources.included.access": { mode: "allowed", scope: { kind: "all_eligible" } } },
+    features: ["Everything in Annual Plus", "Included premium resources", "100 contact reveals monthly", "Priority support"],
+    featureKeys: patronFeatureKeys,
+    capabilities: defaultPlanCapabilities(patronFeatureKeys, 100, "all_eligible"),
   },
 ];
 
@@ -525,6 +562,19 @@ function visiblePaymentGateways() {
 
 function featureEnabled(key, fallback = true) {
   return state.featureFlags[key] === undefined ? fallback : Boolean(state.featureFlags[key]);
+}
+
+function hasPlanFeature(key) {
+  return Boolean(state.entitlements?.[key]?.allowed);
+}
+
+function planFeatureUpgradeTemplate(title, description = "Choose a plan that includes this feature to continue.") {
+  return `<div class="plan-feature-gate">${icon("lock", 18)}<span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(description)}</small></span><button class="secondary-button" data-route="/pricing">View plans</button></div>`;
+}
+
+function requestPlanFeatureUpgrade(label) {
+  state.paymentMessage = `${label} is not included in your current plan.`;
+  setRoute("/pricing");
 }
 
 function featureDisabledMessage(label) {
@@ -1119,7 +1169,7 @@ function emptyPlanForm() {
     price: 299,
     period: "month",
     note: "",
-    features: "",
+    featureKeys: [],
     paidArticleMode: "unlimited",
     paidArticleLimit: 20,
     contactMode: "quota",
@@ -1181,51 +1231,79 @@ function slugifyPlanId(name) {
   return slug;
 }
 
-function populatePlanForm(plan) {
+function configuredPlanFeatureKeys(plan) {
+  if (Array.isArray(plan.featureKeys)) return [...plan.featureKeys];
+  const configured = state.planFeatureCatalog.filter((feature) => ["allowed", "quota", "unlimited"].includes(plan.capabilities?.[feature.key]?.mode)).map((feature) => feature.key);
+  const legacyDefault = defaultPlans.find((candidate) => candidate.id === plan.id)?.featureKeys || [];
+  return [...new Set([...configured, ...legacyDefault])];
+}
+
+function planFormFromPlan(plan) {
   const capabilities = plan.capabilities || {};
   const articles = capabilities["content.paid_articles.read"] || { mode: "unlimited", limit: 20 };
   const contacts = capabilities["business.contacts.reveal"] || { mode: "quota", limit: 5 };
   const resources = capabilities["resources.included.access"] || { mode: "denied", scope: { resourceIds: [] } };
-  state.editingPlanId = plan.id;
-  state.planForm = {
+  return {
     ...plan,
-    features: plan.features.join("\n"),
-    paidArticleMode: articles.mode || "denied",
+    featureKeys: configuredPlanFeatureKeys(plan),
+    paidArticleMode: ["quota", "unlimited"].includes(articles.mode) ? articles.mode : "unlimited",
     paidArticleLimit: Number(articles.limit || 20),
-    contactMode: contacts.mode || "denied",
+    contactMode: ["quota", "unlimited"].includes(contacts.mode) ? contacts.mode : "quota",
     contactLimit: Number(contacts.limit || 5),
     resourceMode: resources.mode === "denied" ? "denied" : (["all_eligible", "all_published"].includes(resources.scope?.kind) ? resources.scope.kind : "selected"),
     resourceIds: (resources.scope?.resourceIds || []).join(", "),
   };
+}
+
+function populatePlanForm(plan) {
+  state.editingPlanId = plan.id;
+  state.planForm = planFormFromPlan(plan);
   state.planMessage = `Editing ${plan.name}`;
-  render();
+  setRoute(`/admin/pricing/edit/${encodeURIComponent(plan.id)}`);
 }
 
 function savePlanFromForm() {
   const name = state.planForm.name.trim();
   const price = Number(state.planForm.price);
+  const planId = state.editingPlanId || slugifyPlanId(name);
+  const selectedFeatures = new Set(state.planForm.featureKeys || []);
   if (!name || !Number.isFinite(price) || price <= 0) {
     state.planMessage = "Plan name and valid INR price are required.";
+    render();
+    window.setTimeout(() => document.getElementById(!name ? "planName" : "planPrice")?.focus(), 0);
+    return;
+  }
+  if (!state.editingPlanId && state.plans.some((plan) => plan.id === planId)) {
+    state.planMessage = "A plan with this name already exists. Edit the existing plan or choose a different name.";
+    render();
+    window.setTimeout(() => document.getElementById("planName")?.focus(), 0);
+    return;
+  }
+  if ((selectedFeatures.has("content.paid_articles.read") && state.planForm.paidArticleMode === "quota" && Number(state.planForm.paidArticleLimit) < 1)
+      || (selectedFeatures.has("business.contacts.reveal") && state.planForm.contactMode === "quota" && Number(state.planForm.contactLimit) < 1)) {
+    state.planMessage = "Selected quota features require a limit of at least 1.";
     render();
     return;
   }
   const nextPlan = {
-    id: state.editingPlanId || slugifyPlanId(name),
+    id: planId,
     name,
     price,
     period: state.planForm.period || "month",
     note: state.planForm.note.trim() || "Custom membership package",
-    features: state.planForm.features
-      .split("\n")
-      .map((feature) => feature.trim())
-      .filter(Boolean),
-    capabilities: {
-      "content.paid_articles.read": { mode: state.planForm.paidArticleMode, limit: state.planForm.paidArticleMode === "quota" ? Number(state.planForm.paidArticleLimit) : null, period: "subscription_cycle" },
-      "business.contacts.reveal": { mode: state.planForm.contactMode, limit: state.planForm.contactMode === "quota" ? Number(state.planForm.contactLimit) : null, period: "month" },
-      "resources.included.access": { mode: state.planForm.resourceMode === "denied" ? "denied" : "allowed", scope: ["all_eligible", "all_published"].includes(state.planForm.resourceMode) ? { kind: state.planForm.resourceMode } : { kind: "selected", resourceIds: state.planForm.resourceIds.split(",").map((id) => id.trim()).filter(Boolean) } },
-    },
+    featureKeys: [...new Set(state.planForm.featureKeys || [])],
+    features: state.planFeatureCatalog.filter((feature) => (state.planForm.featureKeys || []).includes(feature.key)).map((feature) => feature.name),
+    capabilities: Object.fromEntries(state.planFeatureCatalog.map((feature) => [feature.key, { mode: (state.planForm.featureKeys || []).includes(feature.key) ? "allowed" : "denied", limit: null, period: "subscription_cycle", scope: {} }])),
   };
-  if (!nextPlan.features.length) nextPlan.features = ["Member-only access"];
+  nextPlan.capabilities["content.paid_articles.read"] = { mode: nextPlan.featureKeys.includes("content.paid_articles.read") ? state.planForm.paidArticleMode : "denied", limit: state.planForm.paidArticleMode === "quota" ? Number(state.planForm.paidArticleLimit) : null, period: "subscription_cycle", scope: {} };
+  nextPlan.capabilities["business.contacts.reveal"] = { mode: nextPlan.featureKeys.includes("business.contacts.reveal") ? state.planForm.contactMode : "denied", limit: state.planForm.contactMode === "quota" ? Number(state.planForm.contactLimit) : null, period: "month", scope: {} };
+  nextPlan.capabilities["resources.included.access"] = { mode: nextPlan.featureKeys.includes("resources.included.access") && state.planForm.resourceMode !== "denied" ? "allowed" : "denied", limit: null, period: "subscription_cycle", scope: ["all_eligible", "all_published"].includes(state.planForm.resourceMode) ? { kind: state.planForm.resourceMode } : { kind: "selected", resourceIds: state.planForm.resourceIds.split(",").map((id) => id.trim()).filter(Boolean) } };
+  if (!nextPlan.featureKeys.length) {
+    state.planMessage = "Select at least one feature before saving this plan.";
+    render();
+    window.setTimeout(() => document.querySelector("[data-plan-feature]")?.focus(), 0);
+    return;
+  }
   if (state.editingPlanId) {
     state.plans = state.plans.map((plan) => (plan.id === state.editingPlanId ? nextPlan : plan));
     state.planMessage = `${nextPlan.name} updated.`;
@@ -1236,7 +1314,7 @@ function savePlanFromForm() {
   state.editingPlanId = "";
   state.planForm = emptyPlanForm();
   persistSubscriptionPlans();
-  render();
+  setRoute("/admin/pricing");
 }
 
 function deletePlan(planId) {
@@ -1254,7 +1332,7 @@ function deletePlan(planId) {
   if (state.checkoutPlan?.id === planId) state.checkoutPlan = null;
   state.planMessage = `${removed?.name || "Package"} deleted.`;
   persistSubscriptionPlans();
-  render();
+  setRoute("/admin/pricing");
 }
 
 function filteredUsers() {
@@ -1347,6 +1425,13 @@ async function hydratePlatformState() {
   state.articleInsights = payload.articleInsights || {};
   state.entitlements = payload.entitlements || {};
   state.activeSubscription = payload.activeSubscription || null;
+  if (Array.isArray(payload.planFeatureCatalog) && payload.planFeatureCatalog.length) state.planFeatureCatalog = payload.planFeatureCatalog;
+  if (state.user && !hasPlanFeature("library.reading.use")) {
+    state.saved = new Set();
+    state.readingHistory = [];
+  }
+  if (state.user && !hasPlanFeature("community.following.use")) state.following = emptyFollowing();
+  if (state.user && !hasPlanFeature("content.interactive.use")) state.pollResponses = {};
   if (state.user) state.isMember = Boolean(state.activeSubscription);
   if (Array.isArray(payload.translationLanguages)) state.translationLanguages = payload.translationLanguages;
   if (documents["site-seo-public"]) state.siteSeo = { ...state.siteSeo, ...documents["site-seo-public"] };
@@ -1642,7 +1727,7 @@ async function loadMediaAssets() {
 }
 
 async function loadRecommendationFeed() {
-  if (!state.user || !state.preferences.personalized) return;
+  if (!state.user || !state.preferences.personalized || !hasPlanFeature("personalization.recommendations.use")) return;
   try {
     const payload = await apiRequest("/api/recommendations/feed?limit=48");
     state.serverRecommendations = payload.feed || [];
@@ -1654,7 +1739,7 @@ async function loadRecommendationFeed() {
 }
 
 async function sendRecommendationFeedback(type, story, metadata = {}) {
-  if (!state.user || !story) return;
+  if (!state.user || !story || !hasPlanFeature("personalization.recommendations.use")) return;
   try {
     const payload = await apiRequest("/api/recommendations/feedback", {
       method: "POST",
@@ -1929,6 +2014,8 @@ const state = {
   siteSeo: loadSiteSeo(),
   siteSeoMessage: "",
   plans: loadSubscriptionPlans(),
+  planFeatureCatalog: defaultPlanFeatureCatalog,
+  planFeatureSearch: "",
   users: [],
   adminAnalytics: { eventCounts: [], storyCounts: [], dailyEvents: [], revenueByStory: [], revenue: 0, activeSubscriptions: 0, tickets: [], moderation: [] },
   adminRecommendationStatus: { profiles: 0, signals: 0, scores: 0, lastTrainedAt: "" },
@@ -2066,6 +2153,7 @@ function storyTags(story) {
 }
 
 function recordRecommendationActivity(story, type) {
+  if (state.user && !hasPlanFeature("personalization.recommendations.use")) return;
   if (!story || !recommendationSignals[type]) return;
   const weight = recommendationSignals[type];
   addScore(state.recommendation.topicScores, story.topic, weight);
@@ -2271,6 +2359,7 @@ function isFollowing(type, value) {
 }
 
 function toggleFollow(type, value) {
+  if (!hasPlanFeature("community.following.use")) return requestPlanFeatureUpgrade("Following writers and publications");
   if (!state.following[type] || !value) return;
   const following = new Set(state.following[type]);
   const wasFollowing = following.has(value);
@@ -2535,6 +2624,7 @@ async function loadStoryComments(storySlug) {
 }
 
 async function saveComment(storySlug) {
+  if (!hasPlanFeature("community.comments.write")) return requestPlanFeatureUpgrade("Comments and replies");
   const text = state.commentDraft.trim();
   if (!text) return;
   if (!state.user) {
@@ -2643,6 +2733,7 @@ async function loadRouteData(path = state.path, dashboardSection = state.dashboa
     add(loadAdminCommerceData());
     add(loadProductionSuite());
   }
+  if (path.startsWith("/admin/pricing")) add(loadAdminOperationalData());
   if (path.startsWith("/admin/production") || path.startsWith("/admin/health")) add(loadProductionSuite());
   if (path.startsWith("/admin/security")) add(loadProductionSuite());
   if (path.startsWith("/admin/seo")) add(loadPlatformAddons(true));
@@ -2774,6 +2865,7 @@ function translationStatusTemplate(story) {
 }
 
 async function selectArticleLanguage(story, locale) {
+  if (locale !== "en-IN" && !hasPlanFeature("content.translations.use")) return requestPlanFeatureUpgrade("Article translations");
   state.preferences.locale = locale;
   state.translationMessage = "";
   persistProductState("preferences", state.preferences);
@@ -3463,6 +3555,7 @@ function filteredStories(topic = state.activeTopic) {
     return matchesTopic && `${story.title} ${story.dek} ${story.author} ${story.topic}`.toLowerCase().includes(query);
   });
   if (topic !== "For you" || query) return query ? matches : rotatingCategoryStories(matches, topic);
+  if (state.user && !hasPlanFeature("personalization.recommendations.use")) return rotatingCategoryStories(matches, topic);
   if (state.serverRecommendations.length) {
     const bySlug = new Map(matches.map((story) => [story.slug, story]));
     const ranked = state.serverRecommendations
@@ -4257,6 +4350,8 @@ function adminRouteTemplate() {
   if (state.path.startsWith("/admin/blogs")) return adminBlogsTemplate();
   if (state.path === "/admin/users/new") return adminCreateUserTemplate();
   if (state.path.startsWith("/admin/users")) return adminUsersTemplate();
+  if (state.path === "/admin/pricing/new" || state.path.startsWith("/admin/pricing/edit/")) return adminPlanEditorTemplate();
+  if (state.path.startsWith("/admin/pricing")) return adminPricingTemplate();
   if (state.path.startsWith("/admin/settings")) return adminSettingsTemplate();
   if (state.path.startsWith("/admin/seo/audit")) return adminSeoAuditTemplate();
   if (state.path.startsWith("/admin/seo")) return adminSeoTemplate();
@@ -4670,6 +4765,7 @@ function homeTemplate(selectedCategory = null) {
 }
 
 function personalizedFeedStatusTemplate() {
+  if (state.user && !hasPlanFeature("personalization.recommendations.use")) return planFeatureUpgradeTemplate("Personalized recommendations", "Your current plan uses the standard feed order.");
   const signals = state.recommendation.activity.length;
   const interests = state.recommendation.selectedInterests;
   return `
@@ -4742,6 +4838,7 @@ function continueReadingTemplate(context = "dashboard") {
 }
 
 function recommendationRailTemplate() {
+  if (state.user && !hasPlanFeature("personalization.recommendations.use")) return `<section class="rail-panel recommendation-rail">${planFeatureUpgradeTemplate("Personalized recommendations", "Add this feature to receive a feed tuned to your interests.")}</section>`;
   const topInterests = topRecommendationInterests(3).filter((interest) => interest.score > 0);
   return `
     <section class="rail-panel recommendation-rail">
@@ -4760,11 +4857,12 @@ function recommendationRailTemplate() {
 }
 
 function subscriptionTemplate() {
+  const activeFeatureCount = state.planFeatureCatalog.filter((feature) => hasPlanFeature(feature.key)).length;
   return `
     <section class="rail-panel subscribe-panel">
       <div class="panel-icon">${icon("spark")}</div>
       <h2>${state.isMember ? "Your membership is active" : "Read without limits"}</h2>
-      <p>${state.isMember ? "Member-only articles, cleaner reading, and writer support are enabled." : "Unlock member stories, remove reader ads, and support writers from INR 299/month."}</p>
+      <p>${state.isMember ? `${activeFeatureCount} plan ${activeFeatureCount === 1 ? "feature is" : "features are"} active for your account.` : "Choose a plan whose included features match how you read, connect, or publish."}</p>
       <button class="full-button" data-checkout="${state.plans[0]?.id || ""}">${state.isMember ? "Manage plan" : "Become a member"}</button>
     </section>
   `;
@@ -4870,13 +4968,14 @@ function readerToolbarTemplate(story, history) {
     <button class="${state.preferences.focusMode ? "active exit-focus" : ""}" data-reader-mode="focus" title="${state.preferences.focusMode ? "Exit focus mode" : "Enter focus mode"}" aria-label="${state.preferences.focusMode ? "Exit focus mode" : "Enter focus mode"}">${icon(state.preferences.focusMode ? "close" : "eye", 15)}<span>${state.preferences.focusMode ? "Exit focus" : "Focus"}</span></button>
     <div class="segmented-control compact"><button class="${state.preferences.fontFamily === "serif" ? "active" : ""}" data-reader-font="serif">Serif</button><button class="${state.preferences.fontFamily === "sans" ? "active" : ""}" data-reader-font="sans">Sans</button></div>
     <button data-reader-scale="-10" title="Decrease text">A−</button><button data-reader-scale="10" title="Increase text">A+</button>
-    <button data-action="toggle-speech">${icon(state.speechActive ? "pause" : "play", 15)}<span>${state.speechActive ? "Pause" : "Listen"}</span></button>
+    ${hasPlanFeature("experience.audio_listening") ? `<button data-action="toggle-speech">${icon(state.speechActive ? "pause" : "play", 15)}<span>${state.speechActive ? "Pause" : "Listen"}</span></button>` : `<button data-route="/pricing" title="Available with selected membership plans">${icon("lock", 15)}<span>Listen</span></button>`}
     <span class="remaining-time">${minutes} min remaining</span>
-    <select data-locale aria-label="Article language" ${state.translationBusy ? "disabled" : ""}>${readerLanguageOptions().map((item) => `<option value="${escapeHtml(item.locale)}" ${state.preferences.locale === item.locale ? "selected" : ""}>${escapeHtml(item.language)}</option>`).join("")}</select>
+    <select data-locale aria-label="Article language" ${state.translationBusy || !hasPlanFeature("content.translations.use") ? "disabled title=\"Translations are not included in your current plan\"" : ""}>${readerLanguageOptions().map((item) => `<option value="${escapeHtml(item.locale)}" ${state.preferences.locale === item.locale ? "selected" : ""}>${escapeHtml(item.language)}</option>`).join("")}</select>
   </div>`;
 }
 
 function articleInsightTemplate(story) {
+  if (!hasPlanFeature("content.ai_insights.use")) return planFeatureUpgradeTemplate("AI article insights", "This plan does not include generated overviews and key concepts.");
   const insight = state.articleInsights[story.slug];
   const message = state.articleInsightMessages[story.slug];
   if (!insight) return `<details class="article-insights" open><summary>${icon("spark", 16)}Article overview and key concepts</summary><p>${escapeHtml(message || "Preparing a concise overview…")}</p>${message ? `<button class="secondary-button" data-insight-retry="${escapeHtml(story.slug)}">Retry overview</button>` : ""}</details>`;
@@ -4884,7 +4983,7 @@ function articleInsightTemplate(story) {
 }
 
 async function loadArticleInsight(story) {
-  if (!story || state.articleInsights[story.slug] || state.articleInsightBusy.has(story.slug) || state.articleInsightAttempted.has(story.slug)) return;
+  if (!story || !hasPlanFeature("content.ai_insights.use") || state.articleInsights[story.slug] || state.articleInsightBusy.has(story.slug) || state.articleInsightAttempted.has(story.slug)) return;
   state.articleInsightBusy.add(story.slug);
   state.articleInsightAttempted.add(story.slug);
   state.articleInsightMessages[story.slug] = "";
@@ -4920,6 +5019,7 @@ function writerTipTemplate(story) {
 
 function interactiveBlocksTemplate(story) {
   if (!story.interactiveBlocks?.length) return "";
+  if (!hasPlanFeature("content.interactive.use")) return `<section id="article-interactive">${planFeatureUpgradeTemplate("Interactive story content", "Upgrade to answer polls, surveys, and quizzes.")}</section>`;
   return `
     <section class="interactive-blocks" id="article-interactive">
       ${story.interactiveBlocks.map((block) => interactiveBlockTemplate(story, block)).join("")}
@@ -4965,7 +5065,7 @@ function commentsTemplate(story) {
   return `
     <section class="comments-section" id="comments">
       <div class="comments-heading"><div><h2>Discussion</h2><span>${comments.length} response${comments.length === 1 ? "" : "s"}</span></div><label>Sort<select id="commentSort"><option value="top" ${state.commentSort === "top" ? "selected" : ""}>Top</option><option value="newest" ${state.commentSort === "newest" ? "selected" : ""}>Newest</option></select></label></div>
-      <div class="comment-composer">
+      ${hasPlanFeature("community.comments.write") ? `<div class="comment-composer">
         <span class="avatar">${escapeHtml(currentCommentAuthor()[0])}</span>
         <div>
           ${state.commentReplyTo ? `<span class="comment-context">Replying to ${escapeHtml(comments.find((comment) => comment.id === state.commentReplyTo)?.author || "reader")} <button data-action="cancel-comment">Cancel</button></span>` : ""}
@@ -4973,7 +5073,7 @@ function commentsTemplate(story) {
           <textarea id="commentDraft" placeholder="Add to the discussion. Use @name to mention someone.">${escapeHtml(state.commentDraft)}</textarea>
           <div><small>Be specific, constructive, and kind.</small><button class="primary-button" data-comment-submit="${story.slug}">${state.commentEditId ? "Save edit" : state.commentReplyTo ? "Post reply" : "Post response"}</button></div>
         </div>
-      </div>
+      </div>` : planFeatureUpgradeTemplate("Join the discussion", "Reading comments is open; posting and reacting require an included plan feature.")}
       <div class="comment-list">
         ${roots.length ? roots.map((comment) => commentThreadTemplate(story.slug, comment, comments)).join("") : `<div class="empty-state">Start the discussion with a thoughtful response.</div>`}
       </div>
@@ -4993,13 +5093,13 @@ function commentThreadTemplate(storySlug, comment, comments) {
         <div>
           <div class="comment-author-line"><strong>${escapeHtml(comment.author)}</strong>${comment.writerReply ? `<span>Writer</span>` : ""}${comment.pinned ? `<span>${icon("bookmark", 12)}Pinned</span>` : ""}<small>${new Date(comment.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}${comment.editedAt ? " · Edited" : ""}</small></div>
           <p>${escapeHtml(comment.text).replace(/(@[\w ]+)/g, "<mark>$1</mark>")}</p>
-          <div class="comment-actions">
+          ${hasPlanFeature("community.comments.write") ? `<div class="comment-actions">
             <button class="${liked ? "active" : ""}" data-comment-like="${storySlug}:${comment.id}">${icon("heart", 14)}${comment.likes}</button>
             <button data-comment-reply="${comment.id}">${icon("comment", 14)}Reply</button>
             ${ownComment ? `<button data-comment-edit="${storySlug}:${comment.id}">${icon("pen", 14)}Edit</button>` : ""}
             <button data-comment-report="${storySlug}:${comment.id}">${icon("shield", 14)}${comment.reported ? "Reported" : "Report"}</button>
             ${canModerate ? `<button data-comment-pin="${storySlug}:${comment.id}">${icon("bookmark", 14)}${comment.pinned ? "Unpin" : "Pin"}</button><button class="danger-text" data-comment-delete="${storySlug}:${comment.id}">Delete</button>` : ""}
-          </div>
+          </div>` : `<small class="comment-read-only">Read-only on your current plan</small>`}
         </div>
       </div>
       ${replies.length ? `<div class="comment-replies">${replies.map((reply) => commentThreadTemplate(storySlug, reply, comments)).join("")}</div>` : ""}
@@ -5055,20 +5155,23 @@ function pricingTemplate() {
     <main class="pricing-page">
       <section class="page-heading">
         <h1>Membership plans</h1>
-        <p>Subscriptions unlock member-only content, reduce advertising, and fund the writer earning pool.</p>
+        <p>Choose the access that fits how you read, connect, and create on ${escapeHtml(siteName())}.</p>
+        ${state.paymentMessage ? `<div class="payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}
         ${currencyControlTemplate("pricing")}
       </section>
       <section class="pricing-grid">
-        ${state.plans.map((plan, index) => `
+        ${state.plans.map((plan, index) => {
+          const included = configuredPlanFeatureKeys(plan).map((key) => state.planFeatureCatalog.find((feature) => feature.key === key)?.name).filter(Boolean);
+          return `
           <article class="plan-card ${index === 1 ? "featured" : ""}">
-            <h2>${plan.name}</h2>
+            <h2>${escapeHtml(plan.name)}</h2>
             <div class="plan-price">${formatMoneyFromINR(plan.price)}<span>/${plan.period}</span></div>
             <small class="base-price">Base price ${formatINR(plan.price)}</small>
-            <p>${plan.note}</p>
-            <ul>${plan.features.map((feature) => `<li>${icon("check", 15)}${feature}</li>`).join("")}</ul>
-            <button class="full-button" data-checkout="${plan.id}">Choose ${plan.name}</button>
+            <p>${escapeHtml(plan.note)}</p>
+            <ul>${included.slice(0, 7).map((feature) => `<li>${icon("check", 15)}${escapeHtml(feature)}</li>`).join("")}${included.length > 7 ? `<li class="plan-more-features">+${included.length - 7} more included features</li>` : ""}</ul>
+            <button class="full-button" data-checkout="${escapeHtml(plan.id)}">Choose ${escapeHtml(plan.name)}</button>
           </article>
-        `).join("")}
+        `; }).join("")}
       </section>
       <section class="gateway-strip">
         ${visiblePaymentGateways().map((item) => `<div>${icon("card")}<strong>${item.name}</strong><span>${item.type}</span></div>`).join("")}
@@ -5145,6 +5248,7 @@ function becomeAuthorTemplate() {
 }
 
 function writeTemplate() {
+  if (!hasPlanFeature("creator.publishing.use")) return accessDeniedTemplate("Your current plan does not include author publishing tools. Choose an eligible plan to write and submit stories.");
   if (!["writer", "admin"].includes(state.user?.role)) {
     return accessDeniedTemplate("Writing tools are available from the dashboard for approved writer accounts.");
   }
@@ -5311,14 +5415,14 @@ function dashboardSectionDescription(section, role) {
 
 function dashboardSectionTemplate(section) {
   if (section === "resources") return dashboardResourcesTemplate();
-  if (section === "reading") return dashboardReadingTemplate();
-  if (section === "interests") return interestManagerTemplate();
-  if (section === "following") return followingManagerTemplate();
-  if (section === "history") return readingHistoryTemplate();
+  if (section === "reading") return hasPlanFeature("library.reading.use") ? dashboardReadingTemplate() : planFeatureUpgradeTemplate("Saved stories and reading history");
+  if (section === "interests") return hasPlanFeature("personalization.recommendations.use") ? interestManagerTemplate() : planFeatureUpgradeTemplate("Personalized recommendations");
+  if (section === "following") return hasPlanFeature("community.following.use") ? followingManagerTemplate() : planFeatureUpgradeTemplate("Follow writers and publications");
+  if (section === "history") return hasPlanFeature("library.reading.use") ? readingHistoryTemplate() : planFeatureUpgradeTemplate("Reading history");
   if (section === "membership") return dashboardMembershipTemplate();
-  if (section === "stories") return dashboardWriterStoriesTemplate();
-  if (section === "analytics") return dashboardWriterAnalyticsTemplate();
-  if (section === "earnings") return dashboardWriterEarningsTemplate();
+  if (section === "stories") return hasPlanFeature("creator.publishing.use") ? dashboardWriterStoriesTemplate() : planFeatureUpgradeTemplate("Author publishing tools");
+  if (section === "analytics") return hasPlanFeature("creator.analytics.view") ? dashboardWriterAnalyticsTemplate() : planFeatureUpgradeTemplate("Creator analytics");
+  if (section === "earnings") return hasPlanFeature("creator.earnings.use") ? dashboardWriterEarningsTemplate() : planFeatureUpgradeTemplate("Earnings and payouts");
   if (section === "moderation") return dashboardModeratorQueueTemplate();
   if (section === "reports") return dashboardModeratorReportsTemplate();
   if (section === "business") return businessWorkspaceTemplate();
@@ -5364,7 +5468,8 @@ function dashboardResourcesTemplate() {
 }
 
 function dashboardMembershipTemplate() {
-  return `<section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("card")}<h2>Current plan</h2></div><div class="subscription-state"><strong>${escapeHtml(state.user.subscription)}</strong><span>${state.isMember ? "Full member access is active." : "You are currently using the free reader plan."}</span></div><button class="primary-button" data-route="/pricing">${state.isMember ? "Review available plans" : "Upgrade membership"}</button><button class="secondary-button wide-button" data-action="cancel-subscription" ${state.isMember ? "" : "disabled"}>Cancel subscription</button></div><div class="work-panel"><div class="panel-title">${icon("check")}<h2>Account access</h2></div><ul class="member-benefit-list">${roleMap[state.user.role].map((permission) => `<li>${icon("check", 14)}${permission}</li>`).join("")}</ul><button class="secondary-button wide-button" data-route="/support">Get billing support</button></div>${invoicePanelTemplate()}</section>`;
+  const includedFeatures = state.planFeatureCatalog.filter((feature) => hasPlanFeature(feature.key));
+  return `<section class="member-two-column"><div class="work-panel"><div class="panel-title">${icon("card")}<h2>Current plan</h2></div><div class="subscription-state"><strong>${escapeHtml(state.user.subscription)}</strong><span>${state.isMember ? `${includedFeatures.length} included ${includedFeatures.length === 1 ? "feature is" : "features are"} active.` : "You are currently using the free reader plan."}</span></div><button class="primary-button" data-route="/pricing">${state.isMember ? "Review available plans" : "Upgrade membership"}</button><button class="secondary-button wide-button" data-action="cancel-subscription" ${state.isMember ? "" : "disabled"}>Cancel subscription</button></div><div class="work-panel"><div class="panel-title">${icon("check")}<h2>Plan access</h2></div>${includedFeatures.length ? `<ul class="member-benefit-list">${includedFeatures.map((feature) => `<li>${icon("check", 14)}${escapeHtml(feature.name)}</li>`).join("")}</ul>` : `<p class="muted-copy">No paid plan features are active. Upgrade to unlock the features you need.</p>`}<button class="secondary-button wide-button" data-route="/support">Get billing support</button></div>${invoicePanelTemplate()}</section>`;
 }
 
 function userWriterStories() {
@@ -6273,7 +6378,8 @@ function adminTemplate() {
         ${adminShortcutTemplate("pen", "Blog management", "Edit, draft, publish, delete, and review every story.", "/admin/blogs", `${state.stories.length} posts`)}
         ${adminShortcutTemplate("users", "User management", "Search members and manage roles, plans, suspensions, or deletion.", "/admin/users", `${state.users.length} users`)}
         ${adminShortcutTemplate("gauge", "Site SEO", "Control search appearance, sitemaps, schema, robots, and verification.", "/admin/seo", "Site-wide")}
-        ${adminShortcutTemplate("card", "Settings", "Manage memberships, payments, currencies, and social sign-in.", "/admin/settings", "Platform")}
+        ${adminShortcutTemplate("card", "Pricing & plans", "Create plans and control exactly which platform features each tier unlocks.", "/admin/pricing", `${state.plans.length} plans`)}
+        ${adminShortcutTemplate("gauge", "Settings", "Manage payments, currencies, menus, publications, and social sign-in.", "/admin/settings", "Platform")}
       </section>
       <section class="admin-dashboard-columns">
         <div class="work-panel">
@@ -6297,6 +6403,7 @@ function adminShellTemplate(title, description, content, actions = "") {
     ["bookmark", "Resources", "/admin/resources"],
     ["spark", "Creator studio", "/admin/creator"],
     ["users", "Users", "/admin/users"],
+    ["card", "Pricing & plans", "/admin/pricing"],
     ["gauge", "Business network", "/admin/business-network"],
     ["shield", "Moderation", "/admin/moderation"],
     ["link", "Copyright", "/admin/copyright"],
@@ -6461,11 +6568,110 @@ function adminCreateUserTemplate() {
   );
 }
 
+function adminPricingTemplate() {
+  const configuredFeatures = new Set(state.plans.flatMap((plan) => configuredPlanFeatureKeys(plan)));
+  const subscriberCount = Number(state.adminAnalytics.activeSubscriptions || 0);
+  return adminShellTemplate(
+    "Pricing & plans",
+    "Build membership tiers and enforce feature access across Nitross.",
+    `<section class="dashboard-grid pricing-admin-metrics">
+      ${metricTemplate("card", "Active plans", String(state.plans.length), "Available at checkout")}
+      ${metricTemplate("users", "Active subscriptions", subscriberCount.toLocaleString("en-IN"), "Across all paid plans")}
+      ${metricTemplate("check", "Plan features", String(configuredFeatures.size), `${state.planFeatureCatalog.length} available`)}
+      ${metricTemplate("shield", "Enforcement", "Server-side", "Versioned entitlements")}
+    </section>
+    ${state.planMessage ? `<div class="payment-message plan-page-message" role="status">${escapeHtml(state.planMessage)}</div>` : ""}
+    <section class="work-panel pricing-admin-panel">
+      <header class="pricing-admin-intro"><div><span class="eyebrow">Membership catalog</span><h2>Plans</h2><p>Changes create a new entitlement version. Existing subscribers keep the version they purchased until their subscription changes.</p></div><button class="primary-button" data-action="new-plan">${icon("card", 16)}Create plan</button></header>
+      <div class="pricing-plan-table" role="table" aria-label="Membership plans">
+        <div class="pricing-plan-row head" role="row"><span>Plan</span><span>Price</span><span>Features</span><span>Status</span><span>Actions</span></div>
+        ${state.plans.map((plan) => {
+          const keys = configuredPlanFeatureKeys(plan);
+          return `<article class="pricing-plan-row" role="row">
+            <span class="pricing-plan-identity"><i>${icon("card", 17)}</i><span><strong>${escapeHtml(plan.name)}</strong><small>${escapeHtml(plan.note || "Membership plan")}</small></span></span>
+            <span class="pricing-plan-price"><strong>${formatINR(plan.price)}</strong><small>per ${escapeHtml(plan.period)}</small></span>
+            <span class="pricing-feature-summary"><strong>${keys.length}</strong><small>enabled</small><span>${keys.slice(0, 3).map((key) => `<i>${escapeHtml(state.planFeatureCatalog.find((feature) => feature.key === key)?.name || key)}</i>`).join("")}${keys.length > 3 ? `<i>+${keys.length - 3} more</i>` : ""}</span></span>
+            <span><i class="status-pill active">Active</i></span>
+            <span class="pricing-plan-actions"><button class="secondary-button" data-edit-plan="${escapeHtml(plan.id)}">Edit</button><button class="text-button danger" data-delete-plan="${escapeHtml(plan.id)}">Delete</button></span>
+          </article>`;
+        }).join("") || `<div class="empty-state">No plans are available. Create the first membership plan.</div>`}
+      </div>
+    </section>`,
+    `<button class="secondary-button" data-route="/pricing">${icon("eye", 15)}View public pricing</button><button class="primary-button" data-action="new-plan">${icon("card", 15)}Create plan</button>`,
+  );
+}
+
+function planFeatureGroups() {
+  const query = state.planFeatureSearch.trim().toLowerCase();
+  const features = state.planFeatureCatalog.filter((feature) => !query || [feature.name, feature.description, feature.category].some((value) => String(value).toLowerCase().includes(query)));
+  return Object.groupBy ? Object.groupBy(features, (feature) => feature.category) : features.reduce((groups, feature) => ({ ...groups, [feature.category]: [...(groups[feature.category] || []), feature] }), {});
+}
+
+function planCapabilityControlsTemplate(selected) {
+  return `<section class="plan-capability-controls" aria-label="Limits for selected features">
+    ${selected.has("content.paid_articles.read") ? `<div><label><span>Member-only story access</span><select id="planPaidArticleMode"><option value="quota" ${state.planForm.paidArticleMode === "quota" ? "selected" : ""}>Limited per billing cycle</option><option value="unlimited" ${state.planForm.paidArticleMode === "unlimited" ? "selected" : ""}>Unlimited</option></select></label>${state.planForm.paidArticleMode === "quota" ? `<label><span>Stories per billing cycle</span><input id="planPaidArticleLimit" type="number" min="1" value="${state.planForm.paidArticleLimit}" /></label>` : ""}</div>` : ""}
+    ${selected.has("business.contacts.reveal") ? `<div><label><span>Business contact access</span><select id="planContactMode"><option value="quota" ${state.planForm.contactMode === "quota" ? "selected" : ""}>Monthly limit</option><option value="unlimited" ${state.planForm.contactMode === "unlimited" ? "selected" : ""}>Unlimited</option></select></label>${state.planForm.contactMode === "quota" ? `<label><span>Reveals per month</span><input id="planContactLimit" type="number" min="1" value="${state.planForm.contactLimit}" /></label>` : ""}</div>` : ""}
+    ${selected.has("resources.included.access") ? `<div><label><span>Included resource scope</span><select id="planResourceMode"><option value="selected" ${state.planForm.resourceMode === "selected" ? "selected" : ""}>Selected resource IDs</option><option value="all_eligible" ${state.planForm.resourceMode === "all_eligible" ? "selected" : ""}>All subscription-eligible resources</option><option value="all_published" ${state.planForm.resourceMode === "all_published" ? "selected" : ""}>All published resources, including future</option></select></label>${state.planForm.resourceMode === "selected" ? `<label><span>Resource IDs</span><input id="planResourceIds" value="${escapeHtml(state.planForm.resourceIds)}" placeholder="RES-123, RES-456" /></label>` : ""}</div>` : ""}
+  </section>`;
+}
+
+function adminPlanEditorTemplate() {
+  const routePlanId = state.path.startsWith("/admin/pricing/edit/") ? decodeURIComponent(state.path.split("/").pop() || "") : "";
+  let missingPlan = false;
+  if (routePlanId && state.editingPlanId !== routePlanId) {
+    const plan = state.plans.find((item) => item.id === routePlanId);
+    if (plan) {
+      state.editingPlanId = plan.id;
+      state.planForm = planFormFromPlan(plan);
+      state.planMessage = `Editing ${plan.name}`;
+    } else missingPlan = true;
+  }
+  if (missingPlan) return adminShellTemplate("Plan not found", "This membership plan may have been removed.", `<div class="empty-state">Return to Pricing & plans and choose an available plan.</div>`, `<button class="secondary-button" data-route="/admin/pricing">${icon("chevronLeft", 15)}All plans</button>`);
+  if (!routePlanId && state.editingPlanId) {
+    state.editingPlanId = "";
+    state.planForm = emptyPlanForm();
+  }
+  const selected = new Set(state.planForm.featureKeys || []);
+  const groups = planFeatureGroups();
+  const previewFeatures = state.planFeatureCatalog.filter((feature) => selected.has(feature.key));
+  return adminShellTemplate(
+    state.editingPlanId ? "Edit plan" : "Create plan",
+    "Set the commercial details, then choose the exact capabilities members receive.",
+    `<form id="planEditor" class="plan-page-editor" novalidate>
+      <div class="plan-editor-main">
+        ${state.planMessage ? `<div class="payment-message" role="status">${escapeHtml(state.planMessage)}</div>` : ""}
+        <section class="work-panel plan-editor-section">
+          <div class="plan-section-heading"><span>1</span><div><h2>Plan details</h2><p>These details appear on the public pricing and checkout pages.</p></div></div>
+          <div class="plan-details-grid">
+            <label><span>Plan name</span><input id="planName" value="${escapeHtml(state.planForm.name)}" placeholder="Growth" autocomplete="off" required /></label>
+            <label><span>Base price in INR</span><input id="planPrice" type="number" min="1" step="1" value="${state.planForm.price}" required /></label>
+            <label><span>Billing period</span><select id="planPeriod">${[["month", "Monthly"], ["quarter", "Quarterly"], ["year", "Yearly"]].map(([value, label]) => `<option value="${value}" ${state.planForm.period === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+            <label><span>Short description</span><input id="planNote" value="${escapeHtml(state.planForm.note)}" placeholder="Best for growing teams" maxlength="300" /></label>
+          </div>
+        </section>
+        <section class="work-panel plan-editor-section">
+          <div class="plan-section-heading"><span>2</span><div><h2>Included features</h2><p>Every selection is enforced by the server and attached to this plan version.</p></div><strong>${selected.size} selected</strong></div>
+          <label class="plan-feature-search">${icon("search", 16)}<span class="sr-only">Search platform features</span><input id="planFeatureSearch" value="${escapeHtml(state.planFeatureSearch)}" placeholder="Search all platform features" /></label>
+          <div class="plan-feature-groups">
+            ${Object.entries(groups).map(([category, features]) => `<fieldset><legend>${escapeHtml(category)}</legend><div>${features.map((feature) => `<label class="plan-feature-option ${selected.has(feature.key) ? "selected" : ""}"><input type="checkbox" data-plan-feature="${escapeHtml(feature.key)}" ${selected.has(feature.key) ? "checked" : ""} /><span class="plan-feature-check">${selected.has(feature.key) ? icon("check", 14) : ""}</span><span><strong>${escapeHtml(feature.name)}</strong><small>${escapeHtml(feature.description)}</small></span>${feature.valueType !== "boolean" ? `<i>${feature.valueType === "quota" ? "Limit configurable" : "Scope configurable"}</i>` : ""}</label>`).join("")}</div></fieldset>`).join("") || `<div class="empty-state">No platform features match “${escapeHtml(state.planFeatureSearch)}”.</div>`}
+          </div>
+          ${planCapabilityControlsTemplate(selected)}
+        </section>
+      </div>
+      <aside class="plan-editor-sidebar">
+        <section class="work-panel plan-preview-card"><span class="eyebrow">Live preview</span><h2>${escapeHtml(state.planForm.name || "Untitled plan")}</h2><p>${escapeHtml(state.planForm.note || "Add a short description for this plan.")}</p><div class="plan-preview-price"><strong>${formatINR(Number(state.planForm.price || 0))}</strong><span>/ ${escapeHtml(state.planForm.period || "month")}</span></div><ul>${previewFeatures.slice(0, 7).map((feature) => `<li>${icon("check", 14)}${escapeHtml(feature.name)}</li>`).join("") || `<li class="muted">Select features to preview the plan.</li>`}</ul>${previewFeatures.length > 7 ? `<small>+${previewFeatures.length - 7} more included features</small>` : ""}</section>
+        <section class="plan-save-card"><strong>${state.editingPlanId ? "Publish plan update" : "Create membership plan"}</strong><p>${state.editingPlanId ? "Current subscribers remain on their existing version." : "The plan becomes available on the pricing page after saving."}</p><button class="primary-button wide-button" type="button" data-action="save-plan">${state.editingPlanId ? "Save new version" : "Create plan"}</button><button class="secondary-button wide-button" type="button" data-route="/admin/pricing">Cancel</button></section>
+      </aside>
+    </form>`,
+    `<button class="secondary-button" data-route="/admin/pricing">${icon("chevronLeft", 15)}All plans</button>`,
+  );
+}
+
 function adminSettingsTemplate() {
   return adminShellTemplate(
     "Platform settings",
-    "Manage subscription packages, payment credentials, currency conversion, and social login.",
-    `<section class="admin-settings-stack">${subscriptionManagerTemplate()}${publicationManagerTemplate()}${socialProfileManagerTemplate()}${menuManagementTemplate()}${gatewaySettingsTemplate()}</section>`,
+    "Manage payment credentials, currency conversion, menus, publications, and social login.",
+    `<section class="admin-settings-stack">${publicationManagerTemplate()}${socialProfileManagerTemplate()}${menuManagementTemplate()}${gatewaySettingsTemplate()}</section>`,
   );
 }
 
@@ -7078,67 +7284,6 @@ function siteSeoCheckbox(label, key, checked) {
   return `<label class="checkbox-field"><input data-site-seo="${key}" type="checkbox" ${checked ? "checked" : ""} /><span>${label}</span></label>`;
 }
 
-function subscriptionManagerTemplate() {
-  return `
-    <div class="work-panel subscription-manager-panel">
-      <div class="panel-title">${icon("card")}<h2>Subscription packages</h2></div>
-      <p class="settings-note">Create, edit, or delete membership packages. Prices are entered in base INR and automatically convert on the pricing page.</p>
-      <div class="plan-manager-layout">
-        <form class="plan-editor" id="planEditor">
-          <label>
-            <span>Package name</span>
-            <input id="planName" value="${state.planForm.name}" placeholder="Premium Monthly" />
-          </label>
-          <label>
-            <span>Base price in INR</span>
-            <input id="planPrice" type="number" min="1" step="1" value="${state.planForm.price}" />
-          </label>
-          <label>
-            <span>Billing period</span>
-            <select id="planPeriod">
-              ${["month", "quarter", "year"].map((period) => `<option value="${period}" ${state.planForm.period === period ? "selected" : ""}>${period}</option>`).join("")}
-            </select>
-          </label>
-          <label>
-            <span>Short note</span>
-            <input id="planNote" value="${state.planForm.note}" placeholder="Best for regular readers" />
-          </label>
-          <label class="wide-field">
-            <span>Features, one per line</span>
-            <textarea id="planFeatures" placeholder="Unlimited member stories&#10;Ad-free reading">${state.planForm.features}</textarea>
-          </label>
-          <label><span>Paid articles</span><select id="planPaidArticleMode"><option value="denied" ${state.planForm.paidArticleMode === "denied" ? "selected" : ""}>Not included</option><option value="quota" ${state.planForm.paidArticleMode === "quota" ? "selected" : ""}>Limited per billing cycle</option><option value="unlimited" ${state.planForm.paidArticleMode === "unlimited" ? "selected" : ""}>Unlimited</option></select></label>
-          <label><span>Paid article limit</span><input id="planPaidArticleLimit" type="number" min="1" value="${state.planForm.paidArticleLimit}" ${state.planForm.paidArticleMode === "quota" ? "" : "disabled"} /></label>
-          <label><span>Business contacts</span><select id="planContactMode"><option value="denied" ${state.planForm.contactMode === "denied" ? "selected" : ""}>Not included</option><option value="quota" ${state.planForm.contactMode === "quota" ? "selected" : ""}>Monthly limit</option><option value="unlimited" ${state.planForm.contactMode === "unlimited" ? "selected" : ""}>Unlimited</option></select></label>
-          <label><span>Monthly contact reveals</span><input id="planContactLimit" type="number" min="1" value="${state.planForm.contactLimit}" ${state.planForm.contactMode === "quota" ? "" : "disabled"} /></label>
-          <label><span>Included paid resources</span><select id="planResourceMode"><option value="denied" ${state.planForm.resourceMode === "denied" ? "selected" : ""}>None</option><option value="selected" ${state.planForm.resourceMode === "selected" ? "selected" : ""}>Selected resource IDs</option><option value="all_eligible" ${state.planForm.resourceMode === "all_eligible" ? "selected" : ""}>All subscription-eligible</option><option value="all_published" ${state.planForm.resourceMode === "all_published" ? "selected" : ""}>All published resources (including future)</option></select></label>
-          <label><span>Selected resource IDs</span><input id="planResourceIds" value="${escapeHtml(state.planForm.resourceIds)}" placeholder="RES-123, RES-456" ${state.planForm.resourceMode === "selected" ? "" : "disabled"} /></label>
-          <div class="settings-actions">
-            <button class="primary-button" type="button" data-action="save-plan">${state.editingPlanId ? "Update package" : "Create package"}</button>
-            <button class="secondary-button" type="button" data-action="reset-plan-form">Clear form</button>
-            <span>${state.planMessage || "No package changes yet"}</span>
-          </div>
-        </form>
-        <div class="plan-admin-list">
-          ${state.plans.map((plan) => `
-            <article class="plan-admin-row">
-              <div>
-                <strong>${plan.name}</strong>
-                <span>${formatINR(plan.price)} / ${plan.period} - ${plan.note}</span>
-                <small>${plan.features.join(" · ")}</small>
-              </div>
-              <div>
-                <button class="secondary-button" data-edit-plan="${plan.id}">Edit</button>
-                <button class="secondary-button danger-button" data-delete-plan="${plan.id}">Delete</button>
-              </div>
-            </article>
-          `).join("")}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
 function providerCredentialFieldsTemplate(provider, fields) {
   const stored = new Set((state.providerCredentials || []).filter((item) => item.provider === provider && item.enabled).map((item) => item.key));
   return `<div class="provider-credential-fields">${fields.map(([key, label]) => {
@@ -7231,7 +7376,7 @@ function toggleTemplate(label, key, checked) {
 }
 
 function adTemplate(size, label) {
-  if (!featureEnabled("ads")) return "";
+  if (!featureEnabled("ads") || hasPlanFeature("experience.ad_free")) return "";
   const campaign = state.adCampaigns.find((item) => item.placement === size && item.status === "active");
   if (!campaign) return `<aside class="ad-block ${size}" aria-label="${label}"><span>Ad slot</span><strong>No active campaign</strong></aside>`;
   const impressionKey = `${campaign.id}:${size}:${state.path}`;
@@ -7497,8 +7642,8 @@ function onboardingPlansTemplate() {
           </div>
         </div>
         <div class="onboarding-plan-grid">
-          ${paidPlans.map((plan) => `<article class="onboarding-plan-card"><div><strong>${escapeHtml(plan.name)}</strong><span>${formatMoneyFromINR(plan.price)} / ${escapeHtml(plan.period)}</span></div><ul>${plan.features.slice(0, 4).map((feature) => `<li>${icon("check", 13)}${escapeHtml(feature)}</li>`).join("")}</ul><button class="primary-button" data-onboarding-plan="${escapeHtml(plan.id)}">Choose ${escapeHtml(plan.name)}</button></article>`).join("")}
-          <article class="onboarding-plan-card free"><div><strong>Free reader</strong><span>No paid membership now</span></div><ul><li>${icon("check", 13)}Personalized feed</li><li>${icon("check", 13)}Saved stories and reading history</li><li>${icon("check", 13)}Upgrade later from your dashboard</li></ul><button class="secondary-button" data-action="skip-onboarding-plan">Continue free</button></article>
+          ${paidPlans.map((plan) => { const features = configuredPlanFeatureKeys(plan).map((key) => state.planFeatureCatalog.find((feature) => feature.key === key)?.name).filter(Boolean); return `<article class="onboarding-plan-card"><div><strong>${escapeHtml(plan.name)}</strong><span>${formatMoneyFromINR(plan.price)} / ${escapeHtml(plan.period)}</span></div><ul>${features.slice(0, 4).map((feature) => `<li>${icon("check", 13)}${escapeHtml(feature)}</li>`).join("")}</ul><button class="primary-button" data-onboarding-plan="${escapeHtml(plan.id)}">Choose ${escapeHtml(plan.name)}</button></article>`; }).join("")}
+          <article class="onboarding-plan-card free"><div><strong>Free reader</strong><span>No paid membership now</span></div><ul><li>${icon("check", 13)}Browse public stories</li><li>${icon("check", 13)}Explore resources and profiles</li><li>${icon("check", 13)}Upgrade later from your dashboard</li></ul><button class="secondary-button" data-action="skip-onboarding-plan">Continue free</button></article>
         </div>
         <div class="onboarding-footer">
           <div><strong>${state.authorIntent ? "Paid plan required for author access" : "Membership is optional"}</strong><span>${escapeHtml(state.onboardingMessage || "You can change plans anytime from the membership dashboard.")}</span></div>
@@ -7989,7 +8134,6 @@ function bindInputs() {
     ["planPrice", "price"],
     ["planPeriod", "period"],
     ["planNote", "note"],
-    ["planFeatures", "features"],
     ["planPaidArticleMode", "paidArticleMode"],
     ["planPaidArticleLimit", "paidArticleLimit"],
     ["planContactMode", "contactMode"],
@@ -8004,7 +8148,25 @@ function bindInputs() {
     });
     document.getElementById(id)?.addEventListener("change", (event) => {
       state.planForm[key] = ["price", "paidArticleLimit", "contactLimit"].includes(key) ? Number(event.target.value) : event.target.value;
+      if (["paidArticleMode", "contactMode", "resourceMode"].includes(key)) render();
     });
+  });
+  document.querySelectorAll("[data-plan-feature]").forEach((field) => {
+    field.addEventListener("change", (event) => {
+      const selected = new Set(state.planForm.featureKeys || []);
+      event.target.checked ? selected.add(event.target.dataset.planFeature) : selected.delete(event.target.dataset.planFeature);
+      state.planForm.featureKeys = [...selected];
+      state.planMessage = "";
+      render();
+    });
+  });
+  document.getElementById("planFeatureSearch")?.addEventListener("input", (event) => {
+    state.planFeatureSearch = event.target.value;
+    const caret = event.target.selectionStart;
+    render();
+    const replacement = document.getElementById("planFeatureSearch");
+    replacement?.focus();
+    replacement?.setSelectionRange(caret, caret);
   });
   const categoryBindings = [
     ["categoryName", "name"],
@@ -9539,6 +9701,7 @@ document.addEventListener("click", async (event) => {
     render();
   }
   if (save) {
+    if (!hasPlanFeature("library.reading.use")) return requestPlanFeatureUpgrade("Saved stories and reading history");
     const story = state.stories.find((item) => item.slug === save);
     const adding = !state.saved.has(save);
     adding ? state.saved.add(save) : state.saved.delete(save);
@@ -9584,6 +9747,7 @@ document.addEventListener("click", async (event) => {
     }
   }
   if (interactiveStory && interactiveId && interactiveOption !== undefined) {
+    if (!hasPlanFeature("content.interactive.use")) return requestPlanFeatureUpgrade("Polls, surveys, and quizzes");
     const key = `${interactiveStory}:${interactiveId}`;
     const optionIndex = Number(interactiveOption);
     const multiple = target.dataset.interactiveMultiple === "true";
@@ -9599,6 +9763,7 @@ document.addEventListener("click", async (event) => {
     render();
   }
   if (submitInteractive) {
+    if (!hasPlanFeature("content.interactive.use")) return requestPlanFeatureUpgrade("Polls, surveys, and quizzes");
     if (state.pollResponses[submitInteractive]?.selected?.length) {
       state.pollResponses[submitInteractive].submitted = true;
       persistPollResponses();
@@ -9606,6 +9771,7 @@ document.addEventListener("click", async (event) => {
     }
   }
   if (resetInteractive) {
+    if (!hasPlanFeature("content.interactive.use")) return requestPlanFeatureUpgrade("Polls, surveys, and quizzes");
     delete state.pollResponses[resetInteractive];
     persistPollResponses();
     render();
@@ -9825,6 +9991,8 @@ document.addEventListener("click", async (event) => {
     if (plan) populatePlanForm(plan);
   }
   if (deletePlanId) {
+    const plan = state.plans.find((item) => item.id === deletePlanId);
+    if (!window.confirm(`Delete ${plan?.name || "this plan"} from future checkout? Existing subscriptions keep their current entitlement version.`)) return;
     deletePlan(deletePlanId);
   }
   if (editBlog) {
@@ -10535,6 +10703,7 @@ document.addEventListener("click", async (event) => {
     render();
   }
   if (action === "toggle-speech") {
+    if (!hasPlanFeature("experience.audio_listening")) return requestPlanFeatureUpgrade("Listen to stories");
     const story = state.stories.find((item) => state.path.includes(`/stories/${item.slug}`));
     if (window.speechSynthesis?.speaking) {
       window.speechSynthesis.cancel();
@@ -10596,6 +10765,13 @@ document.addEventListener("click", async (event) => {
   }
   if (action === "save-plan") {
     savePlanFromForm();
+  }
+  if (action === "new-plan") {
+    state.editingPlanId = "";
+    state.planForm = emptyPlanForm();
+    state.planFeatureSearch = "";
+    state.planMessage = "";
+    setRoute("/admin/pricing/new");
   }
   if (action === "reset-plan-form") {
     state.editingPlanId = "";

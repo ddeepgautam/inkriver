@@ -4,6 +4,41 @@ declare(strict_types=1);
 const CAPABILITY_PAID_ARTICLES = 'content.paid_articles.read';
 const CAPABILITY_BUSINESS_CONTACTS = 'business.contacts.reveal';
 const CAPABILITY_INCLUDED_RESOURCES = 'resources.included.access';
+const CAPABILITY_TRANSLATIONS = 'content.translations.use';
+const CAPABILITY_AI_INSIGHTS = 'content.ai_insights.use';
+const CAPABILITY_INTERACTIVE_CONTENT = 'content.interactive.use';
+const CAPABILITY_COMMENTS = 'community.comments.write';
+const CAPABILITY_RECOMMENDATIONS = 'personalization.recommendations.use';
+const CAPABILITY_READING_LIBRARY = 'library.reading.use';
+const CAPABILITY_FOLLOWING = 'community.following.use';
+const CAPABILITY_CREATOR_PUBLISHING = 'creator.publishing.use';
+const CAPABILITY_CREATOR_ANALYTICS = 'creator.analytics.view';
+const CAPABILITY_CREATOR_EARNINGS = 'creator.earnings.use';
+const CAPABILITY_AD_FREE = 'experience.ad_free';
+const CAPABILITY_AUDIO = 'experience.audio_listening';
+const CAPABILITY_PRIORITY_SUPPORT = 'support.priority';
+
+function entitlement_capability_catalog(): array
+{
+    return [
+        ['key' => CAPABILITY_PAID_ARTICLES, 'name' => 'Member-only stories', 'category' => 'Reading', 'valueType' => 'quota', 'description' => 'Read paid and member-only articles.'],
+        ['key' => CAPABILITY_TRANSLATIONS, 'name' => 'Article translations', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Translate unlocked stories into supported languages.'],
+        ['key' => CAPABILITY_AI_INSIGHTS, 'name' => 'AI article insights', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Generate concise overviews and key concepts for stories.'],
+        ['key' => CAPABILITY_INTERACTIVE_CONTENT, 'name' => 'Polls, surveys, and quizzes', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Respond to interactive content inside stories.'],
+        ['key' => CAPABILITY_AUDIO, 'name' => 'Listen to stories', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Use the built-in spoken article player.'],
+        ['key' => CAPABILITY_AD_FREE, 'name' => 'Ad-free reading', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Hide advertising placements throughout the reading experience.'],
+        ['key' => CAPABILITY_COMMENTS, 'name' => 'Comments and replies', 'category' => 'Community', 'valueType' => 'boolean', 'description' => 'Post, edit, like, and reply to story discussions.'],
+        ['key' => CAPABILITY_FOLLOWING, 'name' => 'Follow writers and publications', 'category' => 'Community', 'valueType' => 'boolean', 'description' => 'Build a followed-writer and publication list.'],
+        ['key' => CAPABILITY_RECOMMENDATIONS, 'name' => 'Personalized recommendations', 'category' => 'Personalization', 'valueType' => 'boolean', 'description' => 'Receive a feed tuned to reading activity and interests.'],
+        ['key' => CAPABILITY_READING_LIBRARY, 'name' => 'Saved stories and reading history', 'category' => 'Personalization', 'valueType' => 'boolean', 'description' => 'Sync bookmarks, history, and reading progress.'],
+        ['key' => CAPABILITY_BUSINESS_CONTACTS, 'name' => 'Business contact reveals', 'category' => 'Business network', 'valueType' => 'quota', 'description' => 'Reveal verified contact details for business profiles.'],
+        ['key' => CAPABILITY_INCLUDED_RESOURCES, 'name' => 'Included premium resources', 'category' => 'Resources', 'valueType' => 'scope', 'description' => 'Access selected or eligible paid resources without a separate purchase.'],
+        ['key' => CAPABILITY_CREATOR_PUBLISHING, 'name' => 'Author publishing tools', 'category' => 'Creator tools', 'valueType' => 'boolean', 'description' => 'Create drafts and submit stories for editorial review.'],
+        ['key' => CAPABILITY_CREATOR_ANALYTICS, 'name' => 'Creator analytics', 'category' => 'Creator tools', 'valueType' => 'boolean', 'description' => 'View story reach, engagement, and performance data.'],
+        ['key' => CAPABILITY_CREATOR_EARNINGS, 'name' => 'Earnings and payouts', 'category' => 'Creator tools', 'valueType' => 'boolean', 'description' => 'View earnings and configure payout details.'],
+        ['key' => CAPABILITY_PRIORITY_SUPPORT, 'name' => 'Priority support', 'category' => 'Support', 'valueType' => 'boolean', 'description' => 'Mark support requests for priority member handling.'],
+    ];
+}
 
 function entitlement_catalog_bootstrap(): void
 {
@@ -12,13 +47,9 @@ function entitlement_catalog_bootstrap(): void
     $done = true;
     $pdo = Database::pdo();
     $now = now_iso();
-    $capabilities = [
-        [CAPABILITY_PAID_ARTICLES, 'Paid articles', 'quota', 'Read distinct paid articles.'],
-        [CAPABILITY_BUSINESS_CONTACTS, 'Business contact reveals', 'quota', 'Reveal contact details for distinct business profiles.'],
-        [CAPABILITY_INCLUDED_RESOURCES, 'Included resources', 'scope', 'Access resources included with a subscription.'],
-    ];
-    foreach ($capabilities as $row) {
-        $pdo->prepare('INSERT OR IGNORE INTO capabilities (key, name, value_type, description, created_at) VALUES (?, ?, ?, ?, ?)')->execute([...$row, $now]);
+    foreach (entitlement_capability_catalog() as $capability) {
+        $pdo->prepare('INSERT INTO capabilities (key, name, value_type, description, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET name = excluded.name, value_type = excluded.value_type, description = excluded.description')
+            ->execute([$capability['key'], $capability['name'], $capability['valueType'], $capability['description'], $now]);
     }
     foreach (['reader' => 'Reader', 'writer' => 'Writer', 'moderator' => 'Moderator', 'admin' => 'Administrator'] as $key => $name) {
         $pdo->prepare('INSERT OR IGNORE INTO roles (key, name, created_at) VALUES (?, ?, ?)')->execute([$key, $name, $now]);
@@ -27,28 +58,38 @@ function entitlement_catalog_bootstrap(): void
         $pdo->prepare("INSERT OR IGNORE INTO role_capabilities (role_key, capability_key, mode, created_at) VALUES (?, ?, 'unlimited', ?)")
             ->execute([$role, CAPABILITY_BUSINESS_CONTACTS, $now]);
     }
-    $pdo->prepare("INSERT OR IGNORE INTO role_capabilities (role_key, capability_key, mode, created_at) VALUES ('admin', ?, 'unlimited', ?)")
-        ->execute([CAPABILITY_PAID_ARTICLES, $now]);
+    foreach (entitlement_capability_catalog() as $capability) {
+        $pdo->prepare("INSERT OR IGNORE INTO role_capabilities (role_key, capability_key, mode, created_at) VALUES ('admin', ?, 'unlimited', ?)")
+            ->execute([$capability['key'], $now]);
+    }
 }
 
 function entitlement_default_plan_capabilities(string $planId): array
 {
     $contactLimits = ['starter' => 5, 'annual' => 25, 'patron' => 100];
     $resourceScope = $planId === 'patron' ? ['kind' => 'all_eligible'] : ['kind' => 'selected', 'resourceIds' => []];
-    return [
+    $defaults = [
         CAPABILITY_PAID_ARTICLES => ['mode' => 'unlimited', 'limit' => null, 'period' => 'subscription_cycle', 'scope' => []],
         CAPABILITY_BUSINESS_CONTACTS => ['mode' => 'quota', 'limit' => $contactLimits[$planId] ?? 0, 'period' => 'month', 'scope' => []],
         CAPABILITY_INCLUDED_RESOURCES => ['mode' => $planId === 'patron' ? 'allowed' : 'denied', 'limit' => null, 'period' => 'subscription_cycle', 'scope' => $resourceScope],
     ];
+    foreach ([CAPABILITY_TRANSLATIONS, CAPABILITY_INTERACTIVE_CONTENT, CAPABILITY_COMMENTS, CAPABILITY_RECOMMENDATIONS, CAPABILITY_READING_LIBRARY, CAPABILITY_FOLLOWING, CAPABILITY_CREATOR_PUBLISHING, CAPABILITY_CREATOR_ANALYTICS, CAPABILITY_CREATOR_EARNINGS, CAPABILITY_AUDIO] as $key) {
+        $defaults[$key] = ['mode' => 'allowed', 'limit' => null, 'period' => 'subscription_cycle', 'scope' => []];
+    }
+    foreach ([CAPABILITY_AI_INSIGHTS, CAPABILITY_AD_FREE, CAPABILITY_PRIORITY_SUPPORT] as $key) {
+        $defaults[$key] = ['mode' => in_array($planId, ['annual', 'patron'], true) ? 'allowed' : 'denied', 'limit' => null, 'period' => 'subscription_cycle', 'scope' => []];
+    }
+    return $defaults;
 }
 
 function entitlement_normalize_plan_capabilities(array $plan): array
 {
     $defaults = entitlement_default_plan_capabilities((string) ($plan['id'] ?? ''));
     $configured = is_array($plan['capabilities'] ?? null) ? $plan['capabilities'] : [];
+    $selectedKeys = is_array($plan['featureKeys'] ?? null) ? array_values(array_filter(array_map('strval', $plan['featureKeys']))) : null;
     $result = [];
     foreach ($defaults as $key => $fallback) {
-        $value = is_array($configured[$key] ?? null) ? $configured[$key] : $fallback;
+        $value = is_array($configured[$key] ?? null) ? $configured[$key] : ($selectedKeys === null ? $fallback : array_merge($fallback, ['mode' => in_array($key, $selectedKeys, true) ? ($fallback['mode'] === 'quota' ? 'quota' : 'allowed') : 'denied']));
         $mode = in_array(($value['mode'] ?? ''), ['denied', 'allowed', 'quota', 'unlimited'], true) ? $value['mode'] : $fallback['mode'];
         $limit = $mode === 'quota' ? max(0, (int) ($value['limit'] ?? $fallback['limit'] ?? 0)) : null;
         if ($mode === 'quota' && $limit === 0) $mode = 'denied';
@@ -253,7 +294,7 @@ function entitlement_story_payload(array $story, ?array $session): array
 function entitlement_usage_summary(array $session): array
 {
     $summary = [];
-    foreach ([CAPABILITY_PAID_ARTICLES, CAPABILITY_BUSINESS_CONTACTS, CAPABILITY_INCLUDED_RESOURCES] as $key) {
+    foreach (array_column(entitlement_capability_catalog(), 'key') as $key) {
         $decision = entitlement_decision($session, $key);
         $used = 0;
         if (!empty($decision['allowed']) && ($decision['mode'] ?? '') === 'quota') {
@@ -265,4 +306,13 @@ function entitlement_usage_summary(array $session): array
         unset($summary[$key]['subscription']);
     }
     return $summary;
+}
+
+function require_entitlement(array $session, string $capabilityKey, string $message = 'Your current plan does not include this feature.'): array
+{
+    $decision = entitlement_decision($session, $capabilityKey);
+    if (empty($decision['allowed'])) {
+        json_response(['error' => $decision['reason'] ?? 'PLAN_FEATURE_REQUIRED', 'message' => $message, 'capability' => $capabilityKey], 403);
+    }
+    return $decision;
 }

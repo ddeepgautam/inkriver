@@ -4765,18 +4765,19 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/me/author-intent') {
         $session = require_auth();
         $now = now_iso();
-        $isPaid = !in_array((string) ($session['user']['subscription'] ?? 'Free'), ['Free', 'Staff'], true);
-        $status = $isPaid ? 'writer_access_enabled' : 'needs_paid_subscription';
+        $publishingDecision = entitlement_decision($session, CAPABILITY_CREATOR_PUBLISHING);
+        $hasPublishing = !empty($publishingDecision['allowed']);
+        $status = $hasPublishing ? 'writer_access_enabled' : 'needs_creator_plan';
         $value = ['requested' => true, 'status' => $status, 'requestedAt' => $now, 'subscription' => $session['user']['subscription']];
         $pdo->prepare('INSERT INTO user_documents (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
             ->execute([$session['user']['id'], 'author-intent', json_encode($value, JSON_UNESCAPED_SLASHES), $now]);
-        if ($isPaid && in_array($session['user']['role'], ['reader', 'subscriber'], true)) {
+        if ($hasPublishing && in_array($session['user']['role'], ['reader', 'subscriber'], true)) {
             $pdo->prepare("UPDATE users SET role = 'writer', updated_at = ? WHERE id = ?")->execute([$now, $session['user']['id']]);
             audit_log($session['user']['id'], 'author_access_enabled', 'user', $session['user']['id']);
         }
         $stmt = $pdo->prepare('SELECT * FROM users WHERE id = ?');
         $stmt->execute([$session['user']['id']]);
-        json_response(['user' => public_user($stmt->fetch()), 'author' => $value, 'needsSubscription' => !$isPaid]);
+        json_response(['user' => public_user($stmt->fetch()), 'author' => $value, 'needsSubscription' => !$hasPublishing]);
     }
 
     if ($method === 'POST' && $path === '/api/auth/passkeys/challenge') {
@@ -4943,6 +4944,13 @@ function handle_api(string $path, string $method): void
             $stmt->execute([$session['user']['id']]);
             foreach ($stmt->fetchAll() as $row) {
                 if (str_starts_with((string) $row['key'], 'passkey-')) continue;
+                $documentCapability = match ((string) $row['key']) {
+                    'saved', 'reading-history' => CAPABILITY_READING_LIBRARY,
+                    'following' => CAPABILITY_FOLLOWING,
+                    'interactive-responses' => CAPABILITY_INTERACTIVE_CONTENT,
+                    default => null,
+                };
+                if ($documentCapability && empty(entitlement_decision($session, $documentCapability)['allowed'])) continue;
                 $userDocuments[$row['key']] = parse_json_field($row['value_json'], null);
             }
         }
@@ -4975,8 +4983,10 @@ function handle_api(string $path, string $method): void
             $deletionStmt->execute([$session['user']['id']]);
             $deletionRequest = $deletionStmt->fetch() ?: null;
         }
-        $translations = stored_translations();
+        $canUseTranslations = $session && !empty(entitlement_decision($session, CAPABILITY_TRANSLATIONS)['allowed']);
+        $translations = $canUseTranslations ? stored_translations() : [];
         foreach (array_keys($lockedStorySlugs) as $slug) unset($translations[$slug]);
+        $canUseInsights = $session && !empty(entitlement_decision($session, CAPABILITY_AI_INSIGHTS)['allowed']);
         json_response([
             'documents' => $documents,
             'userDocuments' => $userDocuments,
@@ -4984,7 +4994,8 @@ function handle_api(string $path, string $method): void
             'likedStorySlugs' => $likedStorySlugs,
             'translations' => $translations,
             'translationLanguages' => configured_translation_languages(),
-            'articleInsights' => stored_article_insights(),
+            'planFeatureCatalog' => entitlement_capability_catalog(),
+            'articleInsights' => $canUseInsights ? stored_article_insights() : [],
             'ads' => active_ads(),
             'featureFlags' => public_feature_flags($session),
             'providers' => provider_status(),
@@ -5019,7 +5030,8 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && preg_match('#^/api/stories/([^/]+)/translations/([^/]+)$#', $path, $m)) {
         $slug = rawurldecode($m[1]);
         $locale = rawurldecode($m[2]);
-        $session = current_session();
+        $session = require_auth();
+        require_entitlement($session, CAPABILITY_TRANSLATIONS, 'Your current plan does not include article translations.');
         $story = null;
         foreach (document_value('stories', []) as $candidate) {
             if (is_array($candidate) && ($candidate['slug'] ?? '') === $slug && ($candidate['status'] ?? '') === 'published') {
@@ -5055,6 +5067,8 @@ function handle_api(string $path, string $method): void
     }
 
     if (in_array($method, ['GET', 'POST'], true) && preg_match('#^/api/stories/([^/]+)/insight$#', $path, $m)) {
+        $session = require_auth();
+        require_entitlement($session, CAPABILITY_AI_INSIGHTS, 'Your current plan does not include AI article insights.');
         $slug = rawurldecode($m[1]);
         $story = null;
         foreach (document_value('stories', []) as $candidate) {
@@ -5805,6 +5819,13 @@ function handle_api(string $path, string $method): void
         $session = require_auth();
         $key = urldecode($m[1]);
         if (!in_array($key, USER_DOCUMENTS, true)) json_response(['error' => 'INVALID_DOCUMENT', 'message' => 'This account document cannot be managed.'], 400);
+        $documentCapability = match ($key) {
+            'saved', 'reading-history' => CAPABILITY_READING_LIBRARY,
+            'following' => CAPABILITY_FOLLOWING,
+            'interactive-responses' => CAPABILITY_INTERACTIVE_CONTENT,
+            default => null,
+        };
+        if ($documentCapability) require_entitlement($session, $documentCapability);
         if ($method === 'PUT') {
             $body = read_json();
             $updatedAt = now_iso();
@@ -5838,6 +5859,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'GET' && $path === '/api/recommendations/feed') {
         $session = require_auth();
+        require_entitlement($session, CAPABILITY_RECOMMENDATIONS, 'Your current plan does not include personalized recommendations.');
         $feed = recommendation_feed_for_user($session['user']['id'], max(1, min(80, (int) ($_GET['limit'] ?? 24))));
         $profile = $pdo->prepare('SELECT signals_count, last_trained_at, model_version FROM recommendation_profiles WHERE user_id = ?');
         $profile->execute([$session['user']['id']]);
@@ -5847,6 +5869,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'POST' && $path === '/api/recommendations/feedback') {
         $session = require_auth();
+        require_entitlement($session, CAPABILITY_RECOMMENDATIONS, 'Your current plan does not include personalized recommendations.');
         $body = read_json();
         $type = (string) ($body['type'] ?? 'feedback');
         if ($type === 'reset_recommendations') {
@@ -6246,6 +6269,7 @@ function handle_api(string $path, string $method): void
         }
         if ($method === 'POST') {
             $session = require_auth();
+            require_entitlement($session, CAPABILITY_COMMENTS, 'Your current plan does not include posting comments and replies.');
             $body = read_json();
             $text = trim((string) ($body['text'] ?? ''));
             if ($text === '') json_response(['error' => 'INVALID_COMMENT', 'message' => 'Comment text is required.'], 400);
@@ -6261,6 +6285,7 @@ function handle_api(string $path, string $method): void
     if (preg_match('#^/api/comments/([^/]+)$#', $path, $m)) {
         if (!feature_flag_enabled('comments')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Comments are disabled.'], 403);
         $session = require_auth();
+        require_entitlement($session, CAPABILITY_COMMENTS, 'Your current plan does not include managing comments.');
         $id = urldecode($m[1]);
         if ($method === 'PATCH') {
             $body = read_json();
@@ -6280,6 +6305,7 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && preg_match('#^/api/comments/([^/]+)/like$#', $path, $m)) {
         if (!feature_flag_enabled('comments')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Comments are disabled.'], 403);
         $session = require_auth();
+        require_entitlement($session, CAPABILITY_COMMENTS, 'Your current plan does not include comment reactions.');
         $commentId = urldecode($m[1]);
         $stmt = $pdo->prepare("SELECT id FROM comments WHERE id = ? AND status != 'deleted'");
         $stmt->execute([$commentId]);
@@ -6337,8 +6363,10 @@ function handle_api(string $path, string $method): void
             if ($subject === '' || $details === '') json_response(['error' => 'INVALID_TICKET', 'message' => 'Subject and problem details are required.'], 400);
             $id = uuid_value('TKT-');
             $now = now_iso();
+            $priorityDecision = entitlement_decision($session, CAPABILITY_PRIORITY_SUPPORT);
+            $priority = !empty($priorityDecision['allowed']) ? 'High' : substr((string) ($body['priority'] ?? 'Normal'), 0, 40);
             $pdo->prepare("INSERT INTO support_tickets (id, user_id, subject, category, priority, status, owner, details, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'Open', 'Support', ?, ?, ?)")
-                ->execute([$id, $session['user']['id'], substr($subject, 0, 200), substr((string) ($body['category'] ?? 'General'), 0, 80), substr((string) ($body['priority'] ?? 'Normal'), 0, 40), substr($details, 0, 4000), $now, $now]);
+                ->execute([$id, $session['user']['id'], substr($subject, 0, 200), substr((string) ($body['category'] ?? 'General'), 0, 80), $priority, substr($details, 0, 4000), $now, $now]);
             $messageId = uuid_value('STM-');
             $pdo->prepare("INSERT INTO support_ticket_messages (id, ticket_id, user_id, visibility, body, created_at) VALUES (?, ?, ?, 'public', ?, ?)")
                 ->execute([$messageId, $id, $session['user']['id'], substr($details, 0, 4000), $now]);
@@ -6682,6 +6710,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'GET' && $path === '/api/me/creator-analytics') {
         $session = require_auth(['writer', 'admin']);
+        require_entitlement($session, CAPABILITY_CREATOR_ANALYTICS, 'Your current plan does not include creator analytics.');
         $stories = array_values(array_filter(document_value('stories', []), fn($story) =>
             ($story['authorUserId'] ?? '') === $session['user']['id'] || strtolower((string) ($story['author'] ?? '')) === strtolower($session['user']['name'])
         ));
@@ -6700,6 +6729,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'POST' && $path === '/api/stories') {
         $session = require_auth(['writer', 'admin']);
+        require_entitlement($session, CAPABILITY_CREATOR_PUBLISHING, 'Your current plan does not include author publishing tools.');
         $body = read_json();
         try {
             json_response(create_or_update_story_from_payload($session, $body, 'api'), 201);
@@ -6747,6 +6777,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'GET' && $path === '/api/me/payouts') {
         $session = require_auth(['writer', 'admin']);
+        require_entitlement($session, CAPABILITY_CREATOR_EARNINGS, 'Your current plan does not include creator earnings and payouts.');
         $stmt = $pdo->prepare("SELECT * FROM writer_tips WHERE writer_name = ? COLLATE NOCASE AND status = 'paid' ORDER BY created_at DESC");
         $stmt->execute([$session['user']['name']]);
         $tips = $stmt->fetchAll();
@@ -6761,6 +6792,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'PUT' && $path === '/api/me/payout-account') {
         $session = require_auth(['writer', 'admin']);
+        require_entitlement($session, CAPABILITY_CREATOR_EARNINGS, 'Your current plan does not include creator earnings and payouts.');
         $body = read_json();
         $now = now_iso();
         $pdo->prepare("INSERT INTO payout_accounts (user_id, account_holder, bank_name, payout_method, account_reference, tax_id_reference, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?, ?) ON CONFLICT(user_id) DO UPDATE SET account_holder = excluded.account_holder, bank_name = excluded.bank_name, payout_method = excluded.payout_method, account_reference = excluded.account_reference, tax_id_reference = excluded.tax_id_reference, status = 'pending_review', updated_at = excluded.updated_at")
@@ -7065,6 +7097,7 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && $path === '/api/ai/assist') {
         if (!feature_flag_enabled('ai')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'AI tools are disabled.'], 403);
         $session = require_auth(['writer', 'moderator', 'admin']);
+        require_entitlement($session, CAPABILITY_CREATOR_PUBLISHING, 'Your current plan does not include AI-assisted publishing tools.');
         if (!provider_status()['ai']) json_response(['error' => 'AI_NOT_CONFIGURED', 'message' => 'The AI provider is not configured on the server.'], 503);
         $body = read_json();
         $task = trim((string) ($body['task'] ?? 'improve'));
@@ -7298,6 +7331,7 @@ function handle_api(string $path, string $method): void
 
     if ($method === 'GET' && $path === '/api/me/payout-account') {
         $session = require_auth(['writer', 'admin']);
+        require_entitlement($session, CAPABILITY_CREATOR_EARNINGS, 'Your current plan does not include creator earnings and payouts.');
         $stmt = $pdo->prepare('SELECT * FROM payout_accounts WHERE user_id = ?');
         $stmt->execute([$session['user']['id']]);
         json_response(['account' => $stmt->fetch() ?: null]);
