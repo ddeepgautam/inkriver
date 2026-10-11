@@ -4949,7 +4949,6 @@ function handle_api(string $path, string $method): void
                 $documentCapability = match ((string) $row['key']) {
                     'saved', 'reading-history' => CAPABILITY_READING_LIBRARY,
                     'following' => CAPABILITY_FOLLOWING,
-                    'interactive-responses' => CAPABILITY_INTERACTIVE_CONTENT,
                     default => null,
                 };
                 if ($documentCapability && empty(entitlement_decision($session, $documentCapability)['allowed'])) continue;
@@ -4988,7 +4987,6 @@ function handle_api(string $path, string $method): void
         $canUseTranslations = $session && !empty(entitlement_decision($session, CAPABILITY_TRANSLATIONS)['allowed']);
         $translations = $canUseTranslations ? stored_translations() : [];
         foreach (array_keys($lockedStorySlugs) as $slug) unset($translations[$slug]);
-        $canUseInsights = $session && !empty(entitlement_decision($session, CAPABILITY_AI_INSIGHTS)['allowed']);
         json_response([
             'documents' => $documents,
             'userDocuments' => $userDocuments,
@@ -4997,7 +4995,7 @@ function handle_api(string $path, string $method): void
             'translations' => $translations,
             'translationLanguages' => configured_translation_languages(),
             'planFeatureCatalog' => entitlement_capability_catalog(),
-            'articleInsights' => $canUseInsights ? stored_article_insights() : [],
+            'articleInsights' => stored_article_insights(),
             'ads' => active_ads(),
             'featureFlags' => public_feature_flags($session),
             'providers' => provider_status(),
@@ -5069,8 +5067,6 @@ function handle_api(string $path, string $method): void
     }
 
     if (in_array($method, ['GET', 'POST'], true) && preg_match('#^/api/stories/([^/]+)/insight$#', $path, $m)) {
-        $session = require_auth();
-        require_entitlement($session, CAPABILITY_AI_INSIGHTS, 'Your current plan does not include AI article insights.');
         $slug = rawurldecode($m[1]);
         $story = null;
         foreach (document_value('stories', []) as $candidate) {
@@ -5824,7 +5820,6 @@ function handle_api(string $path, string $method): void
         $documentCapability = match ($key) {
             'saved', 'reading-history' => CAPABILITY_READING_LIBRARY,
             'following' => CAPABILITY_FOLLOWING,
-            'interactive-responses' => CAPABILITY_INTERACTIVE_CONTENT,
             default => null,
         };
         if ($documentCapability) require_entitlement($session, $documentCapability);
@@ -6271,7 +6266,6 @@ function handle_api(string $path, string $method): void
         }
         if ($method === 'POST') {
             $session = require_auth();
-            require_entitlement($session, CAPABILITY_COMMENTS, 'Your current plan does not include posting comments and replies.');
             $body = read_json();
             $text = trim((string) ($body['text'] ?? ''));
             if ($text === '') json_response(['error' => 'INVALID_COMMENT', 'message' => 'Comment text is required.'], 400);
@@ -6287,7 +6281,6 @@ function handle_api(string $path, string $method): void
     if (preg_match('#^/api/comments/([^/]+)$#', $path, $m)) {
         if (!feature_flag_enabled('comments')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Comments are disabled.'], 403);
         $session = require_auth();
-        require_entitlement($session, CAPABILITY_COMMENTS, 'Your current plan does not include managing comments.');
         $id = urldecode($m[1]);
         if ($method === 'PATCH') {
             $body = read_json();
@@ -6307,7 +6300,6 @@ function handle_api(string $path, string $method): void
     if ($method === 'POST' && preg_match('#^/api/comments/([^/]+)/like$#', $path, $m)) {
         if (!feature_flag_enabled('comments')) json_response(['error' => 'FEATURE_DISABLED', 'message' => 'Comments are disabled.'], 403);
         $session = require_auth();
-        require_entitlement($session, CAPABILITY_COMMENTS, 'Your current plan does not include comment reactions.');
         $commentId = urldecode($m[1]);
         $stmt = $pdo->prepare("SELECT id FROM comments WHERE id = ? AND status != 'deleted'");
         $stmt->execute([$commentId]);

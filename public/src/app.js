@@ -269,11 +269,8 @@ function cleanProfileRouteSlug(path = state.path) {
 const defaultPlanFeatureCatalog = [
   { key: "content.paid_articles.read", name: "Member-only stories", category: "Reading", valueType: "quota", description: "Read paid and member-only articles." },
   { key: "content.translations.use", name: "Article translations", category: "Reading", valueType: "boolean", description: "Translate unlocked stories into supported languages." },
-  { key: "content.ai_insights.use", name: "AI article insights", category: "Reading", valueType: "boolean", description: "Generate concise overviews and key concepts for stories." },
-  { key: "content.interactive.use", name: "Polls, surveys, and quizzes", category: "Reading", valueType: "boolean", description: "Respond to interactive content inside stories." },
   { key: "experience.audio_listening", name: "Listen to stories", category: "Reading", valueType: "boolean", description: "Use the built-in spoken article player." },
   { key: "experience.ad_free", name: "Ad-free reading", category: "Reading", valueType: "boolean", description: "Hide advertising placements throughout the reading experience." },
-  { key: "community.comments.write", name: "Comments and replies", category: "Community", valueType: "boolean", description: "Post, edit, like, and reply to story discussions." },
   { key: "community.following.use", name: "Follow writers and publications", category: "Community", valueType: "boolean", description: "Build a followed-writer and publication list." },
   { key: "personalization.recommendations.use", name: "Personalized recommendations", category: "Personalization", valueType: "boolean", description: "Receive a feed tuned to reading activity and interests." },
   { key: "library.reading.use", name: "Saved stories and reading history", category: "Personalization", valueType: "boolean", description: "Sync bookmarks, history, and reading progress." },
@@ -296,8 +293,8 @@ function defaultPlanCapabilities(selectedKeys, contactLimit, resourceMode = "den
   }));
 }
 
-const starterFeatureKeys = ["content.paid_articles.read", "content.translations.use", "content.interactive.use", "experience.audio_listening", "community.comments.write", "community.following.use", "personalization.recommendations.use", "library.reading.use", "business.contacts.reveal", "creator.publishing.use", "creator.analytics.view", "creator.earnings.use"];
-const annualFeatureKeys = [...starterFeatureKeys, "content.ai_insights.use", "experience.ad_free", "support.priority"];
+const starterFeatureKeys = ["content.paid_articles.read", "content.translations.use", "experience.audio_listening", "community.following.use", "personalization.recommendations.use", "library.reading.use", "business.contacts.reveal", "creator.publishing.use", "creator.analytics.view", "creator.earnings.use"];
+const annualFeatureKeys = [...starterFeatureKeys, "experience.ad_free", "support.priority"];
 const patronFeatureKeys = [...annualFeatureKeys, "resources.included.access"];
 
 const defaultPlans = [
@@ -319,7 +316,7 @@ const defaultPlans = [
     period: "month",
     prices: { month: 499, year: 3999 },
     note: "Best for regular readers",
-    features: ["Everything in Reader", "AI article insights", "Ad-free reading", "Priority support"],
+    features: ["Everything in Reader", "Ad-free reading", "Priority support", "25 contact reveals monthly"],
     featureKeys: annualFeatureKeys,
     capabilities: defaultPlanCapabilities(annualFeatureKeys, 25),
   },
@@ -563,12 +560,24 @@ function visiblePaymentGateways() {
   return paymentGateways.filter((gateway) => state.gatewaySettings.paymentGatewayEnabled?.[gateway.id] !== false && (gateway.id !== "paypal" || !paypalRestrictedForCurrentUser()));
 }
 
+function pricingGatewayLogo(gateway) {
+  const marks = {
+    razorpay: `<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M24.8 5.5 13.6 21.1h7.5L15.2 34.5h7.4L32.4 17H25l7.4-11.5Z" fill="#2b84ea"/><path d="M13.6 21.1h7.5l3.7-5.3h-7.4Z" fill="#0b4aa2"/></svg>`,
+    paypal: `<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M12.4 7h11.2c6.1 0 8.7 3.1 7.7 8.2-1.1 5.7-5.3 8.5-11.5 8.5h-3.1L15 33H8.9Z" fill="#003087"/><path d="M18 12.5h9.2c5.4 0 7.5 2.8 6.6 7.2-1 5.1-4.7 7.7-10.2 7.7h-3.2L19.1 33h-5.7Z" fill="#009cde" opacity=".9"/></svg>`,
+    payu: `<svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="15" fill="#8cc63f"/><path d="M12 14h5v8.2c0 2.1 1 3.1 3 3.1s3-1 3-3.1V14h5v8.6c0 5-3 7.7-8 7.7s-8-2.7-8-7.7Z" fill="#fff"/><path d="M24.5 10.5h7v7" fill="none" stroke="#00a9a5" stroke-width="3" stroke-linecap="round"/></svg>`,
+    cashfree: `<svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 4 34 12v16l-14 8-14-8V12Z" fill="#6936d3"/><path d="m13 21 6-8h8l-6 7h6l-6 8h-8l6-7Z" fill="#63e6c8"/></svg>`,
+  };
+  return `<div class="gateway-brand-lockup" role="img" aria-label="${escapeHtml(gateway.name)} logo"><span class="gateway-brand-mark gateway-brand-${escapeHtml(gateway.id)}">${marks[gateway.id] || icon("card", 28)}</span><strong>${escapeHtml(gateway.name)}</strong></div>`;
+}
+
+const alwaysFreeFeatures = new Set(["content.ai_insights.use", "content.interactive.use", "community.comments.write"]);
+
 function featureEnabled(key, fallback = true) {
   return state.featureFlags[key] === undefined ? fallback : Boolean(state.featureFlags[key]);
 }
 
 function hasPlanFeature(key) {
-  return Boolean(state.entitlements?.[key]?.allowed);
+  return alwaysFreeFeatures.has(key) || Boolean(state.entitlements?.[key]?.allowed);
 }
 
 function planFeatureUpgradeTemplate(title, description = "Choose a plan that includes this feature to continue.") {
@@ -1263,9 +1272,10 @@ function slugifyPlanId(name) {
 }
 
 function configuredPlanFeatureKeys(plan) {
-  if (Array.isArray(plan.featureKeys)) return [...plan.featureKeys];
+  const available = new Set(state.planFeatureCatalog.map((feature) => feature.key));
+  if (Array.isArray(plan.featureKeys)) return [...new Set(plan.featureKeys.filter((key) => available.has(key)))];
   const configured = state.planFeatureCatalog.filter((feature) => ["allowed", "quota", "unlimited"].includes(plan.capabilities?.[feature.key]?.mode)).map((feature) => feature.key);
-  const legacyDefault = defaultPlans.find((candidate) => candidate.id === plan.id)?.featureKeys || [];
+  const legacyDefault = (defaultPlans.find((candidate) => candidate.id === plan.id)?.featureKeys || []).filter((key) => available.has(key));
   return [...new Set([...configured, ...legacyDefault])];
 }
 
@@ -5215,7 +5225,8 @@ function pricingTemplate() {
   const categoryIcons = { Reading: "eye", Community: "users", Personalization: "spark", "Business network": "trend", Resources: "bookmark", "Creator tools": "pen", Support: "shield" };
   const groupedFeatures = state.planFeatureCatalog.reduce((groups, feature) => ({ ...groups, [feature.category]: [...(groups[feature.category] || []), feature] }), {});
   const faqs = [
-    ["What is included in a Nitross membership?", "Your access is determined by the exact features listed for your chosen plan. Depending on the tier, this can include member-only stories, translations, AI insights, audio listening, saved reading, business-network access, creator tools, resources, and priority support."],
+    ["What can I use for free?", "Article overviews and key concepts, comments and replies, quizzes, polls, and surveys are available to every Nitross reader. You only need to sign in when an action must be saved to your account."],
+    ["What is included in a Nitross membership?", "Your access is determined by the exact features listed for your chosen plan. Depending on the tier, this can include member-only stories, translations, audio listening, saved reading, business-network access, creator tools, resources, and priority support."],
     ["What is the difference between monthly and annual billing?", "The features are the same for a plan in either billing period. Monthly billing offers flexibility, while annual billing is charged once for 12 months and includes the savings shown on each plan card."],
     ["Can I change my plan later?", "Yes. You can review available plans from Membership & billing in your dashboard. Your current plan remains active for its paid period, and plan access is updated when a new subscription is activated."],
     ["Will my subscription renew automatically?", "Recurring subscriptions renew according to the billing period shown at checkout unless you cancel. You can request cancellation from your dashboard; access continues until the end of the current paid period."],
@@ -5277,7 +5288,7 @@ function pricingTemplate() {
       <section class="pricing-outcomes-section">
         <div class="pricing-section-heading"><span class="eyebrow">More than premium articles</span><h2>Your membership compounds in value</h2><p>Nitross connects the full journey from discovering an idea to putting it into practice.</p></div>
         <div class="pricing-outcome-grid">
-          <article><i>${icon("eye", 22)}</i><span>01</span><h3>Understand what matters</h3><p>Go beyond headlines with member stories, translations, audio, and concise AI-supported insights.</p></article>
+          <article><i>${icon("eye", 22)}</i><span>01</span><h3>Understand what matters</h3><p>Start free with article overviews and key concepts, then go deeper with member stories, translations, and audio.</p></article>
           <article><i>${icon("bookmark", 22)}</i><span>02</span><h3>Turn insight into action</h3><p>Save what matters, build a reading history, and use practical resources when your next decision arrives.</p></article>
           <article><i>${icon("users", 22)}</i><span>03</span><h3>Connect with opportunity</h3><p>Follow experts, join useful discussions, and unlock the business-network access included in your tier.</p></article>
           <article><i>${icon("trend", 22)}</i><span>04</span><h3>Build your own voice</h3><p>Eligible plans bring publishing, creator analytics, and earnings tools into the same focused workspace.</p></article>
@@ -5296,9 +5307,9 @@ function pricingTemplate() {
       </section>
 
       <section class="pricing-assurance-section">
-        <div><span class="eyebrow">A confident checkout</span><h2>Clear pricing, protected access</h2><p>Your checkout uses server-verified plan prices. Every selected feature is attached to a versioned entitlement, so access is enforced consistently throughout Nitross.</p></div>
-        <div class="pricing-assurance-grid"><article>${icon("shield", 20)}<span><strong>Server-verified pricing</strong><small>The checkout does not trust a browser-supplied plan price.</small></span></article><article>${icon("card", 20)}<span><strong>Multiple payment gateways</strong><small>Use the configured option that works best for you.</small></span></article><article>${icon("refresh", 20)}<span><strong>Manage from your dashboard</strong><small>Review invoices, membership access, and cancellation status.</small></span></article></div>
-        <div class="gateway-strip">${visiblePaymentGateways().map((item) => `<div>${icon("card")}<strong>${item.name}</strong><span>${item.type}</span></div>`).join("")}</div>
+        <div><span class="eyebrow">A confident checkout</span><h2>Clear pricing, protected access</h2><p>See the complete price, billing period, and included benefits before you pay. Once payment is confirmed, your membership is connected to your Nitross account.</p></div>
+        <div class="pricing-assurance-grid"><article>${icon("check", 20)}<span><strong>Know exactly what you get</strong><small>Compare every included benefit before choosing a plan.</small></span></article><article>${icon("card", 20)}<span><strong>Flexible ways to pay</strong><small>Choose from trusted payment partners available at checkout.</small></span></article><article>${icon("refresh", 20)}<span><strong>Manage from your dashboard</strong><small>Review invoices, membership access, and cancellation status.</small></span></article></div>
+        <div class="gateway-strip" aria-label="Supported payment partners">${paymentGateways.map((item) => `<div>${pricingGatewayLogo(item)}<span>${escapeHtml(item.type)}</span></div>`).join("")}</div>
       </section>
 
       <section class="pricing-faq-section">

@@ -23,11 +23,8 @@ function entitlement_capability_catalog(): array
     return [
         ['key' => CAPABILITY_PAID_ARTICLES, 'name' => 'Member-only stories', 'category' => 'Reading', 'valueType' => 'quota', 'description' => 'Read paid and member-only articles.'],
         ['key' => CAPABILITY_TRANSLATIONS, 'name' => 'Article translations', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Translate unlocked stories into supported languages.'],
-        ['key' => CAPABILITY_AI_INSIGHTS, 'name' => 'AI article insights', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Generate concise overviews and key concepts for stories.'],
-        ['key' => CAPABILITY_INTERACTIVE_CONTENT, 'name' => 'Polls, surveys, and quizzes', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Respond to interactive content inside stories.'],
         ['key' => CAPABILITY_AUDIO, 'name' => 'Listen to stories', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Use the built-in spoken article player.'],
         ['key' => CAPABILITY_AD_FREE, 'name' => 'Ad-free reading', 'category' => 'Reading', 'valueType' => 'boolean', 'description' => 'Hide advertising placements throughout the reading experience.'],
-        ['key' => CAPABILITY_COMMENTS, 'name' => 'Comments and replies', 'category' => 'Community', 'valueType' => 'boolean', 'description' => 'Post, edit, like, and reply to story discussions.'],
         ['key' => CAPABILITY_FOLLOWING, 'name' => 'Follow writers and publications', 'category' => 'Community', 'valueType' => 'boolean', 'description' => 'Build a followed-writer and publication list.'],
         ['key' => CAPABILITY_RECOMMENDATIONS, 'name' => 'Personalized recommendations', 'category' => 'Personalization', 'valueType' => 'boolean', 'description' => 'Receive a feed tuned to reading activity and interests.'],
         ['key' => CAPABILITY_READING_LIBRARY, 'name' => 'Saved stories and reading history', 'category' => 'Personalization', 'valueType' => 'boolean', 'description' => 'Sync bookmarks, history, and reading progress.'],
@@ -73,10 +70,10 @@ function entitlement_default_plan_capabilities(string $planId): array
         CAPABILITY_BUSINESS_CONTACTS => ['mode' => 'quota', 'limit' => $contactLimits[$planId] ?? 0, 'period' => 'month', 'scope' => []],
         CAPABILITY_INCLUDED_RESOURCES => ['mode' => $planId === 'patron' ? 'allowed' : 'denied', 'limit' => null, 'period' => 'subscription_cycle', 'scope' => $resourceScope],
     ];
-    foreach ([CAPABILITY_TRANSLATIONS, CAPABILITY_INTERACTIVE_CONTENT, CAPABILITY_COMMENTS, CAPABILITY_RECOMMENDATIONS, CAPABILITY_READING_LIBRARY, CAPABILITY_FOLLOWING, CAPABILITY_CREATOR_PUBLISHING, CAPABILITY_CREATOR_ANALYTICS, CAPABILITY_CREATOR_EARNINGS, CAPABILITY_AUDIO] as $key) {
+    foreach ([CAPABILITY_TRANSLATIONS, CAPABILITY_RECOMMENDATIONS, CAPABILITY_READING_LIBRARY, CAPABILITY_FOLLOWING, CAPABILITY_CREATOR_PUBLISHING, CAPABILITY_CREATOR_ANALYTICS, CAPABILITY_CREATOR_EARNINGS, CAPABILITY_AUDIO] as $key) {
         $defaults[$key] = ['mode' => 'allowed', 'limit' => null, 'period' => 'subscription_cycle', 'scope' => []];
     }
-    foreach ([CAPABILITY_AI_INSIGHTS, CAPABILITY_AD_FREE, CAPABILITY_PRIORITY_SUPPORT] as $key) {
+    foreach ([CAPABILITY_AD_FREE, CAPABILITY_PRIORITY_SUPPORT] as $key) {
         $defaults[$key] = ['mode' => in_array($planId, ['annual', 'patron'], true) ? 'allowed' : 'denied', 'limit' => null, 'period' => 'subscription_cycle', 'scope' => []];
     }
     return $defaults;
