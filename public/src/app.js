@@ -4291,6 +4291,9 @@ function appTemplate() {
   const selectedPublication = state.path.startsWith("/publications/") ? state.publications.find((publication) => publication.slug === decodeURIComponent(state.path.split("/").pop() || "")) : null;
   const inviteToken = state.path.startsWith("/publication-invites/") ? decodeURIComponent(state.path.split("/").pop() || "") : "";
   const selectedResource = state.path.startsWith("/resources/") ? state.resources.find((resource) => resource.slug === decodeURIComponent(state.path.split("/").pop() || "")) || state.selectedResource : null;
+  if (state.path === "/login" || state.path === "/register") {
+    return `<div class="app-shell auth-route-shell">${authPageTemplate()}</div>`;
+  }
   return `
     <div class="app-shell">
       ${headerTemplate()}
@@ -4571,7 +4574,7 @@ function headerTemplate() {
             ${icon(state.theme === "day" ? "moon" : "sun")}
           </button>
           <div class="notification-shell"><button class="icon-button notification-button" data-action="toggle-notifications" aria-label="Notifications${state.unreadNotifications ? `, ${state.unreadNotifications} unread` : ""}" aria-expanded="${state.notificationOpen}" title="Notifications">${icon("bell")}${state.user && state.unreadNotifications ? `<span class="notification-badge">${state.unreadNotifications > 99 ? "99+" : state.unreadNotifications}</span>` : ""}</button>${notificationDropdownTemplate()}</div>
-          <button class="member-pill" data-action="${state.user ? "open-account" : "open-login"}">${state.user ? state.user.name.split(" ")[0] : "Join"}</button>
+          <button class="member-pill" ${state.user ? 'data-action="open-account"' : 'data-route="/register"'}>${state.user ? state.user.name.split(" ")[0] : "Join"}</button>
           <button class="menu-button" data-action="toggle-menu" aria-label="${state.mobileOpen ? "Close menu" : "Open menu"}" aria-expanded="${state.mobileOpen ? "true" : "false"}">${icon(state.mobileOpen ? "close" : "menu", 20)}</button>
         </div>
       </div>
@@ -4586,7 +4589,7 @@ function headerTemplate() {
             ${links.map(([label, to]) => `<button class="${state.path === to ? "active" : ""}" data-route="${escapeHtml(to)}">${escapeHtml(label)}</button>`).join("")}
           </nav>
           <div class="mobile-panel-actions">
-            <button class="primary-button" data-action="${state.user ? "open-account" : "open-login"}">${state.user ? `Account: ${state.user.name}` : "Sign in / Join"}</button>
+            <button class="primary-button" ${state.user ? 'data-action="open-account"' : 'data-route="/login"'}>${state.user ? `Account: ${state.user.name}` : "Sign in / Join"}</button>
           </div>
         </aside>
       ` : ""}
@@ -7575,6 +7578,74 @@ function checkoutTemplate(plan) {
   `;
 }
 
+function authPageTemplate() {
+  const registering = state.path === "/register";
+  state.authMode = registering ? "register" : "login";
+  const providers = enabledSocialProviders();
+  const switchRoute = registering ? "/login" : "/register";
+  const switchLabel = registering ? "Already a member?" : "New to Nitross?";
+  const switchAction = registering ? "Sign in" : "Create an account";
+  const heading = registering ? "Your next chapter starts here." : "Welcome back to better ideas.";
+  const intro = state.authorIntent
+    ? "Continue your author path and unlock a thoughtful place to publish, learn, and grow."
+    : registering
+      ? "Join a community built around useful stories, ambitious builders, and work worth sharing."
+      : "Pick up where you left off with your saved stories, subscriptions, and personal dashboard.";
+  const socialButtons = providers.length
+    ? providers.map((provider) => `<button class="auth-page-social ${provider.id}" data-social-login="${provider.id}" ${state.providerStatus.social[provider.id] ? "" : "disabled"}><span>${socialProviderLogo(provider.id)}</span>Continue with ${provider.name}</button>`).join("")
+    : "";
+
+  if (state.user) {
+    return `<main class="auth-page auth-page-signed-in">
+      <section class="auth-signed-in-card" aria-labelledby="auth-account-title">
+        <button class="auth-wordmark dark" data-route="/" aria-label="${escapeHtml(siteName())} home">${escapeHtml(siteName())}<span>.</span></button>
+        <span class="auth-kicker">You’re already signed in</span>
+        <h1 id="auth-account-title">Welcome, ${escapeHtml(state.user.name.split(" ")[0])}.</h1>
+        <p>Continue to your dashboard or return to the latest stories.</p>
+        <div class="auth-signed-in-actions"><button class="primary-button" data-route="${state.user.role === "admin" ? "/admin" : "/dashboard"}">Open dashboard ${icon("chevronRight", 16)}</button><button class="secondary-button" data-route="/">Explore stories</button></div>
+      </section>
+    </main>`;
+  }
+
+  const credentialContent = !registering && state.authStep === "two-factor"
+    ? `<span class="auth-kicker">Secure verification</span>
+       <h1 id="auth-page-title">Verify it’s you.</h1>
+       <p class="auth-page-intro">Enter the current code from your authenticator app, or use one of your recovery codes.</p>
+       <form class="auth-page-form" id="authForm">
+         ${state.loginMessage ? `<div class="payment-message auth-message" role="alert">${escapeHtml(state.loginMessage)}</div>` : ""}
+         <label for="authTwoFactorCode"><span>Authenticator or recovery code</span><input id="authTwoFactorCode" name="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="20" value="${escapeHtml(state.authForm.twoFactorCode || "")}" autofocus required /></label>
+         <button class="primary-button wide-button auth-page-submit" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Verifying…" : "Verify and sign in"}${icon("chevronRight", 16)}</button>
+       </form>
+       <button class="text-button auth-page-back" data-action="back-to-login">${icon("chevronLeft", 15)}Back to email and password</button>`
+    : `<span class="auth-kicker">${registering ? "Create account" : "Sign in"}</span>
+       <h1 id="auth-page-title">${heading}</h1>
+       <p class="auth-page-intro">${intro}</p>
+       <form class="auth-page-form" id="authForm">
+         ${state.loginMessage ? `<div class="payment-message auth-message" role="alert">${escapeHtml(state.loginMessage)}</div>` : ""}
+         ${registering ? `<label for="authName"><span>Full name</span><input id="authName" name="name" autocomplete="name" maxlength="80" value="${escapeHtml(state.authForm.name)}" placeholder="Your name" autofocus required /></label>` : ""}
+         <label for="authEmail"><span>Email address</span><input id="authEmail" name="email" type="email" autocomplete="email" maxlength="254" value="${escapeHtml(state.authForm.email)}" placeholder="you@example.com" ${registering ? "" : "autofocus"} required /></label>
+         <label for="authPassword"><span>Password</span><div class="auth-page-password"><input id="authPassword" name="password" type="${state.authPasswordVisible ? "text" : "password"}" value="${escapeHtml(state.authForm.password)}" autocomplete="${registering ? "new-password" : "current-password"}" minlength="10" maxlength="128" placeholder="At least 10 characters" required /><button type="button" data-action="toggle-auth-password" aria-label="${state.authPasswordVisible ? "Hide password" : "Show password"}">${state.authPasswordVisible ? "Hide" : "Show"}</button></div></label>
+         ${registering ? `<small class="auth-password-help">Use 10+ characters with uppercase, lowercase, and a number.</small><label class="auth-page-consent"><input type="checkbox" required /><span>I agree to the <button type="button" class="inline-link" data-route="/terms">terms</button> and <button type="button" class="inline-link" data-route="/privacy">privacy policy</button>.</span></label>` : `<div class="auth-page-options"><label><input id="authRememberMe" type="checkbox" ${state.authForm.rememberMe ? "checked" : ""} /><span>Remember me</span></label><button type="button" class="text-button" data-action="forgot-password">Forgot password?</button></div>`}
+         <button class="primary-button wide-button auth-page-submit nitross-auth-submit" type="submit" ${state.authBusy ? "disabled" : ""}>${state.authBusy ? "Please wait…" : registering ? "Create my account" : "Sign in to Nitross"}${icon("chevronRight", 16)}</button>
+       </form>
+       ${!registering ? `<button class="auth-page-passkey" data-action="login-passkey" ${state.authBusy ? "disabled" : ""}>${icon("lock", 16)}Sign in with a passkey</button>` : ""}
+       ${socialButtons ? `<div class="auth-page-divider"><span>Or continue with</span></div><div class="auth-page-socials">${socialButtons}</div>` : ""}
+       <p class="auth-security-note">${icon("shield", 14)}Secure access. Thoughtful discovery. Your data stays yours.</p>`;
+
+  return `<main class="auth-page ${registering ? "is-register" : "is-login"}">
+    <section class="auth-story-panel" aria-label="About Nitross">
+      <button class="auth-wordmark" data-route="/" aria-label="${escapeHtml(siteName())} home">${escapeHtml(siteName())}<span>.</span></button>
+      <div class="auth-story-copy"><span>A place for builders</span><h2>Great ideas<br />start with<br /><em>curiosity.</em></h2><p>Learn from worth-reading stories, connect with builders, and move forward with confidence.</p></div>
+      <small>Learn. Build. Grow.</small>
+      <div class="auth-story-shape" aria-hidden="true"><i></i></div>
+    </section>
+    <section class="auth-form-panel" aria-labelledby="auth-page-title">
+      <div class="auth-switch"><span>${switchLabel}</span><button data-route="${switchRoute}">${switchAction}</button></div>
+      <div class="auth-form-wrap">${credentialContent}</div>
+    </section>
+  </main>`;
+}
+
 function loginTemplate() {
   if (state.resetToken) {
     return `
@@ -7837,12 +7908,13 @@ function applyDocumentSeo() {
   const publication = state.path.startsWith("/publications/") ? state.publications.find((item) => state.path === `/publications/${item.slug}`) : null;
   const writerProfile = cleanProfileRouteSlug(state.path) ? profileForSlug(cleanProfileRouteSlug(state.path)) : null;
   const marketplace = state.path === "/resources";
+  const authRoute = state.path === "/login" || state.path === "/register";
   const notFound = Boolean(document.querySelector(".not-found-page")) || (state.path.startsWith("/resources/") && !resource) || ((state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) && !businessProfile && !state.businessProfileLoading);
   const seo = story?.seo || {};
   const businessDefaultTitle = businessProfile ? (companyProfile ? `${businessName}: Founders, Company Profile, Products & Business Overview | ${siteName()}` : `${businessName}: Founder Profile, Companies & Biography | ${siteName()}`) : "";
   const businessDefaultDescription = businessProfile ? (companyProfile ? businessProfile.description || businessProfile.tagline : businessProfile.biography || businessProfile.headline) : "";
-  const title = notFound ? `Page not found · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? (resource.seoTitle || `${resource.name} · ${siteName()} Resources`) : businessProfile ? (businessProfile.seo_title || businessDefaultTitle) : publication ? `${publication.name} | ${siteName()}` : writerProfile ? `${writerProfile.name}: Writer Profile | ${siteName()}` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
-  const description = notFound ? `The requested page could not be found on ${siteName()}.` : story ? (seo.metaDescription || story.dek) : resource ? (resource.metaDescription || resource.shortDescription) : businessProfile ? (businessProfile.meta_description || businessDefaultDescription) : publication ? publication.description : writerProfile ? writerProfile.bio : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
+  const title = notFound ? `Page not found · ${siteName()}` : authRoute ? `${state.path === "/register" ? "Create account" : "Sign in"} · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? (resource.seoTitle || `${resource.name} · ${siteName()} Resources`) : businessProfile ? (businessProfile.seo_title || businessDefaultTitle) : publication ? `${publication.name} | ${siteName()}` : writerProfile ? `${writerProfile.name}: Writer Profile | ${siteName()}` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
+  const description = notFound ? `The requested page could not be found on ${siteName()}.` : authRoute ? (state.path === "/register" ? `Create a ${siteName()} account to save stories, join the community, and access your dashboard.` : `Sign in to ${siteName()} to continue reading, manage subscriptions, and access saved stories.`) : story ? (seo.metaDescription || story.dek) : resource ? (resource.metaDescription || resource.shortDescription) : businessProfile ? (businessProfile.meta_description || businessDefaultDescription) : publication ? publication.description : writerProfile ? writerProfile.bio : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
   document.title = title;
   setMetaTag('meta[name="description"]', { name: "description", content: description });
   [["google-site-verification", state.siteSeo.googleVerification], ["msvalidate.01", state.siteSeo.bingVerification], ["p:domain_verify", state.siteSeo.pinterestVerification], ["yandex-verification", state.siteSeo.yandexVerification]].forEach(([name, content]) => {
@@ -7850,7 +7922,7 @@ function applyDocumentSeo() {
   });
   setMetaTag('meta[name="robots"]', {
     name: "robots",
-    content: notFound ? "noindex,follow" : storyPreview ? "noindex,nofollow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : businessProfile && businessProfile.robots_index === false ? "noindex,follow" : resource && resource.robotsIndex === false ? "noindex,follow" : "index,follow",
+    content: notFound ? "noindex,follow" : authRoute ? "noindex,follow" : storyPreview ? "noindex,nofollow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : businessProfile && businessProfile.robots_index === false ? "noindex,follow" : resource && resource.robotsIndex === false ? "noindex,follow" : "index,follow",
   });
   setMetaTag('meta[property="og:title"]', { property: "og:title", content: story ? (seo.socialTitle || title) : resource ? (resource.socialTitle || title) : businessProfile ? (businessProfile.social_title || title) : title });
   setMetaTag('meta[property="og:description"]', { property: "og:description", content: story ? (seo.socialDescription || description) : resource ? (resource.socialDescription || description) : businessProfile ? (businessProfile.social_description || description) : description });
