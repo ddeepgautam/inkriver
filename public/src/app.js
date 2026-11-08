@@ -1943,7 +1943,7 @@ const initialPreferences = loadProductState("preferences", {
 initialPreferences.communication = { ...defaultCommunicationPreferences, ...(initialPreferences.communication || {}) };
 initialPreferences.cookies = { analytics: false, personalization: false, advertising: false, ...(initialPreferences.cookies || {}), essential: true };
 
-const cookieConsentVersion = "2026-11-09-global-1";
+const cookieConsentVersion = "2026-11-09-global-2";
 function loadCookieConsent() {
   try {
     const stored = JSON.parse(localStorage.getItem("nitross-cookie-consent") || "null");
@@ -3575,12 +3575,17 @@ function icon(name, size = 17) {
 }
 
 function setRoute(to) {
-  if ((to === "/security" || to === "/support") && !state.user) {
+  const checkoutRoute = to.startsWith("/checkout/");
+  if ((to === "/security" || to === "/support" || checkoutRoute) && !state.user) {
     state.authReturnTo = to;
     sessionStorage.setItem("nitross-auth-return", to);
     state.authMode = "login";
     state.authStep = "credentials";
-    state.loginMessage = to === "/security" ? "Sign in to manage your account security." : "Sign in to contact support or track a request.";
+    state.loginMessage = checkoutRoute
+      ? "Sign in or create an account first. We’ll bring you back to secure checkout with your selected plan."
+      : to === "/security"
+        ? "Sign in to manage your account security."
+        : "Sign in to contact support or track a request.";
     state.loginOpen = false;
     window.history.pushState({}, "", "/login");
     state.path = "/login";
@@ -7676,7 +7681,7 @@ function checkoutPageTemplate() {
   const stepContent = step === 1
     ? `<section class="checkout-stage"><span class="eyebrow">Step 1 · Order</span><h1>Review your membership</h1><p>Confirm the plan and billing period before choosing how to pay.</p><article class="checkout-plan-review"><div><span>${icon("spark", 20)}</span><div><strong>${escapeHtml(plan.name)}</strong><small>${plan.period === "year" ? "Annual membership · paid once for 12 months" : "Monthly membership · billed each month"}</small></div></div><strong>${formatMoneyFromINR(plan.price)}</strong></article><div class="checkout-benefits"><h2>Included with this plan</h2><ul>${features.map((feature) => `<li>${icon("check", 15)}${escapeHtml(feature)}</li>`).join("") || `<li>${icon("check", 15)}Membership features shown on the pricing page</li>`}</ul></div><div class="checkout-stage-actions"><button class="secondary-button" data-route="/pricing">Change plan</button><button class="primary-button" data-checkout-next="2">Continue to payment ${icon("chevronRight", 15)}</button></div></section>`
     : step === 2
-      ? `<section class="checkout-stage"><span class="eyebrow">Step 2 · Payment</span><h1>Choose a payment method</h1><p>Available partners depend on your location and the server’s live configuration.</p>${state.user ? `<div class="checkout-account-row">${icon("users", 18)}<span><strong>${escapeHtml(state.user.name)}</strong><small>${escapeHtml(state.user.email)}</small></span><b>Signed in</b></div>` : `<div class="checkout-auth-callout">${icon("lock", 20)}<div><strong>Sign in before payment</strong><p>Your verified purchase and membership access must be linked to an account.</p></div><button class="primary-button" data-checkout-auth="login">Sign in</button><button class="secondary-button" data-checkout-auth="register">Create account</button></div>`}<fieldset class="checkout-gateway-grid"><legend>Secure payment partner</legend>${gateways.map((item) => `<button type="button" class="gateway-card ${state.gateway === item.id ? "active" : ""}" data-gateway="${item.id}" aria-pressed="${state.gateway === item.id}">${pricingGatewayLogo(item)}<span><small>${escapeHtml(item.type)}</small><b>${state.providerStatus.payments[item.id] ? "Available" : "Not configured"}</b></span></button>`).join("") || `<div class="empty-state">No payment gateway is currently enabled.</div>`}</fieldset>${gateway ? `<div class="gateway-status ${configured ? "ready" : "needs-key"}"><strong>${escapeHtml(gateway.name)} ${configured ? "is ready" : "needs server configuration"}</strong><span>${configured ? "Your order is created server-side before secure provider handoff." : "This provider cannot accept payment until its environment credentials are configured."}</span><small>${escapeHtml(gateway.serverNote)}</small></div>` : ""}${featureEnabled("discounts") ? `<label class="discount-field"><span>Discount code</span><div><input id="discountCode" value="${escapeHtml(state.checkoutDiscountCode)}" placeholder="Enter code" autocomplete="off" /><button class="secondary-button" data-action="apply-discount" ${state.checkoutDiscountCode.trim() ? "" : "disabled"}>Apply</button></div></label>` : ""}${state.paymentMessage ? `<div class="payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}<div class="checkout-stage-actions"><button class="secondary-button" data-checkout-back="1">Back</button><button class="primary-button" data-checkout-next="3" ${state.user && configured ? "" : "disabled"}>Review order ${icon("chevronRight", 15)}</button></div></section>`
+      ? `<section class="checkout-stage"><span class="eyebrow">Step 2 · Payment</span><h1>Choose a payment method</h1><p>Available partners depend on your location and the server’s live configuration.</p><div class="checkout-account-row">${icon("users", 18)}<span><strong>${escapeHtml(state.user?.name || "Nitross member")}</strong><small>${escapeHtml(state.user?.email || "Authenticated account")}</small></span><b>Signed in</b></div><fieldset class="checkout-gateway-grid"><legend>Secure payment partner</legend>${gateways.map((item) => `<button type="button" class="gateway-card ${state.gateway === item.id ? "active" : ""}" data-gateway="${item.id}" aria-pressed="${state.gateway === item.id}">${pricingGatewayLogo(item)}<span><small>${escapeHtml(item.type)}</small><b>${state.providerStatus.payments[item.id] ? "Available" : "Not configured"}</b></span></button>`).join("") || `<div class="empty-state">No payment gateway is currently enabled.</div>`}</fieldset>${gateway ? `<div class="gateway-status ${configured ? "ready" : "needs-key"}"><strong>${escapeHtml(gateway.name)} ${configured ? "is ready" : "needs server configuration"}</strong><span>${configured ? "Your order is created server-side before secure provider handoff." : "This provider cannot accept payment until its environment credentials are configured."}</span><small>${escapeHtml(gateway.serverNote)}</small></div>` : ""}${featureEnabled("discounts") ? `<label class="discount-field"><span>Discount code</span><div><input id="discountCode" value="${escapeHtml(state.checkoutDiscountCode)}" placeholder="Enter code" autocomplete="off" /><button class="secondary-button" data-action="apply-discount" ${state.checkoutDiscountCode.trim() ? "" : "disabled"}>Apply</button></div></label>` : ""}${state.paymentMessage ? `<div class="payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}<div class="checkout-stage-actions"><button class="secondary-button" data-checkout-back="1">Back</button><button class="primary-button" data-checkout-next="3" ${configured ? "" : "disabled"}>Review order ${icon("chevronRight", 15)}</button></div></section>`
       : `<section class="checkout-stage"><span class="eyebrow">Step 3 · Review</span><h1>Confirm and continue securely</h1><p>Nitross creates the order, then your selected provider completes payment in its secure experience.</p><div class="checkout-final-review"><div><span>Account</span><strong>${escapeHtml(state.user?.email || "Sign in required")}</strong></div><div><span>Membership</span><strong>${escapeHtml(plan.name)} · ${escapeHtml(plan.period)}</strong></div><div><span>Payment partner</span><strong>${escapeHtml(gateway?.name || "Unavailable")}</strong></div><div><span>Amount due</span><strong>${formatMoneyFromINR(finalPrice)}</strong></div></div><label class="checkout-legal-confirm"><input type="checkbox" id="checkoutTermsAccepted" ${state.checkoutTermsAccepted ? "checked" : ""}><span>I agree to the <button type="button" data-route="/terms">Terms of use</button> and acknowledge the <button type="button" data-route="/privacy-policy">Privacy Policy</button>, billing period, and renewal information shown here.</span></label>${paypalRestrictedForCurrentUser() ? `<div class="payment-message">PayPal is not available for India. Choose Razorpay, PayU, or Cashfree.</div>` : ""}${state.paymentMessage ? `<div class="payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}<div class="checkout-stage-actions"><button class="secondary-button" data-checkout-back="2">Back</button><button class="primary-button checkout-pay-button" data-payment-submit="${escapeHtml(plan.id)}" ${configured && state.user && state.checkoutTermsAccepted ? "" : "disabled"}>${icon("lock", 15)}Continue to ${escapeHtml(gateway?.name || "payment provider")}</button></div><small class="checkout-security-note">${icon("shield", 14)}Membership activates only after server-side payment verification.</small></section>`;
   return `<main class="checkout-page"><header class="checkout-page-header"><button class="brand compact" data-route="/" aria-label="${escapeHtml(siteName())} home"><span class="brand-mark">${escapeHtml(siteInitials())}</span><span>${escapeHtml(siteName())}</span></button><span>${icon("lock", 14)}Secure checkout</span></header><div class="checkout-progress" aria-label="Checkout progress">${[[1,"Order"],[2,"Payment"],[3,"Review"]].map(([number,label]) => `<button data-checkout-jump="${number}" class="${step === number ? "active" : step > number ? "complete" : ""}" ${number > step ? "disabled" : ""}><i>${step > number ? icon("check", 13) : number}</i><span>${label}</span></button>`).join("")}</div><div class="checkout-layout">${stepContent}<aside class="checkout-order-summary"><span>Order summary</span><h2>${escapeHtml(plan.name)}</h2><p>${plan.period === "year" ? "12 months of membership access" : "Monthly membership access"}</p><div><span>Subtotal</span><strong>${formatMoneyFromINR(plan.price)}</strong>${state.checkoutDiscount ? `<span>Discount · ${escapeHtml(state.checkoutDiscount.code)}</span><strong>- ${formatMoneyFromINR(state.checkoutDiscount.discountAmount / 100)}</strong>` : ""}<span>Taxes</span><strong>Calculated by provider</strong></div><footer><span>Total due</span><strong>${formatMoneyFromINR(finalPrice)}</strong><small>Base price ${formatINR(finalPrice)} · display currency may use configured exchange rates</small></footer><ul><li>${icon("shield", 14)}Server-verified access</li><li>${icon("lock", 14)}Secure provider handoff</li><li>${icon("refresh", 14)}Manage membership in dashboard</li></ul></aside></div></main>`;
 }
@@ -8909,7 +8914,6 @@ document.addEventListener("click", async (event) => {
   const checkoutNext = target.dataset.checkoutNext;
   const checkoutBack = target.dataset.checkoutBack;
   const checkoutJump = target.dataset.checkoutJump;
-  const checkoutAuth = target.dataset.checkoutAuth;
   const gateway = target.dataset.gateway;
   const translateStory = target.dataset.translateStory;
   const insightRetry = target.dataset.insightRetry;
@@ -9009,13 +9013,6 @@ document.addEventListener("click", async (event) => {
     state.checkoutStep = Number(checkoutNext || checkoutBack || checkoutJump);
     window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     render();
-    return;
-  }
-  if (checkoutAuth) {
-    state.authReturnTo = state.path;
-    sessionStorage.setItem("nitross-auth-return", state.path);
-    state.authMode = checkoutAuth === "register" ? "register" : "login";
-    setRoute(checkoutAuth === "register" ? "/register" : "/login");
     return;
   }
   if (action === "cookie-accept") { persistCookieConsent({ essential: true, analytics: true, personalization: true, advertising: true }); render(); return; }
@@ -11237,13 +11234,18 @@ document.addEventListener("click", async (event) => {
 window.addEventListener("popstate", () => {
   finalizeArticleSession();
   const nextPath = window.location.pathname;
-  if ((nextPath === "/security" || nextPath === "/support") && !state.user) {
+  const checkoutRoute = nextPath.startsWith("/checkout/");
+  if ((nextPath === "/security" || nextPath === "/support" || checkoutRoute) && !state.user) {
     state.authReturnTo = nextPath;
     sessionStorage.setItem("nitross-auth-return", nextPath);
     state.authMode = "login";
     state.authStep = "credentials";
     state.loginOpen = false;
-    state.loginMessage = nextPath === "/security" ? "Sign in to manage your account security." : "Sign in to contact support or track a request.";
+    state.loginMessage = checkoutRoute
+      ? "Sign in or create an account first. We’ll bring you back to secure checkout with your selected plan."
+      : nextPath === "/security"
+        ? "Sign in to manage your account security."
+        : "Sign in to contact support or track a request.";
     window.history.replaceState({}, "", "/login");
     state.path = "/login";
   } else if (nextPath === "/support" && state.user) {
@@ -11320,14 +11322,19 @@ async function bootstrapApp() {
     state.blogForm.publication = siteName();
   }
   state.sessionReady = true;
-  const accountOnlyRoute = state.path === "/security" || state.path === "/support";
+  const checkoutRoute = state.path.startsWith("/checkout/");
+  const accountOnlyRoute = state.path === "/security" || state.path === "/support" || checkoutRoute;
   const protectedUserRoute = state.path.startsWith("/dashboard") || state.path === "/me" || state.path === "/notifications" || accountOnlyRoute;
   const protectedAdminRoute = state.path.startsWith("/admin");
   if (protectedUserRoute && !state.user) {
     if (accountOnlyRoute) {
       state.authReturnTo = state.path;
       sessionStorage.setItem("nitross-auth-return", state.path);
-      state.loginMessage = state.path === "/security" ? "Sign in to manage your account security." : "Sign in to contact support or track a request.";
+      state.loginMessage = checkoutRoute
+        ? "Sign in or create an account first. We’ll bring you back to secure checkout with your selected plan."
+        : state.path === "/security"
+          ? "Sign in to manage your account security."
+          : "Sign in to contact support or track a request.";
       state.authMode = "login";
       state.authStep = "credentials";
       state.loginOpen = false;
