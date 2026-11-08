@@ -1,5 +1,5 @@
-const CACHE = "nitross-v54-auth-layout";
-const CORE = ["/", "/index.html", "/dist/app.min.js?v=20261108-auth-layout-2", "/dist/styles.min.css?v=20261108-auth-layout-2", "/manifest.webmanifest", "/src/icon.svg", "/src/assets/pricing-membership-hero.jpg"];
+const CACHE = "nitross-v55-public-legal";
+const CORE = ["/", "/index.html", "/dist/app.min.js?v=20261109-public-legal-1", "/dist/styles.min.css?v=20261109-public-legal-1", "/manifest.webmanifest", "/src/icon.svg", "/src/assets/pricing-membership-hero.jpg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));

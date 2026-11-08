@@ -258,7 +258,7 @@ function slugifyName(value) {
   return String(value || "reader").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-const reservedProfileRoutes = new Set(["about", "admin", "administrator", "api", "auth", "billing", "blog", "category", "dashboard", "help", "lists", "login", "logout", "me", "moderator", "notifications", "pricing", "privacy", "publications", "publication-invites", "root", "search", "security", "settings", "signup", "stories", "support", "terms", "write"]);
+const reservedProfileRoutes = new Set(["about", "admin", "administrator", "api", "auth", "billing", "blog", "category", "dashboard", "help", "lists", "login", "logout", "me", "moderator", "notifications", "pricing", "privacy", "privacy-policy", "publications", "publication-invites", "root", "search", "security", "settings", "signup", "stories", "support", "terms", "write"]);
 
 function cleanProfileRouteSlug(path = state.path) {
   const slug = decodeURIComponent(String(path || "").replace(/^\/+|\/+$/g, "")).toLowerCase();
@@ -1971,6 +1971,7 @@ const state = {
   authForm: { name: "", email: "", password: "", twoFactorCode: "", rememberMe: false },
   authPasswordVisible: false,
   authBusy: false,
+  authReturnTo: sessionStorage.getItem("nitross-auth-return") || "",
   pendingBusinessListing: sessionStorage.getItem("inkriver-business-listing-intent") === "1",
   authorIntent: sessionStorage.getItem("inkriver-author-intent") === "1",
   authorMessage: "",
@@ -2757,7 +2758,7 @@ async function loadRouteData(path = state.path, dashboardSection = state.dashboa
     add(loadSecuritySessions());
     add(loadSecuritySettings());
   }
-  if (path.startsWith("/support") || path.startsWith("/admin/support")) add(loadSupportTickets());
+  if (path.startsWith("/support") || path.startsWith("/admin/support") || (path.startsWith("/dashboard") && dashboardSection === "support")) add(loadSupportTickets());
   if (path.startsWith("/dashboard") && ["stories", "analytics", "earnings"].includes(dashboardSection) && ["writer", "admin"].includes(state.user?.role)) {
     add(loadCreatorAnalytics());
     add(loadWriterPayouts());
@@ -3282,6 +3283,18 @@ async function submitAuthentication() {
     if (payload.user.role === "admin") await loadAdminUsers();
     if (state.pendingBusinessListing) continueBusinessListingIntent();
     else if (sessionStorage.getItem("inkriver-resource-return")) { const returnTo = sessionStorage.getItem("inkriver-resource-return"); sessionStorage.removeItem("inkriver-resource-return"); state.onboardingOpen = false; setRoute(returnTo); }
+    else if (state.authReturnTo) {
+      const returnTo = state.authReturnTo;
+      state.authReturnTo = "";
+      sessionStorage.removeItem("nitross-auth-return");
+      state.onboardingOpen = false;
+      if (returnTo === "/support") {
+        state.dashboardSection = "support";
+        setRoute("/dashboard");
+      } else {
+        setRoute(returnTo);
+      }
+    }
     else if (!state.onboardingOpen) setRoute(payload.user.role === "admin" ? "/admin" : "/dashboard");
     else render();
   } catch (error) {
@@ -3528,6 +3541,24 @@ function icon(name, size = 17) {
 }
 
 function setRoute(to) {
+  if ((to === "/security" || to === "/support") && !state.user) {
+    state.authReturnTo = to;
+    sessionStorage.setItem("nitross-auth-return", to);
+    state.authMode = "login";
+    state.authStep = "credentials";
+    state.loginMessage = to === "/security" ? "Sign in to manage your account security." : "Sign in to contact support or track a request.";
+    state.loginOpen = false;
+    window.history.pushState({}, "", "/login");
+    state.path = "/login";
+    state.mobileOpen = false;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    render();
+    return;
+  }
+  if (to === "/support" && state.user) {
+    state.dashboardSection = "support";
+    to = "/dashboard";
+  }
   if ((to.startsWith("/dashboard") || to === "/me" || to === "/notifications") && !state.user) {
     state.authMode = "login";
     state.loginMessage = "Sign in to open your dashboard.";
@@ -4327,6 +4358,8 @@ function appTemplate() {
             ? readerProfileTemplate()
           : state.path.startsWith("/search")
             ? searchPageTemplate()
+          : state.path === "/privacy-policy"
+            ? publicPrivacyPolicyTemplate()
           : state.path.startsWith("/privacy")
             ? privacyCenterTemplate()
           : state.path.startsWith("/security")
@@ -5530,12 +5563,12 @@ function dashboardNavItems(role) {
   const items = [["chart", "Overview", "overview"], ["bookmark", "My Resources", "resources"], ["play", "Reading", "reading"], ["spark", "Interests", "interests"], ["users", "Following", "following"], ["eye", "History", "history"], ["card", "Membership", "membership"]];
   if (role === "writer") items.splice(1, 0, ["pen", "My stories", "stories"], ["chart", "Analytics", "analytics"], ["money", "Earnings", "earnings"]);
   if (role === "moderator") items.splice(1, 0, ["shield", "Moderation queue", "moderation"], ["filter", "Reports", "reports"]);
-  items.push(["gauge", "Business profiles", "business"], ["lock", "Security", "security"], ["users", "Profile", "profile"]);
+  items.push(["gauge", "Business profiles", "business"], ["lock", "Security", "security"], ["comment", "Support", "support"], ["users", "Profile", "profile"]);
   return items;
 }
 
 function dashboardSectionTitle(section) {
-  return { overview: "Dashboard overview", resources: "My Resources", reading: "Reading workspace", interests: "Reading interests", following: "Following", history: "Reading history", membership: "Membership and billing", stories: "My stories", analytics: "Creator analytics", earnings: "Writer earnings", moderation: "Moderation queue", reports: "Reports and activity", business: "Business profiles", security: "Security", profile: "Profile and account" }[section] || "Dashboard overview";
+  return { overview: "Dashboard overview", resources: "My Resources", reading: "Reading workspace", interests: "Reading interests", following: "Following", history: "Reading history", membership: "Membership and billing", stories: "My stories", analytics: "Creator analytics", earnings: "Writer earnings", moderation: "Moderation queue", reports: "Reports and activity", business: "Business profiles", security: "Security", support: "Help and support", profile: "Profile and account" }[section] || "Dashboard overview";
 }
 
 function dashboardSectionDescription(section, role) {
@@ -5554,6 +5587,7 @@ function dashboardSectionDescription(section, role) {
     reports: "See moderation outcomes and recent operational activity.",
     business: "Create, link, and manage your company and founder profiles.",
     security: "Manage account protection, sessions, and recovery methods.",
+    support: `Create and track requests with the ${siteName()} support team.`,
     profile: "Review your public identity and account details.",
   }[section] || `Your ${siteName()} workspace.`;
 }
@@ -5572,6 +5606,7 @@ function dashboardSectionTemplate(section) {
   if (section === "reports") return dashboardModeratorReportsTemplate();
   if (section === "business") return businessWorkspaceTemplate();
   if (section === "security") return securityWorkspaceTemplate(false);
+  if (section === "support") return supportWorkspaceTemplate(false);
   if (section === "profile") return dashboardProfileTemplate();
   return dashboardOverviewTemplate();
 }
@@ -6473,17 +6508,34 @@ function contactPageTemplate() {
 }
 
 function termsPageTemplate() {
-  return `<main class="account-center"><header><h1>Terms</h1><p>These terms describe the basic rules for using ${escapeHtml(siteName())}, publishing content, memberships, payments, and community features.</p></header>
-    <section class="privacy-layout"><div class="privacy-controls">
-      <section><h2>Accounts</h2><p>Users are responsible for keeping login details secure, maintaining accurate account information, and following role-specific permissions.</p></section>
-      <section><h2>Publishing</h2><p>Authors and publications are responsible for the content they submit, including rights, citations, disclosures, corrections, and compliance with moderation rules.</p></section>
-      <section><h2>Payments</h2><p>Subscriptions, tips, gifts, discounts, taxes, refunds, and payout handling depend on the enabled payment providers and their live processing rules.</p></section>
-      <section><h2>Community</h2><p>Comments, profiles, reports, and reader activity must not be used for spam, abuse, harassment, plagiarism, misinformation, or attempts to bypass security controls.</p></section>
-    </div><aside class="privacy-actions"><h2>Related</h2><button data-route="/privacy">${icon("shield", 16)}<span><strong>Privacy</strong><small>Manage data and tracking preferences</small></span></button><button data-route="/security">${icon("lock", 16)}<span><strong>Security</strong><small>Protect your account</small></span></button><button data-route="/support">${icon("comment", 16)}<span><strong>Support</strong><small>Get help with account or payment issues</small></span></button></aside></section>
+  const contactEmail = state.gatewaySettings.contactEmail || "support@nitross.com";
+  return `<main class="legal-page">
+    <header class="legal-hero"><span class="eyebrow">Legal · Public</span><h1>Terms of use</h1><p>These terms explain the rules for accessing and using ${escapeHtml(siteName())}, including reading, publishing, memberships, business profiles, digital resources, payments, and community participation.</p><div class="legal-meta"><span>Last updated 9 November 2026</span><span>Applies to visitors and account holders</span></div></header>
+    <section class="legal-highlight-grid" aria-label="Terms summary"><article>${icon("check", 20)}<strong>Use the platform lawfully</strong><p>Respect people, intellectual property, security, and applicable law.</p></article><article>${icon("pen", 20)}<strong>Own what you publish</strong><p>You remain responsible for content, disclosures, permissions, and accuracy.</p></article><article>${icon("card", 20)}<strong>Review payment terms</strong><p>Prices, billing periods, taxes, renewals, and provider terms are shown before payment.</p></article></section>
+    <section class="legal-layout">
+      <nav class="legal-toc" aria-label="Terms sections"><strong>On this page</strong>${[["acceptance","Acceptance"],["accounts","Accounts"],["platform","Platform services"],["content","Publishing and content"],["community","Community conduct"],["commerce","Memberships and payments"],["creators","Creator earnings"],["business","Profiles and resources"],["technology","AI and third parties"],["intellectual-property","Intellectual property"],["enforcement","Moderation and termination"],["availability","Availability and liability"],["law","Governing law"],["changes","Changes and contact"]].map(([id,label]) => `<a href="#${id}">${label}</a>`).join("")}</nav>
+      <div class="legal-document">
+        <article id="acceptance"><span>01</span><h2>Acceptance and eligibility</h2><p>By visiting, creating an account, purchasing, publishing, or otherwise using ${escapeHtml(siteName())}, you agree to these terms and the Privacy Policy. If you do not agree, do not use the platform.</p><p>You must be legally capable of entering into these terms. If you are under 18, a parent or lawful guardian must consent to and supervise your use where required by law. We may restrict features involving payments, publishing, business listings, or personal-data processing when age or authority cannot be appropriately verified.</p></article>
+        <article id="accounts"><span>02</span><h2>Accounts, identity, and security</h2><p>Provide accurate information, keep it current, protect your password and recovery methods, and promptly report suspected unauthorised access. You are responsible for activity performed through your account unless applicable law provides otherwise.</p><p>Do not impersonate another person, create deceptive accounts, transfer an account without permission, share credentials to bypass plan limits, or interfere with authentication, sessions, passkeys, two-factor authentication, or role permissions.</p></article>
+        <article id="platform"><span>03</span><h2>Platform services and feature access</h2><p>${escapeHtml(siteName())} may provide public stories, personalised recommendations, saved reading, translations, audio, comments, publications, newsletters, business-network profiles, digital resources, memberships, creator tools, analytics, advertising, moderation, and support. Availability can depend on account status, role, plan, geography, device, provider configuration, and editorial approval.</p><p>Feature descriptions are not a guarantee that every feature will always be available. We may improve, replace, limit, pause, or discontinue features for security, legal, operational, or product reasons.</p></article>
+        <article id="content"><span>04</span><h2>Publishing, licences, and editorial standards</h2><p>You retain ownership of content you submit. You grant ${escapeHtml(siteName())} a worldwide, non-exclusive, royalty-free licence to host, reproduce, format, adapt for accessibility and device display, distribute, promote, index, and make that content available through the platform and its configured channels for operating and promoting the service. This licence ends when content is removed, except for lawful retention, backups, prior distributions, and records needed to protect rights or comply with law.</p><p>You must have the rights and permissions required for text, images, media, data, trademarks, and personal information you publish. Disclose sponsorships, conflicts, affiliate relationships, AI assistance where appropriate, and material corrections. We may edit presentation, request evidence or corrections, add labels, decline publication, reduce distribution, or remove content under editorial and moderation policies.</p></article>
+        <article id="community"><span>05</span><h2>Community conduct and prohibited use</h2><p>Do not use the platform for unlawful activity; threats or harassment; hate or targeted abuse; sexual exploitation; fraud; spam; malware; scraping that disrupts service; deceptive engagement; plagiarism; privacy violations; infringement; dangerous misinformation; or attempts to evade moderation, payment, access, or security controls.</p><p>Comments, messages, reports, reviews, and business claims must be genuine and relevant. Do not submit false complaints, manipulate metrics, disclose another person’s private information, or upload material that creates avoidable security or legal risk.</p></article>
+        <article id="commerce"><span>06</span><h2>Memberships, purchases, billing, and refunds</h2><p>Before payment, review the displayed price, currency, billing period, taxes, discount conditions, included capabilities, renewal terms, and gateway details. Payments may be processed by third-party providers whose terms also apply. Access starts only after successful server-side payment verification.</p><p>Recurring memberships continue for the selected period until cancelled where recurring billing is enabled. Cancellation generally stops future renewal and does not automatically reverse a completed charge. Refunds, failed payments, chargebacks, gifts, tips, discounts, and taxes are handled according to the displayed offer, applicable law, and payment-provider rules. Nothing in these terms limits mandatory consumer rights.</p></article>
+        <article id="creators"><span>07</span><h2>Creator access, analytics, and earnings</h2><p>Publishing and earning tools may require identity, role, editorial, membership, tax, payout, or account checks. Analytics and earnings figures can be estimated, delayed, adjusted for invalid activity, refunds, chargebacks, taxes, provider fees, moderation outcomes, or corrected attribution.</p><p>Creators are responsible for accurate payout and tax information and for complying with advertising, endorsement, intellectual-property, and professional obligations. No minimum audience, revenue, distribution, ranking, or payout is guaranteed.</p></article>
+        <article id="business"><span>08</span><h2>Business profiles and digital resources</h2><p>Company and founder profiles must be accurate, authorised, and supported by appropriate evidence. Claiming or editing a profile does not imply endorsement, verification, investment advice, or a commercial relationship with ${escapeHtml(siteName())}.</p><p>Resource owners must have the right to sell or share uploaded templates, prompts, files, guides, and tools. Buyers receive only the access or licence described on the resource page. Do not redistribute, resell, or remove attribution unless the stated licence permits it.</p></article>
+        <article id="technology"><span>09</span><h2>AI-assisted features, translations, and external services</h2><p>AI assistance, summaries, recommendations, translations, audio, search, and automated checks may be incomplete or inaccurate. Review outputs before relying on or publishing them. Do not submit confidential or sensitive information to an AI feature unless the interface expressly supports that use.</p><p>OAuth, payments, email, push notifications, hosting, analytics, AI, media, and other integrations may be operated by third parties. Their services, availability, and independent terms or privacy practices are outside our direct control.</p></article>
+        <article id="intellectual-property"><span>10</span><h2>Intellectual property and reports</h2><p>The platform software, interface, brand, original editorial material, and related rights belong to ${escapeHtml(siteName())} or its licensors. These terms do not grant permission to copy the service, misuse trademarks, reverse engineer protected components, or create a competing database through unauthorised extraction.</p><p>If you believe content infringes your rights, provide the work identified, the allegedly infringing material, your contact details, your authority, and a good-faith statement through the configured contact or support channel. We may request verification and take proportionate action.</p></article>
+        <article id="enforcement"><span>11</span><h2>Moderation, suspension, and termination</h2><p>We may investigate reports and take proportionate action, including warnings, labels, reach limits, content removal, feature restrictions, payout holds, account suspension, or termination. Urgent action may be taken to protect users, evidence, the platform, or legal compliance.</p><p>You may stop using the service and request account deletion through available privacy controls. Some records may be retained for unresolved transactions, fraud prevention, security, legal claims, tax, accounting, moderation integrity, or other lawful requirements.</p></article>
+        <article id="availability"><span>12</span><h2>Availability, disclaimers, and responsibility</h2><p>The service is provided on an “as available” basis. We work to maintain a reliable and secure platform but do not promise uninterrupted availability, error-free content, permanent storage, or that every story, profile, recommendation, AI output, business claim, or user submission is accurate.</p><p>To the extent permitted by law, ${escapeHtml(siteName())} is not responsible for indirect, incidental, special, or consequential loss arising from use of the platform. Our aggregate responsibility will not exceed the amount you paid directly to ${escapeHtml(siteName())} for the affected service during the preceding twelve months, except where a limitation is prohibited by law.</p></article>
+        <article id="law"><span>13</span><h2>Governing law and disputes</h2><p>These terms are governed by the laws of India. Before starting formal proceedings, contact us and allow a reasonable opportunity to resolve the issue. Courts and tribunals having jurisdiction under applicable Indian law will govern unresolved disputes. Mandatory consumer, data-protection, and statutory rights remain unaffected.</p></article>
+        <article id="changes"><span>14</span><h2>Changes, notices, and contact</h2><p>We may update these terms when the service, law, or risk environment changes. Material updates will be communicated through an appropriate platform notice, account message, or email where required. Continued use after an effective update means the revised terms apply, subject to applicable law.</p><p>Questions or legal notices can be sent to <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a>. For account-specific help, sign in and open Support from your dashboard.</p><div class="legal-related"><button data-route="/privacy-policy">${icon("shield", 16)}Read the Privacy Policy</button><button data-route="/support">${icon("comment", 16)}Open Support</button></div></article>
+      </div>
+    </section>
   </main>`;
 }
 
 function privacyCenterTemplate() {
+  if (!state.user) return publicPrivacyPolicyTemplate();
   const connectedAccounts = ["google", "facebook"].map((provider) => ({
     provider,
     name: provider === "google" ? "Google" : "Facebook",
@@ -6497,7 +6549,34 @@ function privacyCenterTemplate() {
       <section><h2>Cookie preferences</h2><p>Essential cookies remain enabled for security and account access.</p>${Object.entries(state.preferences.cookies).map(([key, value]) => `<label><span><strong>${key[0].toUpperCase()+key.slice(1)}</strong><small>${key === "essential" ? "Required for sign-in and payments" : "Optional measurement and personalization"}</small></span><input type="checkbox" data-cookie="${key}" ${value ? "checked" : ""} ${key === "essential" ? "disabled" : ""}></label>`).join("")}</section>
       <section><h2>Connected accounts</h2>${connectedAccounts.map(({ provider, name, account }) => `<article><span>${name[0]}</span><div><strong>${name}</strong><small>${account ? `Connected · ${escapeHtml(account.email || "")}` : state.providerStatus.social[provider] ? "Available to connect" : "Provider not configured"}</small></div><button class="secondary-button" ${account ? `data-social-disconnect="${provider}"` : `data-social-login="${provider}"`} ${!account && !state.providerStatus.social[provider] ? "disabled" : ""}>${account ? "Disconnect" : "Connect"}</button></article>`).join("")}</section>
       <section><h2>Mobile app preferences</h2>${[["offlineSavedArticles", "Offline saved articles", "Cache saved stories for the PWA reader"], ["backgroundSync", "Background sync", "Queue reading events while offline"], ["pushDigest", "Push digest", "Receive configured publication and membership alerts"]].map(([key, label, help]) => `<label><span><strong>${label}</strong><small>${help}</small></span><input type="checkbox" data-pwa-setting="${key}" ${state.pwaSettings[key] ? "checked" : ""}></label>`).join("")}<button class="secondary-button wide-button" data-action="save-pwa-settings">Save mobile preferences</button></section>
-    </div><aside class="privacy-actions"><h2>Your data</h2><button data-action="download-data">${icon("link", 16)}<span><strong>Download your data</strong><small>Articles, comments, history, follows, and account details</small></span></button><button data-action="clear-history">${icon("eye", 16)}<span><strong>Clear reading history</strong><small>Remove opened stories and saved reading positions</small></span></button><button class="danger-zone" data-action="request-account-deletion">${icon("close", 16)}<span><strong>Delete account</strong><small>Start the verified account deletion process</small></span></button><div class="privacy-note">Privacy changes are recorded in your security activity log.</div></aside></section>
+    </div><aside class="privacy-actions"><h2>Your data</h2><button data-action="download-data">${icon("link", 16)}<span><strong>Download your data</strong><small>Articles, comments, history, follows, and account details</small></span></button><button data-action="clear-history">${icon("eye", 16)}<span><strong>Clear reading history</strong><small>Remove opened stories and saved reading positions</small></span></button><button class="danger-zone" data-action="request-account-deletion">${icon("close", 16)}<span><strong>Delete account</strong><small>Start the verified account deletion process</small></span></button><button data-route="/privacy-policy">${icon("shield", 16)}<span><strong>Privacy Policy</strong><small>How ${escapeHtml(siteName())} handles personal data</small></span></button><div class="privacy-note">Privacy changes are recorded in your security activity log.</div></aside></section>
+  </main>`;
+}
+
+function publicPrivacyPolicyTemplate() {
+  const contactEmail = state.gatewaySettings.contactEmail || "privacy@nitross.com";
+  return `<main class="legal-page">
+    <header class="legal-hero privacy"><span class="eyebrow">Privacy · Public</span><h1>How Nitross handles personal data</h1><p>This policy explains what personal data we process, why we process it, how we protect it, and the choices and rights available to people who visit or use ${escapeHtml(siteName())}.</p><div class="legal-meta"><span>Last updated 9 November 2026</span><span>Designed for the DPDP Act, 2023 and notified rules</span></div></header>
+    <section class="legal-highlight-grid" aria-label="Privacy commitments"><article>${icon("eye", 20)}<strong>Purpose before collection</strong><p>We describe why data is needed and limit processing to relevant purposes.</p></article><article>${icon("shield", 20)}<strong>Reasonable safeguards</strong><p>We use layered access, session, operational, and technical protections.</p></article><article>${icon("users", 20)}<strong>Rights and choices</strong><p>You can seek access, correction, erasure, consent withdrawal, and grievance help.</p></article></section>
+    <section class="legal-layout">
+      <nav class="legal-toc" aria-label="Privacy sections"><strong>On this page</strong>${[["scope","Scope"],["data","Data we process"],["purposes","Why we process it"],["consent","Consent and choices"],["cookies","Cookies"],["sharing","Sharing and processors"],["retention","Retention and erasure"],["security-safeguards","Security"],["breaches","Data breaches"],["rights","Your rights"],["children","Children"],["transfers","International processing"],["grievances","Grievances"],["updates-privacy","Updates"]].map(([id,label]) => `<a href="#${id}">${label}</a>`).join("")}</nav>
+      <div class="legal-document">
+        <article id="scope"><span>01</span><h2>Scope and our role</h2><p>This policy applies to ${escapeHtml(siteName())} websites, progressive web app experiences, accounts, stories, publications, memberships, comments, business profiles, resources, creator tools, communications, and support services that link to it.</p><p>For personal data whose purpose and means we determine, ${escapeHtml(siteName())} acts as the Data Fiduciary under India’s Digital Personal Data Protection Act, 2023. Some providers process data for us as Data Processors; others, such as payment or OAuth providers, may independently determine parts of their processing.</p></article>
+        <article id="data"><span>02</span><h2>Personal data we may process</h2><ul><li><strong>Account and identity:</strong> name, email, username, profile details, role, verification state, connected-account identifiers, and authentication records.</li><li><strong>Content and community:</strong> stories, drafts, media, comments, messages, reports, follows, lists, profile claims, support requests, and attachments you submit.</li><li><strong>Reading and preference data:</strong> interests, saves, reading progress and history, recommendations, language, theme, accessibility settings, cookie choices, and communication preferences.</li><li><strong>Commerce and creator records:</strong> plan, orders, invoices, transaction references, discount use, subscriptions, tips, earnings, payout status, tax-related details, and resource access. Full payment credentials are ordinarily handled by configured payment providers rather than stored by Nitross.</li><li><strong>Device and security data:</strong> IP address, user agent, session identifiers, device/browser details, sign-in events, passkey identifiers, security activity, error logs, and anti-abuse signals.</li><li><strong>Business data:</strong> company or founder information, professional contact details, ownership or role claims, verification evidence, and public profile material.</li></ul></article>
+        <article id="purposes"><span>03</span><h2>Why we process personal data</h2><p>We process relevant data to create and secure accounts; provide requested content and features; remember preferences; personalise feeds where enabled; process verified transactions; administer memberships and resource access; operate creator, publication, business-network, moderation, and support workflows; communicate service and security information; prevent abuse and fraud; measure and improve performance; maintain records; resolve disputes; and comply with law.</p><p>Processing is based on consent where consent is required, on data voluntarily provided for a requested purpose, on other legitimate uses recognised by applicable law, or on processing required or authorised by law. We do not seek consent for data that is unnecessary for the stated purpose.</p></article>
+        <article id="consent"><span>04</span><h2>Notice, consent, and your choices</h2><p>Where consent is the basis, we aim to present a clear notice describing the personal data, specific purpose, service enabled, and a way to exercise rights or raise a grievance. Consent should be free, specific, informed, unconditional, unambiguous, and given through a clear affirmative action.</p><p>You may withdraw consent as easily as reasonably possible through available account settings, privacy controls, unsubscribe actions, or by contacting us. Withdrawal does not make earlier lawful processing invalid and may prevent a feature that needs that data from continuing. Processing required by law or for unresolved transactions, security, or legal claims may continue where permitted.</p></article>
+        <article id="cookies"><span>05</span><h2>Cookies, local storage, and similar technology</h2><p>Essential storage supports sign-in, sessions, security, payment state, preferences, and core operation. Optional analytics, personalisation, advertising, or push features are used according to their availability and your choices. Logged-in users can manage available cookie, recommendation, tracking, mobile, and communication settings in the Privacy Center.</p><p>Browser controls can remove or block storage, but disabling essential technology may break account access, saved preferences, payments, or other requested functionality.</p></article>
+        <article id="sharing"><span>06</span><h2>When data may be shared</h2><p>We may share only relevant data with configured infrastructure, hosting, database, payment, email, push, OAuth, analytics, AI, translation, media, fraud-prevention, professional-adviser, and support providers so they can perform defined services. Provider availability and identities can change as platform configuration evolves.</p><p>We may also disclose information when authorised or required by law, to protect people or platform security, to investigate abuse or fraud, during a business reorganisation with appropriate safeguards, or when you deliberately publish information to a public profile, story, comment, publication, or business listing. We do not treat the sale of personal data as a platform feature.</p></article>
+        <article id="retention"><span>07</span><h2>Retention, deletion, and backups</h2><p>We keep personal data only while needed for the stated purpose or another lawful requirement. Retention can vary for account records, content, transactions, invoices, payouts, security logs, moderation evidence, support cases, legal claims, backups, and regulatory obligations.</p><p>When the purpose ends and retention is not legally necessary, we erase or de-identify relevant data and instruct applicable processors to do the same. Account deletion may be verified and delayed where necessary to prevent fraud, complete transactions, preserve evidence, meet tax or accounting duties, or comply with law. Backup copies age out through controlled retention cycles rather than being individually edited immediately.</p></article>
+        <article id="security-safeguards"><span>08</span><h2>How we protect personal data</h2><p>We use safeguards appropriate to the nature and risk of processing, including role-based access, authentication and session controls, password protection, optional passkeys and two-factor authentication, input validation, audit and security records, provider credential separation, database and backup procedures, moderation controls, and transport security when the service is deployed over HTTPS.</p><p>No online system is risk-free. Protect your credentials, enable available account protections, keep recovery information current, and report suspicious activity promptly. Security details may be limited where disclosure would weaken protection.</p></article>
+        <article id="breaches"><span>09</span><h2>Personal data breaches</h2><p>We maintain processes to assess, contain, investigate, document, and remediate suspected personal-data breaches. Where the DPDP Act, notified rules, or another applicable law requires it, we will notify affected Data Principals and the Data Protection Board of India in the prescribed form and timeframe, including known impact and protective steps.</p></article>
+        <article id="rights"><span>10</span><h2>Your data rights</h2><p>Subject to applicable law and the notified commencement timeline, you may request: a summary of personal data being processed and processing activities; information about relevant sharing; correction, completion, or updating; erasure when retention is no longer necessary; withdrawal of consent; grievance redressal; and nomination of another individual to exercise rights in the event of death or incapacity.</p><p>We may verify identity and authority before fulfilling a request. Requests should be accurate and genuine; the DPDP Act also requires Data Principals not to impersonate, suppress material information, submit false or frivolous grievances, or provide inauthentic information when exercising rights.</p><div class="legal-callout"><strong>Account holders</strong><p>Sign in to use the Privacy Center for available downloads, history controls, preferences, connected accounts, and account deletion.</p><button class="primary-button" data-route="/login">Sign in to Privacy Center</button></div></article>
+        <article id="children"><span>11</span><h2>Children and lawful guardians</h2><p>Under the DPDP Act, a child is an individual under 18. Before processing a child’s personal data where the law requires it, verifiable consent of a parent or lawful guardian must be obtained. We do not intend to process children’s data in a way likely to harm well-being or to use tracking, behavioural monitoring, or targeted advertising directed at children where prohibited.</p><p>If you believe a child has provided personal data without appropriate authority, contact us so we can review and take suitable action. Certain account, payment, publishing, or business features may be restricted when age or guardian authority cannot be verified.</p></article>
+        <article id="transfers"><span>12</span><h2>Processing outside India</h2><p>Some configured service providers may process data outside India. Where this occurs, we will apply contractual, technical, and organisational safeguards appropriate to the service and follow any country or territory restrictions notified by the Central Government, as well as any other Indian law providing a higher level of protection or transfer restriction.</p></article>
+        <article id="grievances"><span>13</span><h2>Questions, rights requests, and grievances</h2><p>Contact our privacy response point at <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a> with the account email, the right or concern involved, and enough detail to investigate. Do not send passwords, one-time codes, or unnecessary identity documents by ordinary email.</p><p>We will acknowledge and address grievances through the mechanism and period applicable to us. The DPDP framework generally requires a Data Principal to first use the Data Fiduciary’s grievance process before approaching the Data Protection Board of India.</p><div class="legal-related"><a href="https://www.meity.gov.in/static/uploads/2024/06/2bf1f0e9f04e6fb4f8fef35e82c42aa5.pdf" target="_blank" rel="noopener noreferrer">Official DPDP Act</a><a href="https://www.meity.gov.in/static/uploads/2025/11/53450e6e5dc0bfa85ebd78686cadad39.pdf" target="_blank" rel="noopener noreferrer">Official DPDP Rules</a></div></article>
+        <article id="updates-privacy"><span>14</span><h2>Policy changes and phased commencement</h2><p>The DPDP Act and Rules have provisions that commence according to government notifications and a phased timeline. We will update platform practices, notices, controls, and this policy as applicable obligations take effect or our processing changes.</p><p>Material policy updates will be communicated through an appropriate website, account, or email notice where required. The “Last updated” date identifies the current published version.</p></article>
+      </div>
+    </section>
   </main>`;
 }
 
@@ -7909,12 +7988,15 @@ function applyDocumentSeo() {
   const writerProfile = cleanProfileRouteSlug(state.path) ? profileForSlug(cleanProfileRouteSlug(state.path)) : null;
   const marketplace = state.path === "/resources";
   const authRoute = state.path === "/login" || state.path === "/register";
+  const termsRoute = state.path.startsWith("/terms");
+  const publicPrivacyRoute = state.path === "/privacy-policy" || (state.path.startsWith("/privacy") && !state.user);
+  const privateAccountRoute = state.path.startsWith("/security") || state.path.startsWith("/support");
   const notFound = Boolean(document.querySelector(".not-found-page")) || (state.path.startsWith("/resources/") && !resource) || ((state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) && !businessProfile && !state.businessProfileLoading);
   const seo = story?.seo || {};
   const businessDefaultTitle = businessProfile ? (companyProfile ? `${businessName}: Founders, Company Profile, Products & Business Overview | ${siteName()}` : `${businessName}: Founder Profile, Companies & Biography | ${siteName()}`) : "";
   const businessDefaultDescription = businessProfile ? (companyProfile ? businessProfile.description || businessProfile.tagline : businessProfile.biography || businessProfile.headline) : "";
-  const title = notFound ? `Page not found · ${siteName()}` : authRoute ? `${state.path === "/register" ? "Create account" : "Sign in"} · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? (resource.seoTitle || `${resource.name} · ${siteName()} Resources`) : businessProfile ? (businessProfile.seo_title || businessDefaultTitle) : publication ? `${publication.name} | ${siteName()}` : writerProfile ? `${writerProfile.name}: Writer Profile | ${siteName()}` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
-  const description = notFound ? `The requested page could not be found on ${siteName()}.` : authRoute ? (state.path === "/register" ? `Create a ${siteName()} account to save stories, join the community, and access your dashboard.` : `Sign in to ${siteName()} to continue reading, manage subscriptions, and access saved stories.`) : story ? (seo.metaDescription || story.dek) : resource ? (resource.metaDescription || resource.shortDescription) : businessProfile ? (businessProfile.meta_description || businessDefaultDescription) : publication ? publication.description : writerProfile ? writerProfile.bio : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
+  const title = notFound ? `Page not found · ${siteName()}` : authRoute ? `${state.path === "/register" ? "Create account" : "Sign in"} · ${siteName()}` : termsRoute ? `Terms of use · ${siteName()}` : publicPrivacyRoute ? `Privacy Policy · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? (resource.seoTitle || `${resource.name} · ${siteName()} Resources`) : businessProfile ? (businessProfile.seo_title || businessDefaultTitle) : publication ? `${publication.name} | ${siteName()}` : writerProfile ? `${writerProfile.name}: Writer Profile | ${siteName()}` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
+  const description = notFound ? `The requested page could not be found on ${siteName()}.` : authRoute ? (state.path === "/register" ? `Create a ${siteName()} account to save stories, join the community, and access your dashboard.` : `Sign in to ${siteName()} to continue reading, manage subscriptions, and access saved stories.`) : termsRoute ? `Read the rules for accounts, publishing, memberships, payments, creator tools, business profiles, resources, and community use on ${siteName()}.` : publicPrivacyRoute ? `Learn what personal data ${siteName()} processes, why it is used, how it is protected, and the privacy choices and rights available to you.` : story ? (seo.metaDescription || story.dek) : resource ? (resource.metaDescription || resource.shortDescription) : businessProfile ? (businessProfile.meta_description || businessDefaultDescription) : publication ? publication.description : writerProfile ? writerProfile.bio : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
   document.title = title;
   setMetaTag('meta[name="description"]', { name: "description", content: description });
   [["google-site-verification", state.siteSeo.googleVerification], ["msvalidate.01", state.siteSeo.bingVerification], ["p:domain_verify", state.siteSeo.pinterestVerification], ["yandex-verification", state.siteSeo.yandexVerification]].forEach(([name, content]) => {
@@ -7922,7 +8004,7 @@ function applyDocumentSeo() {
   });
   setMetaTag('meta[name="robots"]', {
     name: "robots",
-    content: notFound ? "noindex,follow" : authRoute ? "noindex,follow" : storyPreview ? "noindex,nofollow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : businessProfile && businessProfile.robots_index === false ? "noindex,follow" : resource && resource.robotsIndex === false ? "noindex,follow" : "index,follow",
+    content: notFound ? "noindex,follow" : authRoute || privateAccountRoute ? "noindex,follow" : storyPreview ? "noindex,nofollow" : story ? `${seo.robotsIndex === false ? "noindex" : "index"},${seo.robotsFollow === false ? "nofollow" : "follow"},max-snippet:${seo.maxSnippet ?? -1},max-image-preview:${seo.maxImagePreview || "large"},max-video-preview:${seo.maxVideoPreview ?? -1}` : businessProfile && businessProfile.robots_index === false ? "noindex,follow" : resource && resource.robotsIndex === false ? "noindex,follow" : "index,follow",
   });
   setMetaTag('meta[property="og:title"]', { property: "og:title", content: story ? (seo.socialTitle || title) : resource ? (resource.socialTitle || title) : businessProfile ? (businessProfile.social_title || title) : title });
   setMetaTag('meta[property="og:description"]', { property: "og:description", content: story ? (seo.socialDescription || description) : resource ? (resource.socialDescription || description) : businessProfile ? (businessProfile.social_description || description) : description });
@@ -11056,7 +11138,20 @@ document.addEventListener("click", async (event) => {
 window.addEventListener("popstate", () => {
   finalizeArticleSession();
   const nextPath = window.location.pathname;
-  if ((nextPath.startsWith("/dashboard") || nextPath === "/me" || nextPath === "/notifications") && !state.user) {
+  if ((nextPath === "/security" || nextPath === "/support") && !state.user) {
+    state.authReturnTo = nextPath;
+    sessionStorage.setItem("nitross-auth-return", nextPath);
+    state.authMode = "login";
+    state.authStep = "credentials";
+    state.loginOpen = false;
+    state.loginMessage = nextPath === "/security" ? "Sign in to manage your account security." : "Sign in to contact support or track a request.";
+    window.history.replaceState({}, "", "/login");
+    state.path = "/login";
+  } else if (nextPath === "/support" && state.user) {
+    state.dashboardSection = "support";
+    window.history.replaceState({}, "", "/dashboard");
+    state.path = "/dashboard";
+  } else if ((nextPath.startsWith("/dashboard") || nextPath === "/me" || nextPath === "/notifications") && !state.user) {
     window.history.replaceState({}, "", "/");
     state.path = "/";
     state.loginOpen = true;
@@ -11126,19 +11221,36 @@ async function bootstrapApp() {
     state.blogForm.publication = siteName();
   }
   state.sessionReady = true;
-  const protectedUserRoute = state.path.startsWith("/dashboard") || state.path === "/me" || state.path === "/notifications";
+  const accountOnlyRoute = state.path === "/security" || state.path === "/support";
+  const protectedUserRoute = state.path.startsWith("/dashboard") || state.path === "/me" || state.path === "/notifications" || accountOnlyRoute;
   const protectedAdminRoute = state.path.startsWith("/admin");
   if (protectedUserRoute && !state.user) {
-    window.history.replaceState({}, "", "/");
-    state.path = "/";
-    state.loginOpen = true;
-    state.loginMessage = "Sign in to continue.";
+    if (accountOnlyRoute) {
+      state.authReturnTo = state.path;
+      sessionStorage.setItem("nitross-auth-return", state.path);
+      state.loginMessage = state.path === "/security" ? "Sign in to manage your account security." : "Sign in to contact support or track a request.";
+      state.authMode = "login";
+      state.authStep = "credentials";
+      state.loginOpen = false;
+      window.history.replaceState({}, "", "/login");
+      state.path = "/login";
+    } else {
+      window.history.replaceState({}, "", "/");
+      state.path = "/";
+      state.loginOpen = true;
+      state.loginMessage = "Sign in to continue.";
+    }
   } else if (protectedAdminRoute && state.user?.role !== "admin" && !(state.path.startsWith("/admin/business-network") && state.user?.role === "moderator")) {
     const fallback = state.user ? "/dashboard" : "/";
     window.history.replaceState({}, "", fallback);
     state.path = fallback;
     state.loginOpen = !state.user;
     state.loginMessage = "Administrator access is required.";
+  }
+  if (state.path === "/support" && state.user) {
+    state.dashboardSection = "support";
+    state.path = "/dashboard";
+    window.history.replaceState({}, "", "/dashboard");
   }
   if (state.user && state.pendingBusinessListing) {
     state.pendingBusinessListing = false;
