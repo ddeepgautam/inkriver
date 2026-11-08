@@ -7436,6 +7436,45 @@ button:disabled {
   gap: 7px;
 }
 
+@media (min-width: 761px) {
+  .auth-route-shell,
+  .auth-page {
+    height: 100svh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .auth-story-panel {
+    position: sticky;
+    top: 0;
+    height: 100svh;
+    min-height: 0;
+  }
+
+  .auth-story-copy {
+    margin: clamp(54px, 7vh, 82px) 0 0;
+  }
+
+  .auth-story-panel > small {
+    margin-top: auto;
+  }
+
+  .auth-form-panel {
+    display: block;
+    height: 100svh;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    padding-block: 0;
+    scrollbar-gutter: stable;
+  }
+
+  .auth-form-wrap {
+    margin: 0 auto;
+    padding: clamp(96px, 12vh, 124px) 0 52px;
+  }
+}
+
 @media (max-width: 980px) {
   .auth-page {
     grid-template-columns: minmax(290px, .74fr) minmax(430px, 1.26fr);
