@@ -258,7 +258,7 @@ function slugifyName(value) {
   return String(value || "reader").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-const reservedProfileRoutes = new Set(["about", "admin", "administrator", "api", "auth", "billing", "blog", "category", "dashboard", "help", "lists", "login", "logout", "me", "moderator", "notifications", "pricing", "privacy", "privacy-policy", "publications", "publication-invites", "root", "search", "security", "settings", "signup", "stories", "support", "terms", "write"]);
+const reservedProfileRoutes = new Set(["about", "admin", "administrator", "api", "auth", "billing", "blog", "category", "checkout", "dashboard", "help", "lists", "login", "logout", "me", "moderator", "notifications", "pricing", "privacy", "privacy-policy", "publications", "publication-invites", "root", "search", "security", "settings", "signup", "stories", "support", "terms", "write"]);
 
 function cleanProfileRouteSlug(path = state.path) {
   const slug = decodeURIComponent(String(path || "").replace(/^\/+|\/+$/g, "")).toLowerCase();
@@ -1506,6 +1506,15 @@ async function hydratePlatformState() {
         communication: { ...state.preferences.communication, ...(userDocuments.preferences.communication || {}) },
       };
     }
+    if (state.cookieConsent.decided) {
+      state.preferences.cookies = { ...state.cookieConsent.categories, essential: true };
+      state.preferences.tracking = Boolean(state.cookieConsent.categories.analytics);
+      state.preferences.personalized = Boolean(state.cookieConsent.categories.personalization);
+    } else {
+      state.preferences.cookies = { essential: true, analytics: false, personalization: false, advertising: false };
+      state.preferences.tracking = false;
+      state.preferences.personalized = false;
+    }
     const accountLoads = [];
     if (state.authorIntent && state.isMember && !["writer", "admin"].includes(state.user.role)) {
       accountLoads.push(requestAuthorAccess(false));
@@ -1924,14 +1933,33 @@ const initialPreferences = loadProductState("preferences", {
   focusMode: false,
   fontFamily: "serif",
   textScale: 100,
-  tracking: true,
-  personalized: true,
-  cookies: { essential: true, analytics: true, advertising: false },
+  tracking: false,
+  personalized: false,
+  cookies: { essential: true, analytics: false, personalization: false, advertising: false },
   locale: "en-IN",
   speechRate: 1,
   communication: defaultCommunicationPreferences,
 });
 initialPreferences.communication = { ...defaultCommunicationPreferences, ...(initialPreferences.communication || {}) };
+initialPreferences.cookies = { analytics: false, personalization: false, advertising: false, ...(initialPreferences.cookies || {}), essential: true };
+
+const cookieConsentVersion = "2026-11-09-global-1";
+function loadCookieConsent() {
+  try {
+    const stored = JSON.parse(localStorage.getItem("nitross-cookie-consent") || "null");
+    if (stored?.version === cookieConsentVersion && stored?.categories) return stored;
+  } catch {}
+  return { version: cookieConsentVersion, decided: false, savedAt: "", categories: { essential: true, analytics: false, personalization: false, advertising: false } };
+}
+
+const initialCookieConsent = loadCookieConsent();
+if (initialCookieConsent.decided) {
+  initialPreferences.cookies = { ...initialPreferences.cookies, ...initialCookieConsent.categories, essential: true };
+} else {
+  initialPreferences.cookies = { essential: true, analytics: false, personalization: false, advertising: false };
+  initialPreferences.tracking = false;
+  initialPreferences.personalized = false;
+}
 
 const state = {
   path: window.location.pathname,
@@ -2002,6 +2030,8 @@ const state = {
   searchStatus: "",
   searchTimer: 0,
   checkoutPlan: null,
+  checkoutStep: 1,
+  checkoutTermsAccepted: false,
   copiedShare: "",
   paymentMessage: "",
   resources: [],
@@ -2062,6 +2092,10 @@ const state = {
   siteSeoMessage: "",
   plans: loadSubscriptionPlans(),
   pricingBillingPeriod: "year",
+  cookieConsent: initialCookieConsent,
+  cookieConsentOpen: !initialCookieConsent.decided,
+  cookiePreferencesOpen: false,
+  cookieDraft: { ...initialCookieConsent.categories },
   planFeatureCatalog: defaultPlanFeatureCatalog,
   planFeatureSearch: "",
   users: [],
@@ -4323,7 +4357,10 @@ function appTemplate() {
   const inviteToken = state.path.startsWith("/publication-invites/") ? decodeURIComponent(state.path.split("/").pop() || "") : "";
   const selectedResource = state.path.startsWith("/resources/") ? state.resources.find((resource) => resource.slug === decodeURIComponent(state.path.split("/").pop() || "")) || state.selectedResource : null;
   if (state.path === "/login" || state.path === "/register") {
-    return `<div class="app-shell auth-route-shell">${authPageTemplate()}</div>`;
+    return `<div class="app-shell auth-route-shell">${authPageTemplate()}${cookieConsentTemplate()}</div>`;
+  }
+  if (state.path.startsWith("/checkout/")) {
+    return `<div class="app-shell checkout-route-shell">${checkoutPageTemplate()}${cookieConsentTemplate()}</div>`;
   }
   return `
     <div class="app-shell">
@@ -4387,13 +4424,13 @@ function appTemplate() {
                     : notFoundTemplate()
       }
       ${footerTemplate()}
-      ${state.checkoutPlan ? checkoutTemplate(state.checkoutPlan) : ""}
       ${state.resourceCheckout ? resourceCheckoutTemplate(state.resourceCheckout) : ""}
       ${state.adminResourceDetail ? adminResourceDetailTemplate(state.adminResourceDetail) : ""}
       ${state.loginOpen ? loginTemplate() : ""}
       ${state.onboardingOpen ? onboardingTemplate() : ""}
       ${state.adminModal.type ? adminModalTemplate() : ""}
       ${state.businessOverlay.type ? businessOverlayTemplate() : ""}
+      ${cookieConsentTemplate()}
     </div>
   `;
 }
@@ -6513,7 +6550,7 @@ function termsPageTemplate() {
     <header class="legal-hero"><span class="eyebrow">Legal · Public</span><h1>Terms of use</h1><p>These terms explain the rules for accessing and using ${escapeHtml(siteName())}, including reading, publishing, memberships, business profiles, digital resources, payments, and community participation.</p><div class="legal-meta"><span>Last updated 9 November 2026</span><span>Applies to visitors and account holders</span></div></header>
     <section class="legal-highlight-grid" aria-label="Terms summary"><article>${icon("check", 20)}<strong>Use the platform lawfully</strong><p>Respect people, intellectual property, security, and applicable law.</p></article><article>${icon("pen", 20)}<strong>Own what you publish</strong><p>You remain responsible for content, disclosures, permissions, and accuracy.</p></article><article>${icon("card", 20)}<strong>Review payment terms</strong><p>Prices, billing periods, taxes, renewals, and provider terms are shown before payment.</p></article></section>
     <section class="legal-layout">
-      <nav class="legal-toc" aria-label="Terms sections"><strong>On this page</strong>${[["acceptance","Acceptance"],["accounts","Accounts"],["platform","Platform services"],["content","Publishing and content"],["community","Community conduct"],["commerce","Memberships and payments"],["creators","Creator earnings"],["business","Profiles and resources"],["technology","AI and third parties"],["intellectual-property","Intellectual property"],["enforcement","Moderation and termination"],["availability","Availability and liability"],["law","Governing law"],["changes","Changes and contact"]].map(([id,label]) => `<a href="#${id}">${label}</a>`).join("")}</nav>
+      <nav class="legal-toc" aria-label="Terms sections"><strong>On this page</strong>${[["acceptance","Acceptance"],["accounts","Accounts"],["platform","Platform services"],["content","Publishing and content"],["community","Community conduct"],["commerce","Memberships and payments"],["creators","Creator earnings"],["business","Profiles and resources"],["technology","AI and third parties"],["intellectual-property","Intellectual property"],["privacy-compliance","Privacy and cookies"],["enforcement","Moderation and termination"],["availability","Availability and liability"],["law","Governing law"],["changes","Changes and contact"]].map(([id,label]) => `<a href="#${id}">${label}</a>`).join("")}</nav>
       <div class="legal-document">
         <article id="acceptance"><span>01</span><h2>Acceptance and eligibility</h2><p>By visiting, creating an account, purchasing, publishing, or otherwise using ${escapeHtml(siteName())}, you agree to these terms and the Privacy Policy. If you do not agree, do not use the platform.</p><p>You must be legally capable of entering into these terms. If you are under 18, a parent or lawful guardian must consent to and supervise your use where required by law. We may restrict features involving payments, publishing, business listings, or personal-data processing when age or authority cannot be appropriately verified.</p></article>
         <article id="accounts"><span>02</span><h2>Accounts, identity, and security</h2><p>Provide accurate information, keep it current, protect your password and recovery methods, and promptly report suspected unauthorised access. You are responsible for activity performed through your account unless applicable law provides otherwise.</p><p>Do not impersonate another person, create deceptive accounts, transfer an account without permission, share credentials to bypass plan limits, or interfere with authentication, sessions, passkeys, two-factor authentication, or role permissions.</p></article>
@@ -6525,7 +6562,7 @@ function termsPageTemplate() {
         <article id="business"><span>08</span><h2>Business profiles and digital resources</h2><p>Company and founder profiles must be accurate, authorised, and supported by appropriate evidence. Claiming or editing a profile does not imply endorsement, verification, investment advice, or a commercial relationship with ${escapeHtml(siteName())}.</p><p>Resource owners must have the right to sell or share uploaded templates, prompts, files, guides, and tools. Buyers receive only the access or licence described on the resource page. Do not redistribute, resell, or remove attribution unless the stated licence permits it.</p></article>
         <article id="technology"><span>09</span><h2>AI-assisted features, translations, and external services</h2><p>AI assistance, summaries, recommendations, translations, audio, search, and automated checks may be incomplete or inaccurate. Review outputs before relying on or publishing them. Do not submit confidential or sensitive information to an AI feature unless the interface expressly supports that use.</p><p>OAuth, payments, email, push notifications, hosting, analytics, AI, media, and other integrations may be operated by third parties. Their services, availability, and independent terms or privacy practices are outside our direct control.</p></article>
         <article id="intellectual-property"><span>10</span><h2>Intellectual property and reports</h2><p>The platform software, interface, brand, original editorial material, and related rights belong to ${escapeHtml(siteName())} or its licensors. These terms do not grant permission to copy the service, misuse trademarks, reverse engineer protected components, or create a competing database through unauthorised extraction.</p><p>If you believe content infringes your rights, provide the work identified, the allegedly infringing material, your contact details, your authority, and a good-faith statement through the configured contact or support channel. We may request verification and take proportionate action.</p></article>
-        <article id="enforcement"><span>11</span><h2>Moderation, suspension, and termination</h2><p>We may investigate reports and take proportionate action, including warnings, labels, reach limits, content removal, feature restrictions, payout holds, account suspension, or termination. Urgent action may be taken to protect users, evidence, the platform, or legal compliance.</p><p>You may stop using the service and request account deletion through available privacy controls. Some records may be retained for unresolved transactions, fraud prevention, security, legal claims, tax, accounting, moderation integrity, or other lawful requirements.</p></article>
+        <article id="privacy-compliance"><span>10A</span><h2>Privacy, cookies, and jurisdiction-specific law</h2><p>Our handling of personal data is described in the Privacy Policy. For people in India, we design relevant processing and rights workflows around the Digital Personal Data Protection Act, 2023 and rules as their provisions commence. Where the EU General Data Protection Regulation applies to an individual or processing activity, we apply its principles and an appropriate lawful basis; where the UK GDPR and Data Protection Act 2018 apply, we follow the corresponding UK framework. Other local privacy, consumer, communications, and children’s laws may also apply according to location and activity.</p><p>Essential storage may be used for security, sign-in, checkout, fraud prevention, and requested functionality. Optional analytics, personalisation, and advertising storage stays disabled until a visitor makes a choice where consent is required. Visitors can accept, reject, or configure optional categories with comparable controls and reopen Cookie settings from the footer.</p><p>No statement in these terms removes a mandatory privacy right. If local law provides stronger protection than these terms, that protection continues to apply.</p></article>        <article id="enforcement"><span>11</span><h2>Moderation, suspension, and termination</h2><p>We may investigate reports and take proportionate action, including warnings, labels, reach limits, content removal, feature restrictions, payout holds, account suspension, or termination. Urgent action may be taken to protect users, evidence, the platform, or legal compliance.</p><p>You may stop using the service and request account deletion through available privacy controls. Some records may be retained for unresolved transactions, fraud prevention, security, legal claims, tax, accounting, moderation integrity, or other lawful requirements.</p></article>
         <article id="availability"><span>12</span><h2>Availability, disclaimers, and responsibility</h2><p>The service is provided on an “as available” basis. We work to maintain a reliable and secure platform but do not promise uninterrupted availability, error-free content, permanent storage, or that every story, profile, recommendation, AI output, business claim, or user submission is accurate.</p><p>To the extent permitted by law, ${escapeHtml(siteName())} is not responsible for indirect, incidental, special, or consequential loss arising from use of the platform. Our aggregate responsibility will not exceed the amount you paid directly to ${escapeHtml(siteName())} for the affected service during the preceding twelve months, except where a limitation is prohibited by law.</p></article>
         <article id="law"><span>13</span><h2>Governing law and disputes</h2><p>These terms are governed by the laws of India. Before starting formal proceedings, contact us and allow a reasonable opportunity to resolve the issue. Courts and tribunals having jurisdiction under applicable Indian law will govern unresolved disputes. Mandatory consumer, data-protection, and statutory rights remain unaffected.</p></article>
         <article id="changes"><span>14</span><h2>Changes, notices, and contact</h2><p>We may update these terms when the service, law, or risk environment changes. Material updates will be communicated through an appropriate platform notice, account message, or email where required. Continued use after an effective update means the revised terms apply, subject to applicable law.</p><p>Questions or legal notices can be sent to <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a>. For account-specific help, sign in and open Support from your dashboard.</p><div class="legal-related"><button data-route="/privacy-policy">${icon("shield", 16)}Read the Privacy Policy</button><button data-route="/support">${icon("comment", 16)}Open Support</button></div></article>
@@ -6559,7 +6596,7 @@ function publicPrivacyPolicyTemplate() {
     <header class="legal-hero privacy"><span class="eyebrow">Privacy · Public</span><h1>How Nitross handles personal data</h1><p>This policy explains what personal data we process, why we process it, how we protect it, and the choices and rights available to people who visit or use ${escapeHtml(siteName())}.</p><div class="legal-meta"><span>Last updated 9 November 2026</span><span>Designed for the DPDP Act, 2023 and notified rules</span></div></header>
     <section class="legal-highlight-grid" aria-label="Privacy commitments"><article>${icon("eye", 20)}<strong>Purpose before collection</strong><p>We describe why data is needed and limit processing to relevant purposes.</p></article><article>${icon("shield", 20)}<strong>Reasonable safeguards</strong><p>We use layered access, session, operational, and technical protections.</p></article><article>${icon("users", 20)}<strong>Rights and choices</strong><p>You can seek access, correction, erasure, consent withdrawal, and grievance help.</p></article></section>
     <section class="legal-layout">
-      <nav class="legal-toc" aria-label="Privacy sections"><strong>On this page</strong>${[["scope","Scope"],["data","Data we process"],["purposes","Why we process it"],["consent","Consent and choices"],["cookies","Cookies"],["sharing","Sharing and processors"],["retention","Retention and erasure"],["security-safeguards","Security"],["breaches","Data breaches"],["rights","Your rights"],["children","Children"],["transfers","International processing"],["grievances","Grievances"],["updates-privacy","Updates"]].map(([id,label]) => `<a href="#${id}">${label}</a>`).join("")}</nav>
+      <nav class="legal-toc" aria-label="Privacy sections"><strong>On this page</strong>${[["scope","Scope"],["data","Data we process"],["purposes","Why we process it"],["consent","Consent and choices"],["cookies","Cookies"],["sharing","Sharing and processors"],["retention","Retention and erasure"],["security-safeguards","Security"],["breaches","Data breaches"],["rights","Your rights"],["children","Children"],["transfers","International processing"],["global-privacy","Global frameworks"],["grievances","Grievances"],["updates-privacy","Updates"]].map(([id,label]) => `<a href="#${id}">${label}</a>`).join("")}</nav>
       <div class="legal-document">
         <article id="scope"><span>01</span><h2>Scope and our role</h2><p>This policy applies to ${escapeHtml(siteName())} websites, progressive web app experiences, accounts, stories, publications, memberships, comments, business profiles, resources, creator tools, communications, and support services that link to it.</p><p>For personal data whose purpose and means we determine, ${escapeHtml(siteName())} acts as the Data Fiduciary under India’s Digital Personal Data Protection Act, 2023. Some providers process data for us as Data Processors; others, such as payment or OAuth providers, may independently determine parts of their processing.</p></article>
         <article id="data"><span>02</span><h2>Personal data we may process</h2><ul><li><strong>Account and identity:</strong> name, email, username, profile details, role, verification state, connected-account identifiers, and authentication records.</li><li><strong>Content and community:</strong> stories, drafts, media, comments, messages, reports, follows, lists, profile claims, support requests, and attachments you submit.</li><li><strong>Reading and preference data:</strong> interests, saves, reading progress and history, recommendations, language, theme, accessibility settings, cookie choices, and communication preferences.</li><li><strong>Commerce and creator records:</strong> plan, orders, invoices, transaction references, discount use, subscriptions, tips, earnings, payout status, tax-related details, and resource access. Full payment credentials are ordinarily handled by configured payment providers rather than stored by Nitross.</li><li><strong>Device and security data:</strong> IP address, user agent, session identifiers, device/browser details, sign-in events, passkey identifiers, security activity, error logs, and anti-abuse signals.</li><li><strong>Business data:</strong> company or founder information, professional contact details, ownership or role claims, verification evidence, and public profile material.</li></ul></article>
@@ -6573,7 +6610,8 @@ function publicPrivacyPolicyTemplate() {
         <article id="rights"><span>10</span><h2>Your data rights</h2><p>Subject to applicable law and the notified commencement timeline, you may request: a summary of personal data being processed and processing activities; information about relevant sharing; correction, completion, or updating; erasure when retention is no longer necessary; withdrawal of consent; grievance redressal; and nomination of another individual to exercise rights in the event of death or incapacity.</p><p>We may verify identity and authority before fulfilling a request. Requests should be accurate and genuine; the DPDP Act also requires Data Principals not to impersonate, suppress material information, submit false or frivolous grievances, or provide inauthentic information when exercising rights.</p><div class="legal-callout"><strong>Account holders</strong><p>Sign in to use the Privacy Center for available downloads, history controls, preferences, connected accounts, and account deletion.</p><button class="primary-button" data-route="/login">Sign in to Privacy Center</button></div></article>
         <article id="children"><span>11</span><h2>Children and lawful guardians</h2><p>Under the DPDP Act, a child is an individual under 18. Before processing a child’s personal data where the law requires it, verifiable consent of a parent or lawful guardian must be obtained. We do not intend to process children’s data in a way likely to harm well-being or to use tracking, behavioural monitoring, or targeted advertising directed at children where prohibited.</p><p>If you believe a child has provided personal data without appropriate authority, contact us so we can review and take suitable action. Certain account, payment, publishing, or business features may be restricted when age or guardian authority cannot be verified.</p></article>
         <article id="transfers"><span>12</span><h2>Processing outside India</h2><p>Some configured service providers may process data outside India. Where this occurs, we will apply contractual, technical, and organisational safeguards appropriate to the service and follow any country or territory restrictions notified by the Central Government, as well as any other Indian law providing a higher level of protection or transfer restriction.</p></article>
-        <article id="grievances"><span>13</span><h2>Questions, rights requests, and grievances</h2><p>Contact our privacy response point at <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a> with the account email, the right or concern involved, and enough detail to investigate. Do not send passwords, one-time codes, or unnecessary identity documents by ordinary email.</p><p>We will acknowledge and address grievances through the mechanism and period applicable to us. The DPDP framework generally requires a Data Principal to first use the Data Fiduciary’s grievance process before approaching the Data Protection Board of India.</p><div class="legal-related"><a href="https://www.meity.gov.in/static/uploads/2024/06/2bf1f0e9f04e6fb4f8fef35e82c42aa5.pdf" target="_blank" rel="noopener noreferrer">Official DPDP Act</a><a href="https://www.meity.gov.in/static/uploads/2025/11/53450e6e5dc0bfa85ebd78686cadad39.pdf" target="_blank" rel="noopener noreferrer">Official DPDP Rules</a></div></article>
+        <article id="global-privacy"><span>12A</span><h2>India, EEA, UK, and global privacy frameworks</h2><p><strong>India:</strong> the DPDP Act framework uses consent and recognised legitimate uses, with notice, security, breach response, grievance, access-related, correction, erasure, and nomination obligations applying according to notified commencement. References to GDPR do not replace India’s DPDP framework.</p><p><strong>European Economic Area:</strong> where the EU GDPR applies, processing must rely on an applicable lawful basis such as consent, contract, legal obligation, vital interests, public task, or legitimate interests balanced against individual rights. We apply the principles of lawfulness, fairness and transparency; purpose limitation; data minimisation; accuracy; storage limitation; integrity and confidentiality; and accountability. Applicable rights can include information, access, rectification, erasure, restriction, portability, objection, withdrawal of consent, and safeguards concerning solely automated decisions. Individuals may also complain to their competent supervisory authority.</p><p><strong>United Kingdom:</strong> where UK data-protection law applies, corresponding UK GDPR and Data Protection Act rights and lawful-basis requirements are respected. Where required, restricted transfers use an applicable adequacy route, contractual safeguard, or lawful exception.</p><p><strong>International transfers:</strong> when GDPR-covered personal data is made available outside the EEA or UK, we assess the transfer mechanism and use applicable safeguards, such as an adequacy decision or approved contractual clauses, together with supplementary technical and organisational measures where needed. India-related transfers remain subject to restrictions notified under Indian law.</p><p>Rights and obligations depend on the user’s location, our establishment and targeting, the processing purpose, and applicable exemptions. Where legally required, we will publish details of an EU/UK representative or data-protection contact and complete any required data-protection impact assessment.</p></article>
+        <article id="grievances"><span>13</span><h2>Questions, rights requests, and grievances</h2><p>Contact our privacy response point at <a href="mailto:${escapeHtml(contactEmail)}">${escapeHtml(contactEmail)}</a> with the account email, the right or concern involved, and enough detail to investigate. Do not send passwords, one-time codes, or unnecessary identity documents by ordinary email.</p><p>We will acknowledge and address grievances through the mechanism and period applicable to us. The DPDP framework generally requires a Data Principal to first use the Data Fiduciary’s grievance process before approaching the Data Protection Board of India.</p><div class="legal-related"><a href="https://www.meity.gov.in/static/uploads/2024/06/2bf1f0e9f04e6fb4f8fef35e82c42aa5.pdf" target="_blank" rel="noopener noreferrer">Official DPDP Act</a><a href="https://www.meity.gov.in/static/uploads/2025/11/53450e6e5dc0bfa85ebd78686cadad39.pdf" target="_blank" rel="noopener noreferrer">Official DPDP Rules</a><a href="https://eur-lex.europa.eu/eli/reg/2016/679/oj" target="_blank" rel="noopener noreferrer">Official EU GDPR</a><a href="https://www.edpb.europa.eu/sme-data-protection-guide_en" target="_blank" rel="noopener noreferrer">EDPB guidance</a></div></article>
         <article id="updates-privacy"><span>14</span><h2>Policy changes and phased commencement</h2><p>The DPDP Act and Rules have provisions that commence according to government notifications and a phased timeline. We will update platform practices, notices, controls, and this policy as applicable obligations take effect or our processing changes.</p><p>Material policy updates will be communicated through an appropriate website, account, or email notice where required. The “Last updated” date identifies the current published version.</p></article>
       </div>
     </section>
@@ -7618,43 +7656,29 @@ function recordAdEvent(campaignId, eventType, placement, storySlug = "") {
   }).catch(() => {});
 }
 
-function checkoutTemplate(plan) {
+function checkoutPlanFromRoute() {
+  if (!state.path.startsWith("/checkout/")) return null;
+  const [, , planId, routePeriod] = state.path.split("/");
+  const plan = state.plans.find((item) => item.id === decodeURIComponent(planId || ""));
+  return plan ? planOffer(plan, routePeriod === "month" ? "month" : "year") : null;
+}
+
+function checkoutPageTemplate() {
+  const plan = checkoutPlanFromRoute() || state.checkoutPlan;
+  if (!plan) return notFoundTemplate();
+  state.checkoutPlan = plan;
   const gateways = visiblePaymentGateways();
   const gateway = gateways.find((item) => item.id === state.gateway) || gateways[0];
-  const configured = Boolean(state.providerStatus.payments[gateway.id]);
-  return `
-    <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
-      <section class="checkout-modal">
-        <button class="close-button" data-action="close-checkout" aria-label="Close checkout">${icon("close")}</button>
-        <h2 id="checkout-title">Complete membership</h2>
-        <p>${plan.name} plan - ${formatMoneyFromINR(plan.price)}/${plan.period}. Converted from INR in real time.</p>
-        ${currencyControlTemplate("checkout")}
-        <div class="gateway-list">
-          ${gateways.map((item) => `
-            <button class="gateway-card ${state.gateway === item.id ? "active" : ""}" data-gateway="${item.id}">
-              ${icon("card")}<span><strong>${item.name}</strong><small>${item.type}</small></span>
-            </button>
-          `).join("")}
-        </div>
-        <div class="gateway-status ${configured ? "ready" : "needs-key"}">
-          <strong>${gateway.name} ${configured ? "configured" : "needs API keys"}</strong>
-          <span>${configured ? "Checkout handoff is ready for backend order creation." : "Add credentials to the server environment before going live."}</span>
-          <small>${gateway.serverNote}</small>
-        </div>
-        ${state.paymentMessage ? `<div class="payment-message">${state.paymentMessage}</div>` : ""}
-        ${featureEnabled("discounts") ? `<label class="discount-field"><span>Discount code</span><div><input id="discountCode" value="${escapeHtml(state.checkoutDiscountCode)}" placeholder="STUDENT50" /><button class="secondary-button" data-action="apply-discount" ${state.checkoutDiscountCode.trim() ? "" : "disabled"}>Apply</button></div></label>` : ""}
-        <div class="checkout-summary">
-          <span>Subtotal</span><strong>${formatMoneyFromINR(plan.price)}</strong>
-          ${state.checkoutDiscount ? `<span>Discount ${escapeHtml(state.checkoutDiscount.code)}</span><strong>- ${formatMoneyFromINR(state.checkoutDiscount.discountAmount / 100)}</strong>` : ""}
-          <span>Base INR</span><strong>${formatINR(plan.price)}</strong>
-          <span>Gateway</span><strong>${gateway.name}</strong>
-          <span>Tax mode</span><strong>Calculated by provider</strong>
-        </div>
-        ${paypalRestrictedForCurrentUser() ? `<div class="payment-message">PayPal is not available for India. Please use Razorpay, PayU, or Cashfree.</div>` : ""}
-        <button class="primary-button wide-button" data-payment-submit="${plan.id}" ${configured ? "" : "disabled"}>${configured ? "Continue to gateway" : "Gateway not configured"}</button>
-      </section>
-    </div>
-  `;
+  const configured = Boolean(gateway && state.providerStatus.payments[gateway.id]);
+  const features = configuredPlanFeatureKeys(plan).map((key) => state.planFeatureCatalog.find((item) => item.key === key)?.name).filter(Boolean).slice(0, 6);
+  const finalPrice = state.checkoutDiscount ? Math.max(0, plan.price - (state.checkoutDiscount.discountAmount / 100)) : plan.price;
+  const step = Math.max(1, Math.min(3, Number(state.checkoutStep) || 1));
+  const stepContent = step === 1
+    ? `<section class="checkout-stage"><span class="eyebrow">Step 1 · Order</span><h1>Review your membership</h1><p>Confirm the plan and billing period before choosing how to pay.</p><article class="checkout-plan-review"><div><span>${icon("spark", 20)}</span><div><strong>${escapeHtml(plan.name)}</strong><small>${plan.period === "year" ? "Annual membership · paid once for 12 months" : "Monthly membership · billed each month"}</small></div></div><strong>${formatMoneyFromINR(plan.price)}</strong></article><div class="checkout-benefits"><h2>Included with this plan</h2><ul>${features.map((feature) => `<li>${icon("check", 15)}${escapeHtml(feature)}</li>`).join("") || `<li>${icon("check", 15)}Membership features shown on the pricing page</li>`}</ul></div><div class="checkout-stage-actions"><button class="secondary-button" data-route="/pricing">Change plan</button><button class="primary-button" data-checkout-next="2">Continue to payment ${icon("chevronRight", 15)}</button></div></section>`
+    : step === 2
+      ? `<section class="checkout-stage"><span class="eyebrow">Step 2 · Payment</span><h1>Choose a payment method</h1><p>Available partners depend on your location and the server’s live configuration.</p>${state.user ? `<div class="checkout-account-row">${icon("users", 18)}<span><strong>${escapeHtml(state.user.name)}</strong><small>${escapeHtml(state.user.email)}</small></span><b>Signed in</b></div>` : `<div class="checkout-auth-callout">${icon("lock", 20)}<div><strong>Sign in before payment</strong><p>Your verified purchase and membership access must be linked to an account.</p></div><button class="primary-button" data-checkout-auth="login">Sign in</button><button class="secondary-button" data-checkout-auth="register">Create account</button></div>`}<fieldset class="checkout-gateway-grid"><legend>Secure payment partner</legend>${gateways.map((item) => `<button type="button" class="gateway-card ${state.gateway === item.id ? "active" : ""}" data-gateway="${item.id}" aria-pressed="${state.gateway === item.id}">${pricingGatewayLogo(item)}<span><small>${escapeHtml(item.type)}</small><b>${state.providerStatus.payments[item.id] ? "Available" : "Not configured"}</b></span></button>`).join("") || `<div class="empty-state">No payment gateway is currently enabled.</div>`}</fieldset>${gateway ? `<div class="gateway-status ${configured ? "ready" : "needs-key"}"><strong>${escapeHtml(gateway.name)} ${configured ? "is ready" : "needs server configuration"}</strong><span>${configured ? "Your order is created server-side before secure provider handoff." : "This provider cannot accept payment until its environment credentials are configured."}</span><small>${escapeHtml(gateway.serverNote)}</small></div>` : ""}${featureEnabled("discounts") ? `<label class="discount-field"><span>Discount code</span><div><input id="discountCode" value="${escapeHtml(state.checkoutDiscountCode)}" placeholder="Enter code" autocomplete="off" /><button class="secondary-button" data-action="apply-discount" ${state.checkoutDiscountCode.trim() ? "" : "disabled"}>Apply</button></div></label>` : ""}${state.paymentMessage ? `<div class="payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}<div class="checkout-stage-actions"><button class="secondary-button" data-checkout-back="1">Back</button><button class="primary-button" data-checkout-next="3" ${state.user && configured ? "" : "disabled"}>Review order ${icon("chevronRight", 15)}</button></div></section>`
+      : `<section class="checkout-stage"><span class="eyebrow">Step 3 · Review</span><h1>Confirm and continue securely</h1><p>Nitross creates the order, then your selected provider completes payment in its secure experience.</p><div class="checkout-final-review"><div><span>Account</span><strong>${escapeHtml(state.user?.email || "Sign in required")}</strong></div><div><span>Membership</span><strong>${escapeHtml(plan.name)} · ${escapeHtml(plan.period)}</strong></div><div><span>Payment partner</span><strong>${escapeHtml(gateway?.name || "Unavailable")}</strong></div><div><span>Amount due</span><strong>${formatMoneyFromINR(finalPrice)}</strong></div></div><label class="checkout-legal-confirm"><input type="checkbox" id="checkoutTermsAccepted" ${state.checkoutTermsAccepted ? "checked" : ""}><span>I agree to the <button type="button" data-route="/terms">Terms of use</button> and acknowledge the <button type="button" data-route="/privacy-policy">Privacy Policy</button>, billing period, and renewal information shown here.</span></label>${paypalRestrictedForCurrentUser() ? `<div class="payment-message">PayPal is not available for India. Choose Razorpay, PayU, or Cashfree.</div>` : ""}${state.paymentMessage ? `<div class="payment-message" role="status">${escapeHtml(state.paymentMessage)}</div>` : ""}<div class="checkout-stage-actions"><button class="secondary-button" data-checkout-back="2">Back</button><button class="primary-button checkout-pay-button" data-payment-submit="${escapeHtml(plan.id)}" ${configured && state.user && state.checkoutTermsAccepted ? "" : "disabled"}>${icon("lock", 15)}Continue to ${escapeHtml(gateway?.name || "payment provider")}</button></div><small class="checkout-security-note">${icon("shield", 14)}Membership activates only after server-side payment verification.</small></section>`;
+  return `<main class="checkout-page"><header class="checkout-page-header"><button class="brand compact" data-route="/" aria-label="${escapeHtml(siteName())} home"><span class="brand-mark">${escapeHtml(siteInitials())}</span><span>${escapeHtml(siteName())}</span></button><span>${icon("lock", 14)}Secure checkout</span></header><div class="checkout-progress" aria-label="Checkout progress">${[[1,"Order"],[2,"Payment"],[3,"Review"]].map(([number,label]) => `<button data-checkout-jump="${number}" class="${step === number ? "active" : step > number ? "complete" : ""}" ${number > step ? "disabled" : ""}><i>${step > number ? icon("check", 13) : number}</i><span>${label}</span></button>`).join("")}</div><div class="checkout-layout">${stepContent}<aside class="checkout-order-summary"><span>Order summary</span><h2>${escapeHtml(plan.name)}</h2><p>${plan.period === "year" ? "12 months of membership access" : "Monthly membership access"}</p><div><span>Subtotal</span><strong>${formatMoneyFromINR(plan.price)}</strong>${state.checkoutDiscount ? `<span>Discount · ${escapeHtml(state.checkoutDiscount.code)}</span><strong>- ${formatMoneyFromINR(state.checkoutDiscount.discountAmount / 100)}</strong>` : ""}<span>Taxes</span><strong>Calculated by provider</strong></div><footer><span>Total due</span><strong>${formatMoneyFromINR(finalPrice)}</strong><small>Base price ${formatINR(finalPrice)} · display currency may use configured exchange rates</small></footer><ul><li>${icon("shield", 14)}Server-verified access</li><li>${icon("lock", 14)}Secure provider handoff</li><li>${icon("refresh", 14)}Manage membership in dashboard</li></ul></aside></div></main>`;
 }
 
 function authPageTemplate() {
@@ -7961,10 +7985,43 @@ function footerTemplate() {
       <button class="brand compact" data-route="/"><span class="brand-mark">${escapeHtml(siteInitials())}</span><span>${escapeHtml(siteName())}</span></button>
       <div class="footer-links">
         ${links.map(([label, route]) => `<button data-route="${escapeHtml(route)}">${escapeHtml(label)}</button>`).join("")}
+        <button data-action="open-cookie-settings">Cookie settings</button>
       </div>
       ${socialLinks.length ? `<div class="footer-social" aria-label="Social media links">${socialLinks.map((item) => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(item.name)}" title="${escapeHtml(item.name)}"><span>${escapeHtml(item.icon)}</span></a>`).join("")}</div>` : ""}
     </footer>
   `;
+}
+
+function persistCookieConsent(categories) {
+  const normalized = {
+    essential: true,
+    analytics: Boolean(categories.analytics),
+    personalization: Boolean(categories.personalization),
+    advertising: Boolean(categories.advertising),
+  };
+  state.cookieConsent = { version: cookieConsentVersion, decided: true, savedAt: new Date().toISOString(), categories: normalized };
+  state.cookieDraft = { ...normalized };
+  state.cookieConsentOpen = false;
+  state.cookiePreferencesOpen = false;
+  state.preferences.cookies = { ...normalized };
+  state.preferences.tracking = normalized.analytics;
+  state.preferences.personalized = normalized.personalization;
+  localStorage.setItem("nitross-cookie-consent", JSON.stringify(state.cookieConsent));
+  persistProductState("preferences", state.preferences);
+}
+
+function cookieConsentTemplate() {
+  if (!state.cookieConsentOpen && !state.cookiePreferencesOpen) return "";
+  if (state.cookiePreferencesOpen) {
+    const categories = [
+      ["essential", "Essential", "Required for security, sign-in, checkout, fraud prevention, and remembering this consent choice."],
+      ["analytics", "Analytics", "Helps us understand page performance and improve Nitross using measurement data."],
+      ["personalization", "Personalization", "Uses reading activity and interests to tailor recommendations and remember optional preferences."],
+      ["advertising", "Advertising", "Supports relevant campaign measurement and advertising features when configured."],
+    ];
+    return `<div class="cookie-preferences-backdrop" role="dialog" aria-modal="true" aria-labelledby="cookie-preferences-title"><section class="cookie-preferences-panel"><header><span>${icon("shield", 20)}</span><div><small>Privacy choices</small><h2 id="cookie-preferences-title">Choose what Nitross may use</h2><p>Optional categories stay off until you choose them. You can change this decision anytime from the footer.</p></div></header><div class="cookie-category-list">${categories.map(([key, title, copy]) => `<label><span><strong>${title}</strong><small>${copy}</small></span><input type="checkbox" data-cookie-draft="${key}" ${state.cookieDraft[key] ? "checked" : ""} ${key === "essential" ? "disabled" : ""}></label>`).join("")}</div><div class="cookie-panel-links"><button data-route="/privacy-policy">Read Privacy Policy</button><span>Choice stored for this browser</span></div><footer><button class="secondary-button" data-action="cookie-reject">Reject optional</button><button class="primary-button" data-action="cookie-save">Save choices</button><button class="secondary-button" data-action="cookie-accept">Accept all</button></footer></section></div>`;
+  }
+  return `<aside class="cookie-consent-banner" role="dialog" aria-modal="false" aria-labelledby="cookie-consent-title"><div class="cookie-consent-icon">${icon("shield", 21)}</div><div class="cookie-consent-copy"><span>YOUR PRIVACY, YOUR CHOICE</span><h2 id="cookie-consent-title">Control how Nitross uses cookies</h2><p>Essential storage keeps the site secure and working. Analytics, personalization, and advertising remain optional. <button data-route="/privacy-policy">Learn more</button></p></div><div class="cookie-consent-actions"><button class="secondary-button" data-action="cookie-reject">Reject optional</button><button class="secondary-button" data-action="cookie-manage">Manage choices</button><button class="secondary-button" data-action="cookie-accept">Accept all</button></div></aside>`;
 }
 
 function setMetaTag(selector, attributes) {
@@ -7990,12 +8047,13 @@ function applyDocumentSeo() {
   const authRoute = state.path === "/login" || state.path === "/register";
   const termsRoute = state.path.startsWith("/terms");
   const publicPrivacyRoute = state.path === "/privacy-policy" || (state.path.startsWith("/privacy") && !state.user);
-  const privateAccountRoute = state.path.startsWith("/security") || state.path.startsWith("/support");
+  const checkoutRoute = state.path.startsWith("/checkout/");
+  const privateAccountRoute = state.path.startsWith("/security") || state.path.startsWith("/support") || checkoutRoute;
   const notFound = Boolean(document.querySelector(".not-found-page")) || (state.path.startsWith("/resources/") && !resource) || ((state.path.startsWith("/companies/") || state.path.startsWith("/founders/")) && !businessProfile && !state.businessProfileLoading);
   const seo = story?.seo || {};
   const businessDefaultTitle = businessProfile ? (companyProfile ? `${businessName}: Founders, Company Profile, Products & Business Overview | ${siteName()}` : `${businessName}: Founder Profile, Companies & Biography | ${siteName()}`) : "";
   const businessDefaultDescription = businessProfile ? (companyProfile ? businessProfile.description || businessProfile.tagline : businessProfile.biography || businessProfile.headline) : "";
-  const title = notFound ? `Page not found · ${siteName()}` : authRoute ? `${state.path === "/register" ? "Create account" : "Sign in"} · ${siteName()}` : termsRoute ? `Terms of use · ${siteName()}` : publicPrivacyRoute ? `Privacy Policy · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? (resource.seoTitle || `${resource.name} · ${siteName()} Resources`) : businessProfile ? (businessProfile.seo_title || businessDefaultTitle) : publication ? `${publication.name} | ${siteName()}` : writerProfile ? `${writerProfile.name}: Writer Profile | ${siteName()}` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
+  const title = notFound ? `Page not found · ${siteName()}` : authRoute ? `${state.path === "/register" ? "Create account" : "Sign in"} · ${siteName()}` : checkoutRoute ? `Secure checkout · ${siteName()}` : termsRoute ? `Terms of use · ${siteName()}` : publicPrivacyRoute ? `Privacy Policy · ${siteName()}` : story ? `${storyPreview ? "Preview: " : ""}${seo.seoTitle || story.title}` : resource ? (resource.seoTitle || `${resource.name} · ${siteName()} Resources`) : businessProfile ? (businessProfile.seo_title || businessDefaultTitle) : publication ? `${publication.name} | ${siteName()}` : writerProfile ? `${writerProfile.name}: Writer Profile | ${siteName()}` : marketplace ? `Resources Marketplace · ${siteName()}` : category ? category.seoTitle : configuredSiteText(state.siteSeo.homepageSeoTitle);
   const description = notFound ? `The requested page could not be found on ${siteName()}.` : authRoute ? (state.path === "/register" ? `Create a ${siteName()} account to save stories, join the community, and access your dashboard.` : `Sign in to ${siteName()} to continue reading, manage subscriptions, and access saved stories.`) : termsRoute ? `Read the rules for accounts, publishing, memberships, payments, creator tools, business profiles, resources, and community use on ${siteName()}.` : publicPrivacyRoute ? `Learn what personal data ${siteName()} processes, why it is used, how it is protected, and the privacy choices and rights available to you.` : story ? (seo.metaDescription || story.dek) : resource ? (resource.metaDescription || resource.shortDescription) : businessProfile ? (businessProfile.meta_description || businessDefaultDescription) : publication ? publication.description : writerProfile ? writerProfile.bio : marketplace ? `Discover free and paid templates, prompts, guides, tools, and digital resources from ${siteName()}.` : category ? (category.metaDescription || category.description) : configuredSiteText(state.siteSeo.homepageMetaDescription);
   document.title = title;
   setMetaTag('meta[name="description"]', { name: "description", content: description });
@@ -8385,10 +8443,17 @@ function bindInputs() {
     render();
   }));
   document.querySelectorAll("[data-cookie]").forEach((field) => field.addEventListener("change", (event) => {
-    state.preferences.cookies[event.target.dataset.cookie] = event.target.checked;
-    persistProductState("preferences", state.preferences);
+    const categories = { ...state.preferences.cookies, [event.target.dataset.cookie]: event.target.checked, essential: true };
+    persistCookieConsent(categories);
     render();
   }));
+  document.querySelectorAll("[data-cookie-draft]").forEach((field) => field.addEventListener("change", (event) => {
+    state.cookieDraft[event.target.dataset.cookieDraft] = event.target.checked;
+  }));
+  document.getElementById("checkoutTermsAccepted")?.addEventListener("change", (event) => {
+    state.checkoutTermsAccepted = event.target.checked;
+    render();
+  });
   document.querySelectorAll("[data-pwa-setting]").forEach((field) => field.addEventListener("change", (event) => {
     state.pwaSettings[event.target.dataset.pwaSetting] = event.target.checked;
   }));
@@ -8841,6 +8906,10 @@ document.addEventListener("click", async (event) => {
   const pricingPeriod = target.dataset.pricingPeriod;
   const checkout = target.dataset.checkout;
   const paymentSubmit = target.dataset.paymentSubmit;
+  const checkoutNext = target.dataset.checkoutNext;
+  const checkoutBack = target.dataset.checkoutBack;
+  const checkoutJump = target.dataset.checkoutJump;
+  const checkoutAuth = target.dataset.checkoutAuth;
   const gateway = target.dataset.gateway;
   const translateStory = target.dataset.translateStory;
   const insightRetry = target.dataset.insightRetry;
@@ -8935,6 +9004,30 @@ document.addEventListener("click", async (event) => {
   const resourceOwner = target.dataset.resourceOwner;
   const storyUnlock = target.dataset.storyUnlock;
   const businessContactReveal = target.dataset.businessContactReveal;
+
+  if (checkoutNext || checkoutBack || checkoutJump) {
+    state.checkoutStep = Number(checkoutNext || checkoutBack || checkoutJump);
+    window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    render();
+    return;
+  }
+  if (checkoutAuth) {
+    state.authReturnTo = state.path;
+    sessionStorage.setItem("nitross-auth-return", state.path);
+    state.authMode = checkoutAuth === "register" ? "register" : "login";
+    setRoute(checkoutAuth === "register" ? "/register" : "/login");
+    return;
+  }
+  if (action === "cookie-accept") { persistCookieConsent({ essential: true, analytics: true, personalization: true, advertising: true }); render(); return; }
+  if (action === "cookie-reject") { persistCookieConsent({ essential: true, analytics: false, personalization: false, advertising: false }); render(); return; }
+  if (action === "cookie-manage" || action === "open-cookie-settings") {
+    state.cookieDraft = { ...state.cookieConsent.categories };
+    state.cookieConsentOpen = false;
+    state.cookiePreferencesOpen = true;
+    render();
+    return;
+  }
+  if (action === "cookie-save") { persistCookieConsent(state.cookieDraft); render(); return; }
 
   if (storyUnlock) { await unlockPaidStory(storyUnlock); return; }
   if (businessContactReveal) { await revealBusinessContact(businessContactReveal); return; }
@@ -10044,7 +10137,9 @@ document.addEventListener("click", async (event) => {
       state.onboardingOpen = false;
       state.onboardingStep = "interests";
       state.paymentMessage = state.authorIntent ? "Complete a paid membership to activate author access." : "";
-      render();
+      state.checkoutStep = 1;
+      state.checkoutTermsAccepted = false;
+      setRoute(`/checkout/${encodeURIComponent(state.checkoutPlan.id)}/${state.checkoutPlan.period}`);
     }
   }
   if (interactiveStory && interactiveId && interactiveOption !== undefined) {
@@ -10200,7 +10295,11 @@ document.addEventListener("click", async (event) => {
     state.checkoutPlan = plan ? planOffer(plan, target.closest("[data-checkout]")?.dataset.billingPeriod || state.pricingBillingPeriod) : null;
     if (!visiblePaymentGateways().some((item) => item.id === state.gateway)) state.gateway = visiblePaymentGateways()[0]?.id || "razorpay";
     state.paymentMessage = "";
-    render();
+    state.checkoutDiscount = null;
+    state.checkoutDiscountCode = "";
+    state.checkoutStep = 1;
+    state.checkoutTermsAccepted = false;
+    if (state.checkoutPlan) setRoute(`/checkout/${encodeURIComponent(state.checkoutPlan.id)}/${state.checkoutPlan.period}`);
   }
   if (paymentSubmit) {
     startGatewayPayment(state.checkoutPlan || planOffer(state.plans.find((item) => item.id === paymentSubmit)));
